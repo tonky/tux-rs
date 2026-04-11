@@ -56,19 +56,22 @@ fn parse_args() -> Args {
     let mut session_bus = false;
     let mut initial_tab = None;
     let mut args = std::env::args().skip(1).peekable();
-    
+
     while let Some(arg) = args.next() {
         if arg == "--session" {
             session_bus = true;
         } else if let Some(val) = arg.strip_prefix("--tab=") {
             initial_tab = parse_tab_arg(val);
-        } else if arg == "-t" || arg == "--tab" {
-            if let Some(val) = args.next() {
-                initial_tab = parse_tab_arg(&val);
-            }
+        } else if (arg == "-t" || arg == "--tab")
+            && let Some(val) = args.next()
+        {
+            initial_tab = parse_tab_arg(&val);
         }
     }
-    Args { session_bus, initial_tab }
+    Args {
+        session_bus,
+        initial_tab,
+    }
 }
 
 fn parse_tab_arg(s: &str) -> Option<model::Tab> {

@@ -111,19 +111,23 @@ async fn dump_all(client: &DaemonClient) -> Result<String, String> {
     }
 
     let dashboard_str = dump_dashboard(client).await?;
-    let dashboard: DashboardSnapshot = serde_json::from_str(&dashboard_str).map_err(|e| e.to_string())?;
+    let dashboard: DashboardSnapshot =
+        serde_json::from_str(&dashboard_str).map_err(|e| e.to_string())?;
 
     let fan_curve_str = dump_fan_curve(client).await?;
     let fan_curve: FanConfig = serde_json::from_str(&fan_curve_str).map_err(|e| e.to_string())?;
 
     let profiles_str = dump_profiles(client).await?;
-    let profiles: Vec<tux_core::profile::TuxProfile> = serde_json::from_str(&profiles_str).map_err(|e| e.to_string())?;
+    let profiles: Vec<tux_core::profile::TuxProfile> =
+        serde_json::from_str(&profiles_str).map_err(|e| e.to_string())?;
 
     let capabilities_str = dump_capabilities(client).await?;
-    let capabilities: CapabilitiesResponse = serde_json::from_str(&capabilities_str).map_err(|e| e.to_string())?;
+    let capabilities: CapabilitiesResponse =
+        serde_json::from_str(&capabilities_str).map_err(|e| e.to_string())?;
 
     let system_info_str = dump_system_info(client).await?;
-    let system_info: SystemInfoResponse = serde_json::from_str(&system_info_str).map_err(|e| e.to_string())?;
+    let system_info: SystemInfoResponse =
+        serde_json::from_str(&system_info_str).map_err(|e| e.to_string())?;
 
     let full = FullDump {
         dashboard,

@@ -25,7 +25,7 @@
 ┌───────────────────────────┴─────────────────────────────┐
 │              tux-kmod (5 kernel shims)                   │
 │                                                         │
-│  tuxedo-ec · tuxedo-uw-fan · tuxedo-clevo               │
+│  tuxedo-ec · tuxedo-uniwill · tuxedo-clevo              │
 │  tuxedo-nb04 · tuxedo-tuxi                              │
 │                                                         │
 │  Stateless passthrough — no policy in kernel             │
@@ -86,7 +86,7 @@ Five minimal C modules (~2900 LOC total):
 | Module           | Hardware Access          | sysfs Interface             |
 |------------------|--------------------------|-----------------------------|
 | `tuxedo-ec`      | SuperIO port I/O (0x4e/0x4f) | Binary `ec_ram` attribute (64 KiB) |
-| `tuxedo-uw-fan`  | ACPI EC read/write methods | Binary attributes per register |
+| `tuxedo-uniwill` | ACPI EC + WMI BC (unified Uniwill platform) | Binary attributes per register + LED/fn_lock/charging |
 | `tuxedo-clevo`   | WMI + ACPI DSM (dual transport) | Binary attributes per command |
 | `tuxedo-nb04`    | WMI AB/BS methods        | Binary attributes per method |
 | `tuxedo-tuxi`    | ACPI TFAN evaluation     | Binary attributes per fan   |

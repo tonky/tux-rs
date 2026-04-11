@@ -36,7 +36,7 @@ See [docs/architecture.md](docs/architecture.md) for the architecture deep dive,
 
 ```sh
 just kmod-install       # copies to /usr/src, builds via DKMS, installs for current kernel
-sudo modprobe tuxedo_uw_fan  # load your platform's module (varies by laptop)
+sudo modprobe tuxedo_uniwill  # load your platform's module (varies by laptop)
 ```
 
 ### 2. Daemon
@@ -78,7 +78,7 @@ just fmt                # check formatting
 
 ```sh
 just kmod-build                       # build all modules
-just kmod-reload tuxedo-uw-fan        # rebuild + reload a single module
+just kmod-reload tuxedo-uniwill       # rebuild + reload a single module
 just kmod-install                     # full DKMS install
 ```
 

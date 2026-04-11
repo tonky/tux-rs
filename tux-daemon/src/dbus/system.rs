@@ -302,10 +302,11 @@ fn read_battery_info(base: &Path) -> BatteryInfoResponse {
         capacity_percent: read_u32("capacity"),
         status,
         cycle_count: {
-            let mut raw = std::fs::read_to_string("/sys/devices/platform/tuxedo-uniwill/raw_cycle_count")
-                .map(|s| s.trim().parse::<u32>().unwrap_or(0))
-                .unwrap_or(0);
-            
+            let mut raw =
+                std::fs::read_to_string("/sys/devices/platform/tuxedo-uniwill/raw_cycle_count")
+                    .map(|s| s.trim().parse::<u32>().unwrap_or(0))
+                    .unwrap_or(0);
+
             if raw == 0 {
                 raw = read_u32("raw_cycle_count");
             }

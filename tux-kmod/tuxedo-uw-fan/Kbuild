@@ -1,1 +1,0 @@
-obj-m += tuxedo_uw_fan.o

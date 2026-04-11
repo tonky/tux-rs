@@ -69,6 +69,13 @@ Create the following files in `impl/2026-04-11-nixos-support/`:
 - Define a Python test script (`machine.succeed(...)`) to verify daemon startup and D-Bus registration inside the NixOS VM.
 - Execute `tux-tui --json` (or other dump commands like `--dump-dashboard`) within the VM test to parse and validate the daemon's JSON response, ensuring full end-to-end integration works headless.
 
+### Stage 5: Packaging restructure (issue #3 feedback)
+- Split inline `flake.nix` derivations into `nix/tux-daemon.nix`, `nix/tux-tui.nix`, `nix/tux-kmod.nix` as `callPackage` functions.
+- Add `nix/overlay.nix` + top-level `default.nix` so classic Nix consumers (non-flake) can use the packages and NixOS module.
+- Rewrite `flake.nix` as a thin wrapper; rust-overlay still injects a pinned toolchain for flake consumers.
+- Fix README URLs (`tuxedocomputers/tux-rs` → `tonky/tux-rs`).
+- See `stage-5.md` for the detailed plan.
+
 ## Verification & Testing
 - Automated `nix build` of all packages locally.
 - Execute local VM tests via `nix build .#checks.x86_64-linux.vmTest` to validate the NixOS module locally on Ubuntu.

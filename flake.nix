@@ -10,17 +10,16 @@
     };
   };
 
+  # The flake is a thin wrapper around ./default.nix and ./nix/*.nix so that
+  # classic (non-flake) Nix consumers can use the same packaging. The flake's
+  # job is to pin a rust toolchain via rust-overlay, expose devShells, and run
+  # the VM check.
   outputs = { self, nixpkgs, flake-utils, rust-overlay, ... }:
-    let
-      overlays = [
-        (import rust-overlay)
-        self.overlays.default
-      ];
-    in
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
-          inherit system overlays;
+          inherit system;
+          overlays = [ (import rust-overlay) ];
         };
 
         rustToolchain = pkgs.rust-bin.stable.latest.default;
@@ -30,65 +29,23 @@
           cargo = rustToolchain;
         };
 
-        commonArgs = {
-          src = ./.;
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-          };
-          nativeBuildInputs = [
-            pkgs.pkg-config
-            pkgs.dbus
-          ];
-          buildInputs = [
-            pkgs.dbus
-          ];
-          doCheck = false;
+        # Build packages via the shared nix/*.nix files, but inject the
+        # rust-overlay-pinned rustPlatform so flake consumers get a predictable
+        # toolchain regardless of what nixpkgs currently ships.
+        tux-daemon = pkgs.callPackage ./nix/tux-daemon.nix { inherit rustPlatform; };
+        tux-tui = pkgs.callPackage ./nix/tux-tui.nix { inherit rustPlatform; };
+        tux-kmod = pkgs.callPackage ./nix/tux-kmod.nix {
+          kernel = pkgs.linuxPackages_latest.kernel;
         };
 
-        # Testing framework
         testing = import (nixpkgs + "/nixos/lib/testing-python.nix") {
           inherit system pkgs;
         };
-
       in
       {
         packages = {
-          tux-daemon = rustPlatform.buildRustPackage (commonArgs // {
-            pname = "tux-daemon";
-            version = "0.1.0";
-            cargoBuildFlags = [ "-p" "tux-daemon" ];
-
-            postInstall = ''
-              install -Dm444 dist/com.tuxedocomputers.tccd.conf -t $out/share/dbus-1/system.d/
-            '';
-          });
-
-          tux-tui = rustPlatform.buildRustPackage (commonArgs // {
-            pname = "tux-tui";
-            version = "0.1.0";
-            cargoBuildFlags = [ "-p" "tux-tui" ];
-          });
-
-          tux-kmod = (kernel: pkgs.stdenv.mkDerivation {
-            pname = "tux-kmod";
-            version = "0.1.0";
-            src = ./tux-kmod;
-
-            nativeBuildInputs = kernel.moduleBuildDependencies;
-
-            makeFlags = [
-              "KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
-            ];
-
-            installPhase = ''
-              mkdir -p $out/lib/modules/${kernel.modDirVersion}/extra
-              find . -name "*.ko" -exec cp {} $out/lib/modules/${kernel.modDirVersion}/extra/ \;
-            '';
-          });
-
-          tux-kmod-latest = self.packages.${system}.tux-kmod pkgs.linuxPackages_latest.kernel;
-
-          default = self.packages.${system}.tux-daemon;
+          inherit tux-daemon tux-tui tux-kmod;
+          default = tux-daemon;
         };
 
         devShells.default = pkgs.mkShell {
@@ -109,7 +66,8 @@
               services.tux-daemon.kernelModules.enable = false;
 
               # Use mock mode in VM test to avoid hardware detection failure
-              systemd.services.tux-daemon.serviceConfig.ExecStart = pkgs.lib.mkForce "${pkgs.tux-daemon}/bin/tux-daemon --mock";
+              systemd.services.tux-daemon.serviceConfig.ExecStart =
+                pkgs.lib.mkForce "${pkgs.tux-daemon}/bin/tux-daemon --mock";
             };
 
             testScript = ''
@@ -133,10 +91,17 @@
         };
       }
     ) // {
+      # System-independent outputs.
+      #
+      # The overlay here references `self.packages.${system}.*` rather than
+      # `final.callPackage ./nix/*.nix`, so that flake consumers importing
+      # `inputs.tux-rs.nixosModules.default` get the rust-overlay-pinned
+      # binaries. Non-flake consumers get a generic overlay from
+      # `./nix/overlay.nix` via `./default.nix`.
       overlays.default = final: prev: {
         tux-daemon = self.packages.${final.system}.tux-daemon;
         tux-tui = self.packages.${final.system}.tux-tui;
-        tux-kmod = self.packages.${final.system}.tux-kmod-latest;
+        tux-kmod = self.packages.${final.system}.tux-kmod;
       };
 
       nixosModules.default = { pkgs, ... }: {

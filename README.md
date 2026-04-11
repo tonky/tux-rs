@@ -88,7 +88,7 @@ Add `tux-rs` to your flake inputs:
 
 ```nix
 {
-  inputs.tux-rs.url = "github:tuxedocomputers/tux-rs";
+  inputs.tux-rs.url = "github:tonky/tux-rs";
 }
 ```
 
@@ -108,7 +108,33 @@ This will automatically:
 
 You can also run the TUI directly without installing:
 ```sh
-nix run github:tuxedocomputers/tux-rs#tux-tui
+nix run github:tonky/tux-rs#tux-tui
+```
+
+### NixOS (classic Nix, no flakes)
+
+If you're not using flakes, the repository also exposes a plain `default.nix`:
+
+```nix
+# /etc/nixos/configuration.nix
+{ pkgs, ... }:
+let
+  tux-rs = import (builtins.fetchTarball {
+    url = "https://github.com/tonky/tux-rs/archive/main.tar.gz";
+  }) { inherit pkgs; };
+in {
+  imports = [ tux-rs.nixosModules.default ];
+  services.tux-daemon.enable = true;
+}
+```
+
+Each package is a plain `callPackage`-style function, so you can also override
+dependencies — for example, pinning a specific `rustPlatform`:
+
+```nix
+pkgs.callPackage (tux-rs-src + "/nix/tux-daemon.nix") {
+  rustPlatform = myPinnedRustPlatform;
+}
 ```
 
 ## License

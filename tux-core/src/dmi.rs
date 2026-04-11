@@ -1,0 +1,315 @@
+//! DMI-based platform detection for TUXEDO laptops.
+//!
+//! Reads DMI data from `/sys/class/dmi/id/` and sysfs to identify the
+//! running hardware model, returning a resolved `DeviceDescriptor`.
+
+use std::io;
+
+use crate::device::DeviceDescriptor;
+use crate::device_table::{fallback_for_platform, lookup_by_sku};
+use crate::platform::Platform;
+
+/// NB04 WMI GUID used for platform detection.
+const NB04_WMI_GUID: &str = "80C9BAA6-AC48-4538-9234-9F81A55E7C85";
+
+/// Abstraction over DMI/sysfs access for testability.
+pub trait DmiSource {
+    /// Read a DMI field (e.g. "board_vendor") from sysfs.
+    fn read_dmi_field(&self, field: &str) -> io::Result<String>;
+
+    /// Check if a WMI GUID directory exists in `/sys/bus/wmi/devices/`.
+    fn wmi_guid_exists(&self, guid: &str) -> bool;
+
+    /// Check if a sysfs path exists.
+    fn sysfs_path_exists(&self, path: &str) -> bool;
+}
+
+/// Real implementation that reads from `/sys/`.
+pub struct SysFsDmiSource;
+
+impl DmiSource for SysFsDmiSource {
+    fn read_dmi_field(&self, field: &str) -> io::Result<String> {
+        let path = format!("/sys/class/dmi/id/{field}");
+        std::fs::read_to_string(&path).map(|s| s.trim().to_string())
+    }
+
+    fn wmi_guid_exists(&self, guid: &str) -> bool {
+        std::path::Path::new(&format!("/sys/bus/wmi/devices/{guid}")).exists()
+    }
+
+    fn sysfs_path_exists(&self, path: &str) -> bool {
+        std::path::Path::new(path).exists()
+    }
+}
+
+/// DMI identification strings read from sysfs.
+#[derive(Debug, Clone)]
+pub struct DmiInfo {
+    pub board_vendor: String,
+    pub board_name: String,
+    pub product_sku: String,
+    pub sys_vendor: String,
+    pub product_name: String,
+    pub product_version: String,
+}
+
+/// Result of successful platform detection.
+#[derive(Debug)]
+pub struct DetectedDevice {
+    /// The resolved device descriptor (from table or fallback).
+    pub descriptor: &'static DeviceDescriptor,
+    /// DMI identification strings.
+    pub dmi: DmiInfo,
+    /// `false` if using a platform fallback instead of an exact SKU match.
+    pub exact_match: bool,
+}
+
+/// Errors that can occur during platform detection.
+#[derive(Debug, thiserror::Error)]
+pub enum DetectionError {
+    /// Cannot read DMI data from sysfs (permissions, missing files).
+    #[error("cannot access DMI data: {0}")]
+    NoDmiAccess(#[from] io::Error),
+
+    /// DMI data was read but no TUXEDO platform could be identified.
+    #[error("unknown platform — DMI: board_vendor={}, product_sku={}", .dmi.board_vendor, .dmi.product_sku)]
+    UnknownPlatform { dmi: Box<DmiInfo> },
+
+    /// Platform was identified but its kernel shim is not loaded.
+    #[error("kernel shim not loaded for platform {platform}")]
+    NoKernelShim { platform: Platform },
+}
+
+/// Read DMI info from the given source.
+pub fn read_dmi_info(source: &dyn DmiSource) -> Result<DmiInfo, DetectionError> {
+    Ok(DmiInfo {
+        board_vendor: source.read_dmi_field("board_vendor")?,
+        board_name: source.read_dmi_field("board_name")?,
+        product_sku: source.read_dmi_field("product_sku")?,
+        sys_vendor: source.read_dmi_field("sys_vendor")?,
+        product_name: source.read_dmi_field("product_name")?,
+        product_version: source.read_dmi_field("product_version")?,
+    })
+}
+
+/// Detect the platform from DMI info and sysfs probing.
+fn detect_platform(source: &dyn DmiSource, dmi: &DmiInfo) -> Option<Platform> {
+    // NB05: board_vendor == "NB05"
+    if dmi.board_vendor == "NB05" {
+        return Some(Platform::Nb05);
+    }
+
+    // NB04: WMI GUID present
+    if source.wmi_guid_exists(NB04_WMI_GUID) {
+        return Some(Platform::Nb04);
+    }
+
+    // Uniwill: platform driver loaded
+    if source.sysfs_path_exists("/sys/devices/platform/tuxedo-uniwill/") {
+        return Some(Platform::Uniwill);
+    }
+
+    // Clevo: platform driver loaded
+    if source.sysfs_path_exists("/sys/devices/platform/tuxedo-clevo/") {
+        return Some(Platform::Clevo);
+    }
+
+    // Tuxi: platform driver loaded
+    if source.sysfs_path_exists("/sys/devices/platform/tuxedo-tuxi/") {
+        return Some(Platform::Tuxi);
+    }
+
+    None
+}
+
+/// Detect the running TUXEDO laptop model.
+///
+/// # Detection flow
+///
+/// 1. Read DMI strings from sysfs
+/// 2. Try exact SKU match in the device table
+/// 3. If no match, detect platform heuristically (board_vendor, WMI, sysfs)
+/// 4. Return platform fallback if platform detected but SKU unknown
+/// 5. Return error if no platform can be identified
+pub fn detect_device(source: &dyn DmiSource) -> Result<DetectedDevice, DetectionError> {
+    let dmi = read_dmi_info(source)?;
+
+    // Step 1: Try exact SKU match
+    if let Some(descriptor) = lookup_by_sku(&dmi.product_sku) {
+        return Ok(DetectedDevice {
+            descriptor,
+            dmi,
+            exact_match: true,
+        });
+    }
+
+    // Step 2: Heuristic platform detection
+    let Some(platform) = detect_platform(source, &dmi) else {
+        return Err(DetectionError::UnknownPlatform { dmi: Box::new(dmi) });
+    };
+
+    // Step 2.5: For platforms detected via non-sysfs signals (NB04 via WMI),
+    // verify the kernel shim is actually loaded.
+    // NB05 is detected by board_vendor and has no sysfs platform path to verify.
+    // Uniwill/Clevo/Tuxi are detected BY sysfs, so shim is inherently present.
+    if platform == Platform::Nb04 && !source.sysfs_path_exists("/sys/devices/platform/tuxedo-nb04/")
+    {
+        return Err(DetectionError::NoKernelShim { platform });
+    }
+
+    // Step 3: Return platform fallback
+    let descriptor = fallback_for_platform(platform);
+    Ok(DetectedDevice {
+        descriptor,
+        dmi,
+        exact_match: false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock::dmi::MockDmiSource;
+
+    #[test]
+    fn exact_sku_match() {
+        let source = MockDmiSource::new().tuxedo_base("PULSE1403");
+        let result = detect_device(&source).unwrap();
+        assert!(result.exact_match);
+        assert_eq!(result.descriptor.product_sku, "PULSE1403");
+        assert_eq!(result.descriptor.platform, Platform::Nb05);
+    }
+
+    #[test]
+    fn nb05_board_vendor_fallback() {
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_NB05_SKU")
+            .with_field("board_vendor", "NB05");
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Nb05);
+    }
+
+    #[test]
+    fn nb04_wmi_guid_detection() {
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_NB04_SKU")
+            .with_wmi_guid(NB04_WMI_GUID)
+            .with_sysfs_path("/sys/devices/platform/tuxedo-nb04/");
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Nb04);
+    }
+
+    #[test]
+    fn nb04_wmi_without_shim_returns_no_kernel_shim() {
+        // WMI GUID present (BIOS advertises NB04) but kernel shim not loaded
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_NB04_SKU")
+            .with_wmi_guid(NB04_WMI_GUID);
+        let err = detect_device(&source).unwrap_err();
+        assert!(matches!(
+            err,
+            DetectionError::NoKernelShim {
+                platform: Platform::Nb04
+            }
+        ));
+        let msg = err.to_string();
+        assert!(msg.contains("kernel shim not loaded"));
+        assert!(msg.contains("NB04"));
+    }
+
+    #[test]
+    fn uniwill_sysfs_fallback() {
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_UW_SKU")
+            .with_sysfs_path("/sys/devices/platform/tuxedo-uniwill/");
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Uniwill);
+    }
+
+    #[test]
+    fn clevo_sysfs_fallback() {
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_CLEVO_SKU")
+            .with_sysfs_path("/sys/devices/platform/tuxedo-clevo/");
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Clevo);
+    }
+
+    #[test]
+    fn tuxi_sysfs_fallback() {
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_TUXI_SKU")
+            .with_sysfs_path("/sys/devices/platform/tuxedo-tuxi/");
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Tuxi);
+    }
+
+    #[test]
+    fn unknown_platform_error() {
+        let source = MockDmiSource::new().tuxedo_base("TOTALLY_UNKNOWN");
+        let err = detect_device(&source).unwrap_err();
+        assert!(matches!(err, DetectionError::UnknownPlatform { .. }));
+        let msg = err.to_string();
+        assert!(msg.contains("unknown platform"));
+        assert!(msg.contains("TUXEDO")); // board_vendor from tuxedo_base
+    }
+
+    #[test]
+    fn no_dmi_access_error() {
+        // Empty source — no fields at all
+        let source = MockDmiSource::new();
+        let err = detect_device(&source).unwrap_err();
+        assert!(matches!(err, DetectionError::NoDmiAccess(_)));
+    }
+
+    #[test]
+    fn dmi_info_populated() {
+        let source = MockDmiSource::new()
+            .with_field("board_vendor", "NB05")
+            .with_field("board_name", "NB05_BOARD")
+            .with_field("product_sku", "PULSE1403")
+            .with_field("sys_vendor", "TUXEDO")
+            .with_field("product_name", "TUXEDO Pulse 14 Gen3")
+            .with_field("product_version", "Rev1");
+        let result = detect_device(&source).unwrap();
+        assert_eq!(result.dmi.board_vendor, "NB05");
+        assert_eq!(result.dmi.board_name, "NB05_BOARD");
+        assert_eq!(result.dmi.product_sku, "PULSE1403");
+        assert_eq!(result.dmi.sys_vendor, "TUXEDO");
+        assert_eq!(result.dmi.product_name, "TUXEDO Pulse 14 Gen3");
+        assert_eq!(result.dmi.product_version, "Rev1");
+    }
+
+    #[test]
+    fn detection_error_messages_are_meaningful() {
+        // UnknownPlatform
+        let source = MockDmiSource::new().tuxedo_base("NOPE");
+        let err = detect_device(&source).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown platform"));
+        assert!(msg.contains("TUXEDO"));
+        assert!(msg.contains("NOPE"));
+
+        // NoDmiAccess
+        let source = MockDmiSource::new();
+        let err = detect_device(&source).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("cannot access DMI data"));
+    }
+
+    #[test]
+    #[ignore] // Only runs on actual TUXEDO hardware with sysfs
+    fn real_sysfs_dmi_source() {
+        let source = SysFsDmiSource;
+        // Just verify we can read at least board_vendor without panicking
+        let result = source.read_dmi_field("board_vendor");
+        assert!(result.is_ok(), "should be able to read board_vendor");
+        let vendor = result.unwrap();
+        assert!(!vendor.is_empty(), "board_vendor should not be empty");
+    }
+}

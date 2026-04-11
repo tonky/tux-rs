@@ -1,0 +1,14 @@
+[package]
+name = "tux-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hardware model system for TUXEDO laptops"
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+tempfile = "3"
+
+[dev-dependencies]

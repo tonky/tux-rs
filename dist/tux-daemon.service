@@ -1,0 +1,13 @@
+[Unit]
+Description=TUXEDO Hardware Daemon
+After=dbus.service
+Requires=dbus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tux-daemon
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+vendor/
+tmp/
+.flox/
+
+*.cmd
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+Module.symvers
+modules.order
+.module-common.o
+
+# Build artifacts
+/target/
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db

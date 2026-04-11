@@ -30,6 +30,36 @@ See [docs/architecture.md](docs/architecture.md) for the architecture deep dive,
 
 `tux-kmod/` contains 5 minimal C kernel shims for raw hardware access via sysfs.
 
+## Development
+
+Requires Rust stable and [just](https://github.com/casey/just).
+
+### Edit — Test — Run
+
+```sh
+just check              # fmt + clippy + test
+just daemon-debug       # stop systemd service, run daemon with debug logging
+just tui                # launch TUI against the running daemon
+just live-test          # regression tests against a live daemon
+```
+
+### Individual commands
+
+```sh
+just build              # build all crates
+just test               # run all tests
+just clippy             # lint with warnings as errors
+just fmt                # check formatting
+```
+
+### Kernel module development
+
+```sh
+just kmod-swap                        # unload vendor modules, build + load tuxedo-uniwill
+just kmod-reload tuxedo-uniwill       # rebuild + reload a single module
+just kmod-build                       # build all modules
+```
+
 ## Installation
 
 ### 1. Kernel modules (DKMS)
@@ -50,36 +80,6 @@ just deploy-daemon      # build release, install to /usr/bin, start systemd serv
 ```sh
 just install-tui        # install tux-tui binary
 tux-tui                 # run (daemon must be running)
-```
-
-## Development
-
-Requires Rust stable and [just](https://github.com/casey/just).
-
-### Edit — Test — Run
-
-```sh
-just check              # fmt + clippy + test (492 tests)
-just daemon-debug       # stop systemd service, run daemon with debug logging
-just run-tui            # launch TUI against the running daemon
-just live-test          # regression tests against a live daemon
-```
-
-### Individual commands
-
-```sh
-just build              # build all crates
-just test               # run all tests
-just clippy             # lint with warnings as errors
-just fmt                # check formatting
-```
-
-### Kernel module development
-
-```sh
-just kmod-build                       # build all modules
-just kmod-reload tuxedo-uniwill       # rebuild + reload a single module
-just kmod-install                     # full DKMS install
 ```
 
 ## License

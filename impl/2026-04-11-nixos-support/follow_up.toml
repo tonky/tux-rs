@@ -1,0 +1,8 @@
+# follow_up.toml
+#
+# Use this file to track small refactorings, future considerations,
+# and fixes that are out of scope for the current task.
+
+[tasks]
+"Re-enable doCheck in Rust packages" = "E2E tests require D-Bus in the Nix sandbox. Need to configure dbus-run-session or similar in the checkPhase."
+"Improve kernel module packaging" = "Currently tux-kmod builds against linuxPackages_latest. Might need a more flexible way to handle multiple kernel versions in the flake."

@@ -82,6 +82,35 @@ just install-tui        # install tux-tui binary
 tux-tui                 # run (daemon must be running)
 ```
 
+### NixOS (Flakes)
+
+Add `tux-rs` to your flake inputs:
+
+```nix
+{
+  inputs.tux-rs.url = "github:tuxedocomputers/tux-rs";
+}
+```
+
+Then enable the module in your NixOS configuration:
+
+```nix
+{ inputs, ... }: {
+  imports = [ inputs.tux-rs.nixosModules.default ];
+  services.tux-daemon.enable = true;
+}
+```
+
+This will automatically:
+- Install `tux-daemon` and `tux-tui`.
+- Configure the systemd service and D-Bus policy.
+- Build and load the necessary kernel modules for your kernel version.
+
+You can also run the TUI directly without installing:
+```sh
+nix run github:tuxedocomputers/tux-rs#tux-tui
+```
+
 ## License
 
 GPL-3.0-or-later

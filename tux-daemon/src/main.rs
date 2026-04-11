@@ -54,9 +54,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let debug_mode = std::env::args().any(|a| a == "--debug" || a == "-d");
+    let mock_mode = std::env::args().any(|a| a == "--mock");
 
     // 1. Load config (before tracing, so we can set the log level).
-    let config = DaemonConfig::load(Path::new(config::DEFAULT_CONFIG_PATH));
+    let config = if mock_mode {
+        DaemonConfig::default()
+    } else {
+        DaemonConfig::load(Path::new(config::DEFAULT_CONFIG_PATH))
+    };
     let daemon_config_arc = Arc::new(RwLock::new(config.clone()));
 
     // 2. Initialize tracing.
@@ -77,6 +82,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     info!("tux-daemon v{} starting", tux_core::version());
+    if mock_mode {
+        info!("mock mode enabled via --mock flag");
+    }
 
     // 2b. Load custom devices configuration if present.
     let custom_devices_path = Path::new("/etc/tux-daemon/custom_devices.toml");
@@ -108,23 +116,34 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 3. Detect device.
-    let dmi_source = tux_core::dmi::SysFsDmiSource;
-    let device = match tux_core::dmi::detect_device(&dmi_source) {
-        Ok(dev) => {
-            info!(
-                "detected: {} (platform={:?}, exact={})",
-                dev.descriptor.name, dev.descriptor.platform, dev.exact_match
-            );
-            dev
-        }
-        Err(e) => {
-            error!("failed to detect device: {e}");
-            anyhow::bail!("cannot detect TUXEDO device: {e}");
+    let device = if mock_mode {
+        let source = tux_core::mock::dmi::MockDmiSource::new().tuxedo_base("PULSE1403");
+        tux_core::dmi::detect_device(&source).expect("mock detection should not fail")
+    } else {
+        let dmi_source = tux_core::dmi::SysFsDmiSource;
+        match tux_core::dmi::detect_device(&dmi_source) {
+            Ok(dev) => {
+                info!(
+                    "detected: {} (platform={:?}, exact={})",
+                    dev.descriptor.name, dev.descriptor.platform, dev.exact_match
+                );
+                dev
+            }
+            Err(e) => {
+                error!("failed to detect device: {e}");
+                anyhow::bail!("cannot detect TUXEDO device: {e}");
+            }
         }
     };
 
     // 4. Initialize fan backend.
-    let backend = platform::init_fan_backend(&device);
+    let backend = if mock_mode {
+        Some(Arc::new(tux_core::mock::fan::MockFanBackend::new(
+            device.descriptor.fans.count,
+        )) as Arc<dyn tux_core::backend::fan::FanBackend>)
+    } else {
+        platform::init_fan_backend(&device)
+    };
 
     // 5. Safety reset: restore all fans to auto before applying any custom curve.
     //    This ensures safe state even after a crash + restart.

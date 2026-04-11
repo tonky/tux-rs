@@ -10,10 +10,10 @@
     };
   };
 
-  # The flake is a thin wrapper around ./default.nix and ./nix/*.nix so that
-  # classic (non-flake) Nix consumers can use the same packaging. The flake's
-  # job is to pin a rust toolchain via rust-overlay, expose devShells, and run
-  # the VM check.
+  # The flake is a thin wrapper around ./default.nix so classic (non-flake)
+  # Nix consumers share the exact same packaging code. The flake's job is to
+  # pin a rust toolchain via rust-overlay, expose devShells, and run the VM
+  # check.
   outputs = { self, nixpkgs, flake-utils, rust-overlay, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
@@ -22,21 +22,13 @@
           overlays = [ (import rust-overlay) ];
         };
 
+        # Delegate all package building to ./default.nix so there's a single
+        # source of truth. rust-overlay is already applied to `pkgs`, so
+        # default.nix's rust-bin detection picks it up without needing to
+        # appendOverlays again.
+        tux-rs = import ./. { inherit pkgs; };
+
         rustToolchain = pkgs.rust-bin.stable.latest.default;
-
-        rustPlatform = pkgs.makeRustPlatform {
-          rustc = rustToolchain;
-          cargo = rustToolchain;
-        };
-
-        # Build packages via the shared nix/*.nix files, but inject the
-        # rust-overlay-pinned rustPlatform so flake consumers get a predictable
-        # toolchain regardless of what nixpkgs currently ships.
-        tux-daemon = pkgs.callPackage ./nix/tux-daemon.nix { inherit rustPlatform; };
-        tux-tui = pkgs.callPackage ./nix/tux-tui.nix { inherit rustPlatform; };
-        tux-kmod = pkgs.callPackage ./nix/tux-kmod.nix {
-          kernel = pkgs.linuxPackages_latest.kernel;
-        };
 
         testing = import (nixpkgs + "/nixos/lib/testing-python.nix") {
           inherit system pkgs;
@@ -44,8 +36,8 @@
       in
       {
         packages = {
-          inherit tux-daemon tux-tui tux-kmod;
-          default = tux-daemon;
+          inherit (tux-rs) tux-daemon tux-tui tux-kmod;
+          default = tux-rs.tux-daemon;
         };
 
         devShells.default = pkgs.mkShell {
@@ -93,11 +85,11 @@
     ) // {
       # System-independent outputs.
       #
-      # The overlay here references `self.packages.${system}.*` rather than
-      # `final.callPackage ./nix/*.nix`, so that flake consumers importing
-      # `inputs.tux-rs.nixosModules.default` get the rust-overlay-pinned
-      # binaries. Non-flake consumers get a generic overlay from
-      # `./nix/overlay.nix` via `./default.nix`.
+      # The flake's overlay references `self.packages.${system}.*` (not
+      # `final.callPackage ./nix/*.nix`) so flake consumers importing
+      # `inputs.tux-rs.nixosModules.default` get rust-overlay-pinned binaries
+      # without needing to pass `rust-overlay` through themselves. Non-flake
+      # consumers get the generic `nix/overlay.nix` via `./default.nix`.
       overlays.default = final: prev: {
         tux-daemon = self.packages.${final.system}.tux-daemon;
         tux-tui = self.packages.${final.system}.tux-tui;

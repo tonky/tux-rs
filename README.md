@@ -113,7 +113,11 @@ nix run github:tonky/tux-rs#tux-tui
 
 ### NixOS (classic Nix, no flakes)
 
-If you're not using flakes, the repository also exposes a plain `default.nix`:
+If you're not using flakes, the repository also exposes a plain `default.nix`
+that accepts `{ pkgs, nixpkgs, rust-overlay }` as an attribute set, so you can
+pin your own dependency versions.
+
+#### Simple usage
 
 ```nix
 # /etc/nixos/configuration.nix
@@ -128,8 +132,41 @@ in {
 }
 ```
 
-Each package is a plain `callPackage`-style function, so you can also override
-dependencies — for example, pinning a specific `rustPlatform`:
+#### npins-style usage (pinned nixpkgs + rust-overlay)
+
+```sh
+npins add github nixos nixpkgs
+npins add github oxalica rust-overlay
+npins add github tonky tux-rs
+```
+
+```nix
+{ ... }:
+let
+  sources = import ./npins;
+  pkgs = import sources.nixpkgs {
+    overlays = [ (import sources.rust-overlay) ];
+  };
+  tux-rs = import sources.tux-rs {
+    inherit pkgs;
+    nixpkgs = sources.nixpkgs;
+    rust-overlay = sources.rust-overlay;
+  };
+in {
+  imports = [ tux-rs.nixosModules.default ];
+  services.tux-daemon.enable = true;
+
+  # Optional: use the rust-overlay-pinned binaries instead of the ones the
+  # overlay builds with nixpkgs' ambient rustPlatform.
+  services.tux-daemon.package = tux-rs.tux-daemon;
+  services.tux-daemon.tui.package = tux-rs.tux-tui;
+}
+```
+
+#### Per-package overrides
+
+Each `nix/*.nix` is a plain `callPackage`-style function, so you can override
+any dependency — for example, pinning a specific `rustPlatform` yourself:
 
 ```nix
 pkgs.callPackage (tux-rs-src + "/nix/tux-daemon.nix") {

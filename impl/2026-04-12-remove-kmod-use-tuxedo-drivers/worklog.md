@@ -321,3 +321,69 @@ All 4 phases from external review implemented. 629 tests passing (up from 608), 
 - Confirmed local file now matches rustfmt single-line output for the reported block.
 - Validation:
   - `cargo fmt --all -- --check` passed.
+
+## Stage 7 follow-up — Fan fault fallback softened on IBP Gen8 (2026-04-12)
+- Investigated periodic fan bursts on InfinityBook Pro 16 Gen8 (Uniwill path).
+- Confirmed fan engine safety behavior was too aggressive for transient temperature-read faults.
+- Updated `tux-daemon/src/fan_engine.rs`:
+  - keep the previously computed PWM for the first 4 consecutive temp-read failures
+  - on the 5th consecutive failure, ramp to 60% safety PWM instead of 100%
+- Added/updated regression tests for:
+  - transient read failure keeps prior PWM
+  - persistent read failure ramps to reduced safety speed
+- Validation:
+  - `cargo test -p tux-daemon transient_temp_read_failure_keeps_last_pwm`
+  - `cargo test -p tux-daemon repeated_temp_read_failure_sets_reduced_safety_speed`
+  - `cargo clippy -p tux-daemon -- -D warnings`
+  - `just test`
+  - `just ci`
+
+## Stage 7 follow-up — Implausible temp filter with CPU load gate (2026-04-12)
+- Added implausible-temperature handling in `tux-daemon/src/fan_engine.rs` for Uniwill-style spikes (e.g. 120°C).
+- Policy:
+  - requires 5 consecutive implausible samples before acting on them;
+  - if CPU load is below 30%, skips acting on the implausible sample and keeps previous PWM.
+- Reused existing daemon CPU sampler (`/proc/stat`) via an internal fan-engine load source.
+- Added regression tests:
+  - `implausible_temp_with_low_cpu_load_keeps_previous_pwm`
+  - `implausible_temp_requires_five_consecutive_with_high_cpu_load`
+- Validation:
+  - `cargo test -p tux-daemon fan_engine -- --nocapture` (13 passed)
+
+## Stage 7 follow-up — Prefer coretemp/hwmon CPU temp for fan curve (2026-04-12)
+- Updated fan control temperature source in `tux-daemon/src/fan_engine.rs`:
+  - Prefer CPU hwmon sensors (`coretemp`, `k10temp`, `zenpower`, `cpu_thermal`) for control-loop temperature.
+  - If hwmon read fails, fall back to backend temperature (`tuxedo-uw-fan` / `tuxedo_io` path).
+- Added `HwmonCpuTempSource` with sensor discovery and label preference (`Package id`/`Tdie`/`Tctl` labels preferred when available).
+- Existing implausible-temp filtering and CPU-load gating continue to apply to the selected control temperature.
+- Added regression tests:
+  - `read_control_temp_prefers_hwmon_source`
+  - `read_control_temp_falls_back_to_backend`
+  - `hwmon_cpu_temp_source_prefers_package_label`
+- Ensured tests are deterministic by disabling real host hwmon probing in test default source unless explicitly mocked.
+- Validation:
+  - `cargo test -p tux-daemon fan_engine -- --nocapture` (16 passed)
+
+## Stage 7 follow-up — Power unplug detection and profile auto-switch reliability (2026-04-12)
+- Investigated report: unplugging AC did not switch daemon/TUI power state to battery; battery profile was not applied.
+- Root cause likely multi-source power-supply setups where a single watched `AC/ADP` online node is not authoritative.
+- Updated `tux-daemon/src/power_monitor.rs`:
+  - detect all AC-like online sources (prefer `type=Mains`, plus `AC*`/`ADP*` fallback),
+  - derive power state from all sources (`AC` if any online, otherwise `Battery`),
+  - watch all discovered `online` files and supply directories,
+  - add periodic 2s resync check to prevent missed state changes even if inotify event is dropped.
+- Added tests for multi-path state aggregation:
+  - any-online => `Ac`
+  - all-offline => `Battery`
+- Validation:
+  - `cargo test -p tux-daemon power_monitor -- --nocapture` (9 passed)
+
+## Stage 7 follow-up — Default fan polling semantics and hysteresis cleanup (2026-04-12)
+- Corrected `FanConfig::default()` so changing temperatures poll faster than stable ones:
+  - `active_poll_ms = 1000`
+  - `idle_poll_ms = 2000`
+- Raised default `hysteresis_degrees` from `3` to `10` to reduce needless fan curve churn on small temperature fluctuations.
+- Added assertions in `tux-core/src/fan_curve.rs` tests to lock the intended default semantics.
+- Validation:
+  - `just test`
+  - `just ci`

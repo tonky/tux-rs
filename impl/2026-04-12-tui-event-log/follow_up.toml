@@ -1,0 +1,17 @@
+title = "Follow-up tasks for: TUI Event Log"
+
+[[task]]
+id = "f001"
+description = "Confirm whether the event log should be a dedicated tab or an overlay/popup before implementation."
+status = "done"
+priority = "high"
+context = "Current plan recommends a dedicated tab for simpler integration and testing."
+reasoning = "This affects keybindings, navigation, and rendering architecture."
+
+[[task]]
+id = "f002"
+description = "Confirm the desired first-pass CLI behavior for the event log."
+status = "open"
+priority = "medium"
+context = "The TUI currently supports headless dump commands, but there is no shared event-log source yet."
+reasoning = "CLI scope determines whether stage 2 is a simple local snapshot or requires shared debug plumbing."

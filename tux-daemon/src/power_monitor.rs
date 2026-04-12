@@ -27,23 +27,44 @@ fn power_dir_watch_mask() -> inotify::WatchMask {
         | inotify::WatchMask::MOVED_TO
 }
 
-/// Find the sysfs `online` file for the AC power supply.
-fn find_ac_online_path() -> io::Result<PathBuf> {
+/// Refresh interval used as a fallback in case inotify misses an event.
+const POWER_RESYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Find sysfs `online` files for AC-like power supplies.
+fn find_ac_online_paths() -> io::Result<Vec<PathBuf>> {
     let base = Path::new("/sys/class/power_supply");
+    let mut paths = Vec::new();
     for entry in std::fs::read_dir(base)?.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with("AC") || name_str.starts_with("ADP") {
-            let online = entry.path().join("online");
-            if online.exists() {
-                return Ok(online);
-            }
+        let supply_dir = entry.path();
+        let online = supply_dir.join("online");
+        if !online.exists() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        let supply_type = std::fs::read_to_string(supply_dir.join("type"))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        let is_ac_like = supply_type.eq_ignore_ascii_case("Mains")
+            || name.starts_with("AC")
+            || name.starts_with("ADP");
+
+        if is_ac_like {
+            paths.push(online);
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "no AC/ADP power supply found in /sys/class/power_supply/",
-    ))
+
+    if paths.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no AC-like power supply with online file found in /sys/class/power_supply/",
+        ));
+    }
+
+    paths.sort();
+    Ok(paths)
 }
 
 /// Detect the current power state from a sysfs `online` file.
@@ -59,10 +80,35 @@ pub fn detect_power_state(online_path: &Path) -> io::Result<PowerState> {
     }
 }
 
+/// Detect state from all AC-like online paths:
+/// - AC if any source is online
+/// - Battery if all are offline
+fn detect_power_state_from_paths(online_paths: &[PathBuf]) -> io::Result<PowerState> {
+    let mut any_online = false;
+    for p in online_paths {
+        match detect_power_state(p) {
+            Ok(PowerState::Ac) => {
+                any_online = true;
+            }
+            Ok(PowerState::Battery) => {}
+            Err(e) => {
+                // Don't fail hard on a single flaky supply node.
+                warn!("failed reading {}: {e}", p.display());
+            }
+        }
+    }
+
+    if any_online {
+        Ok(PowerState::Ac)
+    } else {
+        Ok(PowerState::Battery)
+    }
+}
+
 /// Watches sysfs power supply for AC/battery transitions via inotify.
 pub struct PowerStateMonitor {
     state_tx: watch::Sender<PowerState>,
-    online_path: PathBuf,
+    online_paths: Vec<PathBuf>,
 }
 
 impl PowerStateMonitor {
@@ -70,23 +116,26 @@ impl PowerStateMonitor {
     ///
     /// Uses the system sysfs path unless one is provided.
     pub fn new(online_path: Option<PathBuf>) -> io::Result<(Self, watch::Receiver<PowerState>)> {
-        let online_path = match online_path {
-            Some(p) => p,
-            None => find_ac_online_path()?,
+        let online_paths = match online_path {
+            Some(p) => vec![p],
+            None => find_ac_online_paths()?,
         };
 
-        let initial_state = detect_power_state(&online_path)?;
+        let initial_state = detect_power_state_from_paths(&online_paths)?;
         let (state_tx, state_rx) = watch::channel(initial_state);
         info!(
-            "power monitor initialized: {:?} (watching {})",
+            "power monitor initialized: {:?} (watching {} source(s))",
             initial_state,
-            online_path.display()
+            online_paths.len()
         );
+        for p in &online_paths {
+            debug!("power monitor source: {}", p.display());
+        }
 
         Ok((
             Self {
                 state_tx,
-                online_path,
+                online_paths,
             },
             state_rx,
         ))
@@ -106,24 +155,25 @@ impl PowerStateMonitor {
             }
         };
 
-        // Watch the online file directly. Power supply state changes are often
+        // Watch online files directly. Power supply state changes are often
         // reported as ATTRIB updates rather than plain MODIFY writes.
         let file_mask = power_file_watch_mask();
-        if let Err(e) = inotify.watches().add(&self.online_path, file_mask) {
-            warn!(
-                "failed to watch {}: {e}, power monitoring disabled",
-                self.online_path.display()
-            );
-            return;
+        for online_path in &self.online_paths {
+            if let Err(e) = inotify.watches().add(online_path, file_mask) {
+                warn!("failed to watch {}: {e}", online_path.display());
+            }
         }
 
-        // Also watch parent dir as a fallback for drivers that replace/recreate
-        // the online file and only emit directory-level notifications.
-        let watch_path = self
-            .online_path
-            .parent()
-            .unwrap_or(Path::new("/sys/class/power_supply"));
-        let _ = inotify.watches().add(watch_path, power_dir_watch_mask());
+        // Also watch parent dirs as a fallback for drivers that replace/recreate
+        // online files and only emit directory-level notifications.
+        for online_path in &self.online_paths {
+            if let Some(parent) = online_path.parent() {
+                let _ = inotify.watches().add(parent, power_dir_watch_mask());
+            }
+        }
+        let _ = inotify
+            .watches()
+            .add(Path::new("/sys/class/power_supply"), power_dir_watch_mask());
 
         // The buffer must live as long as the event stream — both are in this scope.
         let mut buffer = [0u8; 1024];
@@ -134,6 +184,9 @@ impl PowerStateMonitor {
                 return;
             }
         };
+
+        let mut resync_tick = tokio::time::interval(POWER_RESYNC_INTERVAL);
+        resync_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -153,7 +206,7 @@ impl PowerStateMonitor {
                     // Debounce: wait 500ms before reading.
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-                    match detect_power_state(&self.online_path) {
+                    match detect_power_state_from_paths(&self.online_paths) {
                         Ok(new_state) => {
                             let old_state = *self.state_tx.borrow();
                             if new_state != old_state {
@@ -166,6 +219,18 @@ impl PowerStateMonitor {
                         Err(e) => {
                             warn!("failed to read power state: {e}");
                         }
+                    }
+                }
+                _ = resync_tick.tick() => {
+                    match detect_power_state_from_paths(&self.online_paths) {
+                        Ok(new_state) => {
+                            let old_state = *self.state_tx.borrow();
+                            if new_state != old_state {
+                                info!("power state changed (periodic): {:?} → {:?}", old_state, new_state);
+                                let _ = self.state_tx.send(new_state);
+                            }
+                        }
+                        Err(e) => warn!("periodic power-state check failed: {e}"),
                     }
                 }
                 _ = shutdown.recv() => {
@@ -216,6 +281,30 @@ mod tests {
 
         let (_monitor, rx) = PowerStateMonitor::new(Some(online)).unwrap();
         assert_eq!(*rx.borrow(), PowerState::Ac);
+    }
+
+    #[test]
+    fn detect_power_state_from_multiple_paths_any_online_is_ac() {
+        let dir = tempfile::tempdir().unwrap();
+        let p0 = dir.path().join("ac0_online");
+        let p1 = dir.path().join("ac1_online");
+        std::fs::write(&p0, "0\n").unwrap();
+        std::fs::write(&p1, "1\n").unwrap();
+
+        let state = detect_power_state_from_paths(&[p0, p1]).unwrap();
+        assert_eq!(state, PowerState::Ac);
+    }
+
+    #[test]
+    fn detect_power_state_from_multiple_paths_all_offline_is_battery() {
+        let dir = tempfile::tempdir().unwrap();
+        let p0 = dir.path().join("ac0_online");
+        let p1 = dir.path().join("ac1_online");
+        std::fs::write(&p0, "0\n").unwrap();
+        std::fs::write(&p1, "0\n").unwrap();
+
+        let state = detect_power_state_from_paths(&[p0, p1]).unwrap();
+        assert_eq!(state, PowerState::Battery);
     }
 
     #[test]

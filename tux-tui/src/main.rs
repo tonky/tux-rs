@@ -217,8 +217,10 @@ async fn run_app(
             events.push(ev);
         }
 
-        // Process all collected events; track whether any are interactive (key/resize).
+        // Process all collected events; track whether any are interactive (key/resize)
+        // and whether the periodic render clock ticked.
         let mut has_interactive = false;
+        let mut has_render_tick = false;
         for event in events {
             match event {
                 AppEvent::Key(key) => {
@@ -237,13 +239,14 @@ async fn run_app(
                     model.terminal_size = (w, h);
                 }
                 AppEvent::Tick => {
-                    // Tick is the frame clock — render if data changed since last render.
+                    // Tick is the frame clock for periodic repaint.
+                    has_render_tick = true;
                 }
             }
         }
 
-        // Render: immediately on key/resize, on tick only if dirty.
-        if has_interactive || model.needs_render {
+        // Render immediately on interaction/data changes and also on each periodic tick.
+        if has_interactive || has_render_tick || model.needs_render {
             terminal.draw(|frame| view::render(frame, &model))?;
             model.needs_render = false;
         }

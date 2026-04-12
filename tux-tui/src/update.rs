@@ -446,6 +446,8 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
         DbusUpdate::DashboardTelemetry {
             cpu_temp,
             fan_speeds,
+            fan_duties,
+            fan_rpm_available,
             power_state,
             cpu_freq_mhz,
             active_profile,
@@ -466,20 +468,33 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                 8
             };
             model.dashboard.fan_data.truncate(max_fans);
-            let max_rpm = model.dashboard.max_rpm;
-            for (i, &rpm) in fan_speeds.iter().take(max_fans).enumerate() {
+            for i in 0..fan_speeds.len().min(max_fans) {
                 if i >= model.dashboard.fan_data.len() {
                     model
                         .dashboard
                         .fan_data
                         .push(crate::model::FanData::default());
                 }
+                let rpm = fan_speeds.get(i).copied().unwrap_or(0);
+                let duty = fan_duties.get(i).copied().unwrap_or(0);
+                let rpm_avail = fan_rpm_available.get(i).copied().unwrap_or(false);
                 model.dashboard.fan_data[i].rpm = rpm;
+                model.dashboard.fan_data[i].duty_percent = duty;
+                model.dashboard.fan_data[i].rpm_available = rpm_avail;
+                // Derive speed_percent from PWM duty (authoritative), not RPM.
                 model.dashboard.fan_data[i].speed_percent =
-                    ((rpm as f32 / max_rpm as f32) * 100.0).min(100.0) as u8;
+                    ((duty as f32 * 100.0) / 255.0).min(100.0) as u8;
             }
-            // Push average fan speed to history.
-            if !fan_speeds.is_empty() {
+            // Push average fan speed to history (derived from duty, not RPM).
+            if !fan_duties.is_empty() {
+                let avg = fan_duties.iter().map(|&d| d as f32 * 100.0 / 255.0).sum::<f32>()
+                    / fan_duties.len() as f32;
+                let avg_clamped = avg.min(100.0);
+                model.dashboard.push_speed(avg_clamped);
+                model.fan_curve.current_speed = Some(avg_clamped as u8);
+            } else if !fan_speeds.is_empty() {
+                // Fallback when duty data is absent (older daemon).
+                let max_rpm = model.dashboard.max_rpm;
                 let avg = fan_speeds.iter().sum::<u32>() as f32
                     / fan_speeds.len() as f32
                     / max_rpm as f32
@@ -506,6 +521,17 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             }
             if let Some(freqs) = cpu_freq_per_core {
                 model.dashboard.cpu_freq_per_core = freqs;
+            }
+        }
+        DbusUpdate::FanHealth(toml_str) => {
+            if let Ok(health) =
+                toml::from_str::<tux_core::dbus_types::FanHealthResponse>(&toml_str)
+            {
+                model.dashboard.fan_health = if health.status == "ok" {
+                    None
+                } else {
+                    Some(health.status)
+                };
             }
         }
         DbusUpdate::FanInfo { num_fans, max_rpm } => {
@@ -889,6 +915,8 @@ mod tests {
             DbusUpdate::DashboardTelemetry {
                 cpu_temp: Some(68.5),
                 fan_speeds: vec![2400, 2300],
+                fan_duties: vec![128, 115],
+                fan_rpm_available: vec![true, true],
                 power_state: Some("ac".to_string()),
                 cpu_freq_mhz: Some(3200),
                 active_profile: Some("Office".to_string()),
@@ -950,6 +978,8 @@ mod tests {
             DbusUpdate::DashboardTelemetry {
                 cpu_temp: Some(50.0),
                 fan_speeds: vec![],
+                fan_duties: vec![],
+                fan_rpm_available: vec![],
                 power_state: None,
                 cpu_freq_mhz: None,
                 active_profile: None,
@@ -962,6 +992,50 @@ mod tests {
         assert!(model.dashboard.speed_history.is_empty());
         assert!(model.dashboard.cpu_freq_mhz.is_none());
         assert!(model.dashboard.active_profile.is_none());
+    }
+
+    #[test]
+    fn speed_percent_derived_from_duty_not_rpm() {
+        let mut model = Model::new();
+        // duty=255 → speed_percent should be 100%, regardless of rpm=0.
+        handle_data(
+            &mut model,
+            DbusUpdate::DashboardTelemetry {
+                cpu_temp: None,
+                fan_speeds: vec![0],
+                fan_duties: vec![255],
+                fan_rpm_available: vec![false],
+                power_state: None,
+                cpu_freq_mhz: None,
+                active_profile: None,
+                cpu_load_overall: None,
+                cpu_load_per_core: None,
+                cpu_freq_per_core: None,
+            },
+        );
+        assert_eq!(model.dashboard.fan_data[0].speed_percent, 100);
+        assert!(!model.dashboard.fan_data[0].rpm_available);
+    }
+
+    #[test]
+    fn fan_health_update_sets_dashboard_state() {
+        let mut model = Model::new();
+        handle_data(
+            &mut model,
+            DbusUpdate::FanHealth("status = \"degraded\"\nconsecutive_failures = 7\n".to_string()),
+        );
+        assert_eq!(model.dashboard.fan_health.as_deref(), Some("degraded"));
+    }
+
+    #[test]
+    fn fan_health_ok_clears_state() {
+        let mut model = Model::new();
+        model.dashboard.fan_health = Some("degraded".to_string());
+        handle_data(
+            &mut model,
+            DbusUpdate::FanHealth("status = \"ok\"\nconsecutive_failures = 0\n".to_string()),
+        );
+        assert!(model.dashboard.fan_health.is_none());
     }
 
     #[test]

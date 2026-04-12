@@ -408,8 +408,10 @@ async fn main() -> anyhow::Result<()> {
     )));
 
     // 8. Spawn fan curve engine (if fan control is available).
+    let fan_failure_counter: std::sync::Arc<std::sync::atomic::AtomicU32>;
     let engine_handle = if let Some(ref backend) = backend {
         let mut engine = fan_engine::FanCurveEngine::new(backend.clone(), config_rx.clone());
+        fan_failure_counter = engine.failure_counter();
         let shutdown_rx = shutdown_tx.subscribe();
         let handle = tokio::spawn(async move {
             engine.run(shutdown_rx).await;
@@ -417,6 +419,7 @@ async fn main() -> anyhow::Result<()> {
         info!("fan curve engine started");
         Some(handle)
     } else {
+        fan_failure_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         info!("no fan backend for this platform, fan control disabled");
         None
     };
@@ -440,6 +443,7 @@ async fn main() -> anyhow::Result<()> {
         applier,
         power_rx,
         daemon_config: daemon_config_arc,
+        fan_failure_counter,
     })
     .await?;
 

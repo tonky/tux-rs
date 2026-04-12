@@ -229,4 +229,43 @@ mod tests {
         assert_eq!(b2.num_fans(), 2);
         assert_eq!(b3.num_fans(), 3);
     }
+
+    #[test]
+    fn read_temp_fails_on_ioctl_error() {
+        let arc = Arc::new(MockTuxedoIo::new());
+        arc.set_fail_reads(true);
+        let backend = TdClevoFanBackend::new(arc as Arc<dyn TuxedoIo>, 2);
+        assert!(backend.read_temp().is_err(), "read_temp should propagate ioctl error");
+    }
+
+    #[test]
+    fn write_pwm_fails_on_ioctl_write_error() {
+        let (arc, backend) = setup_mock(2);
+        arc.set_fail_writes(true);
+        assert!(
+            backend.write_pwm(0, 128).is_err(),
+            "write_pwm should propagate write failure"
+        );
+    }
+
+    #[test]
+    fn write_pwm_partial_failure_write_fails_after_read_succeeds() {
+        // Read succeeds (fan info available), but write is injected to fail.
+        let (arc, backend) = setup_mock(2);
+        // Reads are fine, only writes fail.
+        arc.set_fail_writes(true);
+        // write_pwm does read-modify-write: reads duty from fan info, then writes packed speed.
+        let result = backend.write_pwm(1, 0xAA);
+        assert!(result.is_err(), "write_pwm should fail when the write ioctl fails");
+    }
+
+    #[test]
+    fn set_auto_fails_on_ioctl_write_error() {
+        let (arc, backend) = setup_mock(2);
+        arc.set_fail_writes(true);
+        assert!(
+            backend.set_auto(0).is_err(),
+            "set_auto should propagate write failure"
+        );
+    }
 }

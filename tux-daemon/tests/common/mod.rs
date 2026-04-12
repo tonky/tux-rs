@@ -159,6 +159,15 @@ impl TestDaemon {
 
         let (_power_tx, power_rx) = watch::channel(tux_daemon::power_monitor::PowerState::Ac);
 
+        // Start fan engine and extract its failure counter before moving it.
+        let engine_backend = fan_backend.clone() as Arc<dyn FanBackend>;
+        let mut engine = FanCurveEngine::new(engine_backend, config_rx.clone());
+        let fan_failure_counter = engine.failure_counter();
+        let engine_shutdown = shutdown_tx.subscribe();
+        let engine_handle = tokio::spawn(async move {
+            engine.run(engine_shutdown).await;
+        });
+
         let connection = tux_daemon::dbus::serve_on_bus(tux_daemon::dbus::DbusConfig {
             bus_type: tux_daemon::dbus::BusType::Session,
             device,
@@ -179,17 +188,10 @@ impl TestDaemon {
             daemon_config: std::sync::Arc::new(std::sync::RwLock::new(
                 tux_daemon::config::DaemonConfig::default(),
             )),
+            fan_failure_counter,
         })
         .await
         .expect("failed to start D-Bus service on session bus");
-
-        // Start fan engine so curve changes actually get applied.
-        let engine_backend = fan_backend.clone() as Arc<dyn FanBackend>;
-        let mut engine = FanCurveEngine::new(engine_backend, config_rx);
-        let engine_shutdown = shutdown_tx.subscribe();
-        let engine_handle = tokio::spawn(async move {
-            engine.run(engine_shutdown).await;
-        });
 
         Self {
             connection,

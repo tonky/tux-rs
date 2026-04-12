@@ -118,3 +118,31 @@ Two sub-agents reviewed all implemented changes for conformance and code quality
 - f004: Device table SKU sweep vs tuxedo-drivers incomplete.
 
 All tests passing (648+), zero clippy warnings after all fixes.
+
+## Stage 7 — Post-migration polish (2026-04-12)
+
+All 4 phases from external review implemented. 629 tests passing (up from 608), 0 clippy warnings.
+
+**Phase B (stale comment):**
+- `td_uniwill.rs` doc comment: removed "consistent with the legacy sysfs-based `UniwillFanBackend`" — that backend is gone.
+
+**Phase A (fan telemetry accuracy):**
+- `tux-core/src/dbus_types.rs`: added `rpm_available: bool` (#[serde(default)]) to `FanData`; added new `FanHealthResponse { status, consecutive_failures }` struct.
+- `tux-daemon/src/dbus/fan.rs`: added `FanInterface::failure_counter` field (`Arc<AtomicU32>`); added `get_fan_data(fan_index) -> String` (TOML-encoded FanData with duty + rpm_available); added `get_fan_health() -> String` (TOML-encoded FanHealthResponse); 4 new tests.
+- `tux-tui/src/dbus_client.rs`: added `get_fan_data(fan)` and `get_fan_health()` client methods.
+- `tux-tui/src/event.rs`: added `fan_duties: Vec<u8>` and `fan_rpm_available: Vec<bool>` to `DashboardTelemetry`; added `FanHealth(String)` variant.
+- `tux-tui/src/model.rs`: added `duty_percent: u8`, `rpm_available: bool` to `FanData`; added `fan_health: Option<String>` to `DashboardState`.
+- `tux-tui/src/dbus_task.rs`: polls `get_fan_data(i)` instead of `get_fan_speed(i)` (with `get_fan_speed` as fallback for older daemons); polls `get_fan_health()` per tick.
+- `tux-tui/src/update.rs`: `speed_percent` now derived from `duty_percent * 100 / 255` (PWM-authoritative), not `rpm / max_rpm`; handles `FanHealth` variant; 3 new tests.
+- `tux-tui/src/views/dashboard.rs`: fan gauge label shows `"Fan N (~XX%)"` when `rpm_available == false`, else `"Fan N (MMMM RPM)"`; shows yellow/red health warning line in status block.
+
+**Phase C (error injection):**
+- `tux-daemon/src/platform/tuxedo_io.rs`: added `fail_reads: AtomicBool`, `fail_writes: AtomicBool` to `MockTuxedoIo`; setters `set_fail_reads()` / `set_fail_writes()`; read/write/noarg impls check flags; 5 new tests.
+- `tux-daemon/src/platform/td_clevo.rs`: 4 new error path tests (read_temp failure, write_pwm failure, partial failure, set_auto failure).
+- `tux-daemon/src/platform/td_uniwill.rs`: 3 new error path tests (read_temp, write_pwm, set_auto failures).
+
+**Phase D (fan engine health):**
+- `tux-daemon/src/fan_engine.rs`: `FanCurveEngine` gains `consecutive_failures: Arc<AtomicU32>`; incremented on `read_temp` error, reset to 0 on success; `failure_counter()` getter; 2 new tokio tests.
+- `tux-daemon/src/dbus/fan.rs`: `FanInterface::failure_counter` wired from engine via `failure_counter()` call in main.rs before engine is moved into task; `DbusConfig` gained `fan_failure_counter` field.
+- `tux-daemon/src/dbus/mod.rs`, `main.rs`, `tests/common/mod.rs`: plumbed `fan_failure_counter` through the wiring.
+- Thresholds: ≥5 → "degraded", ≥30 → "failed" (hardcoded per spec).

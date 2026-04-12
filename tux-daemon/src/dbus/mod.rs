@@ -1,6 +1,7 @@
 //! D-Bus server setup and lifecycle.
 
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::AtomicU32;
 
 use tokio::sync::watch;
 use tracing::info;
@@ -74,6 +75,8 @@ pub struct DbusConfig<'a> {
     pub applier: Arc<ProfileApplier>,
     pub power_rx: watch::Receiver<PowerState>,
     pub daemon_config: Arc<RwLock<crate::config::DaemonConfig>>,
+    /// Consecutive temp-read failure counter shared with the fan curve engine.
+    pub fan_failure_counter: Arc<AtomicU32>,
 }
 
 /// Build and start the D-Bus connection on the specified bus.
@@ -100,6 +103,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         applier,
         power_rx,
         daemon_config,
+        fan_failure_counter,
     } = config;
 
     // Clone resources needed by the TCC compat interface before they're consumed.
@@ -175,6 +179,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
             fan_store,
             fan_assignments_rx,
             fan_power_rx,
+            fan_failure_counter,
         );
         builder = builder.serve_at(OBJECT_PATH, fan_iface)?;
     }

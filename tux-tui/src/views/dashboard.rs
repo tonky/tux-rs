@@ -63,9 +63,14 @@ fn render_fan_gauges(frame: &mut Frame, area: Rect, state: &DashboardState) {
         .enumerate()
         .map(|(i, fan)| {
             let color = fan_gauge_color(fan.speed_percent);
+            let label = if fan.rpm_available {
+                format!("Fan {} ({} RPM)", i + 1, fan.rpm)
+            } else {
+                format!("Fan {} (~{}%)", i + 1, fan.speed_percent)
+            };
             Bar::default()
                 .value(fan.speed_percent as u64)
-                .label(Line::from(format!("Fan {} ({} RPM)", i + 1, fan.rpm)))
+                .label(Line::from(label))
                 .style(Style::default().fg(color))
                 .text_value(format!("{}%", fan.speed_percent))
         })
@@ -225,12 +230,38 @@ fn render_status_block(frame: &mut Frame, area: Rect, state: &DashboardState) {
     };
     frame.render_widget(Paragraph::new(summary), summary_area);
 
-    // Per-core bars below the summary
+    // Fan health warning line (shown when degraded or failed).
+    let mut content_y_offset: u16 = 1;
+    if let Some(health) = &state.fan_health
+        && inner.height > 1
+    {
+        let (color, prefix) = if health == "failed" {
+            (Color::Red, "✗ Fan sensor FAILED")
+        } else {
+            (Color::Yellow, "⚠ Fan sensor degraded")
+        };
+        let health_area = Rect {
+            x: inner.x,
+            y: inner.y + 1,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                prefix,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ))),
+            health_area,
+        );
+        content_y_offset = 2;
+    }
+
+    // Per-core bars below the summary (and health warning, if shown).
     if state.cpu_load_per_core.is_empty() {
         return;
     }
     let num_cores = state.cpu_load_per_core.len();
-    let available = inner.height.saturating_sub(1) as usize; // rows below summary
+    let available = inner.height.saturating_sub(content_y_offset) as usize; // rows below summary
     let visible = available.min(num_cores);
 
     for i in 0..visible {
@@ -239,7 +270,7 @@ fn render_status_block(frame: &mut Frame, area: Rect, state: &DashboardState) {
 
         let bar_area = Rect {
             x: inner.x,
-            y: inner.y + 1 + i as u16,
+            y: inner.y + content_y_offset + i as u16,
             width: inner.width,
             height: 1,
         };

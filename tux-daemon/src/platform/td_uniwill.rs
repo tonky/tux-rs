@@ -20,7 +20,7 @@ const PWM_MAX: u16 = 255;
 ///
 /// The tuxedo_io driver reads/writes fan speed in the EC's native scale (0–200).
 /// This backend converts to/from the standard Linux PWM scale (0–255) used by
-/// the rest of the daemon, consistent with the legacy sysfs-based `UniwillFanBackend`.
+/// the rest of the daemon.
 ///
 /// `W_UW_FANAUTO` is a no-argument ioctl that undo all previously written fan
 /// speeds, restoring firmware automatic control for both fans simultaneously.
@@ -186,5 +186,34 @@ mod tests {
         assert_eq!(TdUniwillFanBackend::pwm_to_ec(255), 200);
         assert_eq!(TdUniwillFanBackend::ec_to_pwm(0), 0);
         assert_eq!(TdUniwillFanBackend::ec_to_pwm(200), 255);
+    }
+
+    #[test]
+    fn read_temp_fails_on_ioctl_error() {
+        let mock = MockTuxedoIo::new();
+        let arc = Arc::new(mock);
+        arc.set_fail_reads(true);
+        let backend = TdUniwillFanBackend::new(arc as Arc<dyn TuxedoIo>);
+        assert!(backend.read_temp().is_err(), "read_temp should propagate ioctl error");
+    }
+
+    #[test]
+    fn write_pwm_fails_on_ioctl_write_error() {
+        let (arc, backend) = setup_mock();
+        arc.set_fail_writes(true);
+        assert!(
+            backend.write_pwm(0, 128).is_err(),
+            "write_pwm should propagate write failure"
+        );
+    }
+
+    #[test]
+    fn set_auto_fails_on_ioctl_write_error() {
+        let (arc, backend) = setup_mock();
+        arc.set_fail_writes(true);
+        assert!(
+            backend.set_auto(0).is_err(),
+            "set_auto should propagate ioctl_noarg failure"
+        );
     }
 }

@@ -106,11 +106,23 @@ async fn poll_dashboard_checked(
     let temp = temp_result.as_ref().map(|t| *t as f32 / 1000.0).ok();
     let any_ok = temp_result.is_ok();
 
-    // Fan speeds — poll all known fans.
+    // Fan telemetry — poll all known fans via GetFanData.
     let mut fan_speeds = Vec::new();
+    let mut fan_duties = Vec::new();
+    let mut fan_rpm_available = Vec::new();
     for i in 0..num_fans as u32 {
-        if let Ok(rpm) = client.get_fan_speed(i).await {
+        if let Ok(toml_str) = client.get_fan_data(i).await
+            && let Ok(data) =
+                toml::from_str::<tux_core::dbus_types::FanData>(&toml_str)
+        {
+            fan_speeds.push(data.rpm);
+            fan_duties.push(data.duty_percent);
+            fan_rpm_available.push(data.rpm_available);
+        } else if let Ok(rpm) = client.get_fan_speed(i).await {
+            // Fallback for older daemons without GetFanData.
             fan_speeds.push(rpm);
+            fan_duties.push(0);
+            fan_rpm_available.push(rpm > 0);
         }
     }
 
@@ -145,6 +157,8 @@ async fn poll_dashboard_checked(
         .send(AppEvent::DbusData(DbusUpdate::DashboardTelemetry {
             cpu_temp: temp,
             fan_speeds,
+            fan_duties,
+            fan_rpm_available,
             power_state: power,
             cpu_freq_mhz: cpu_freq,
             active_profile: profile,
@@ -153,6 +167,13 @@ async fn poll_dashboard_checked(
             cpu_freq_per_core,
         }))
         .await;
+
+    // Poll fan health separately — non-fatal if the method is unavailable.
+    if let Ok(toml_str) = client.get_fan_health().await {
+        let _ = tx
+            .send(AppEvent::DbusData(DbusUpdate::FanHealth(toml_str)))
+            .await;
+    }
 
     any_ok
 }

@@ -20,6 +20,18 @@ pub struct FanData {
     pub rpm: u32,
     pub temp_celsius: f32,
     pub duty_percent: u8,
+    /// `true` if the RPM reading is from a real hardware sensor;
+    /// `false` if the platform does not expose an RPM counter.
+    #[serde(default)]
+    pub rpm_available: bool,
+}
+
+/// Fan engine health status.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FanHealthResponse {
+    /// "ok", "degraded" (≥5 consecutive failures), or "failed" (≥30).
+    pub status: String,
+    pub consecutive_failures: u32,
 }
 
 /// Keyboard info as returned by D-Bus `GetKeyboardInfo`.
@@ -220,6 +232,7 @@ mod tests {
             rpm: 2400,
             temp_celsius: 45.5,
             duty_percent: 60,
+            rpm_available: true,
         };
         let toml_str = toml::to_string(&data).unwrap();
         let decoded: FanData = toml::from_str(&toml_str).unwrap();

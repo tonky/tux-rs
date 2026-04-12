@@ -25,6 +25,8 @@ pub enum DbusUpdate {
     DashboardTelemetry {
         cpu_temp: Option<f32>,
         fan_speeds: Vec<u32>,
+        fan_duties: Vec<u8>,
+        fan_rpm_available: Vec<bool>,
         power_state: Option<String>,
         cpu_freq_mhz: Option<u32>,
         active_profile: Option<String>,
@@ -32,6 +34,8 @@ pub enum DbusUpdate {
         cpu_load_per_core: Option<Vec<f32>>,
         cpu_freq_per_core: Option<Vec<u32>>,
     },
+    /// Fan engine health status (TOML-encoded `FanHealthResponse`).
+    FanHealth(String),
     /// Fan hardware info (one-time).
     FanInfo { num_fans: u8, max_rpm: u32 },
     /// CPU core count (one-time).

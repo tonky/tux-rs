@@ -1,0 +1,20 @@
+[[tasks]]
+description = "Test on actual Artix-dinit hardware"
+status = "todo"
+priority = "high"
+context = "The original issue reporter uses Artix-dinit. Need someone with that setup to verify."
+reasoning = "Can't fully validate without real dinit + tuxedo hardware"
+
+[[tasks]]
+description = "Consider waits-for vs depends-on for dbus dependency"
+status = "todo"
+priority = "low"
+context = "depends-on (hard dep) mirrors systemd Requires=. waits-for (soft dep) might be better if daemon can survive dbus restarts."
+reasoning = "Opus reviewer noted this. Current choice is faithful to systemd but maybe too strict."
+
+[[tasks]]
+description = "Watchdog loop lacks cancellation token"
+status = "todo"
+priority = "low"
+context = "Pre-existing issue in main.rs. The watchdog tokio::spawn runs forever until process exits. Could subscribe to shutdown_tx."
+reasoning = "Both reviewers noted this. Not a regression from this feature, but now clearly delineated by the cfg block."

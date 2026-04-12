@@ -1,0 +1,9 @@
+# Dinit service file for tux-daemon
+# Install to /etc/dinit.d/tux-daemon
+
+type            = process
+command         = /usr/bin/tux-daemon
+depends-on      = dbus
+restart         = true
+restart-delay   = 2
+smooth-recovery = true

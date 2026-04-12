@@ -28,6 +28,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
+      - name: Check no-systemd build (dinit compatibility)
+        run: |
+          cargo check -p tux-daemon --no-default-features --features tcc-compat
+          cargo clippy -p tux-daemon --no-default-features --features tcc-compat -- -D warnings
+
       - name: Install dbus
         run: sudo apt-get update -qq && sudo apt-get install -y -qq dbus
 

@@ -71,8 +71,25 @@ sudo modprobe tuxedo_uniwill  # load your platform's module (varies by laptop)
 
 ### 2. Daemon
 
+#### Systemd (most distros)
+
 ```sh
 just deploy-daemon      # build release, install to /usr/bin, start systemd service
+```
+
+#### Dinit (Artix, etc.)
+
+```sh
+just deploy-dinit       # build release (no systemd deps), install to /usr/bin, install + start dinit service
+```
+
+Or manually:
+```sh
+cargo build --release -p tux-daemon --no-default-features --features tcc-compat
+sudo cp target/release/tux-daemon /usr/bin/tux-daemon
+sudo cp dist/tux-daemon.dinit /etc/dinit.d/tux-daemon
+sudo dinitctl enable tux-daemon
+sudo dinitctl start tux-daemon
 ```
 
 ### 3. TUI

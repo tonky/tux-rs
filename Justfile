@@ -57,12 +57,20 @@ install-daemon:
 install-tui:
     cargo install --path tux-tui
 
-# Rebuild, reinstall and restart the daemon
+# Rebuild, reinstall and restart the daemon (systemd)
 deploy-daemon:
     cargo build --release -p tux-daemon
     sudo systemctl stop tux-daemon 2>/dev/null || true
     sudo cp target/release/tux-daemon /usr/bin/tux-daemon
     sudo systemctl start tux-daemon
+
+# Rebuild, reinstall and restart the daemon (dinit)
+deploy-dinit:
+    cargo build --release -p tux-daemon --no-default-features --features tcc-compat
+    sudo dinitctl stop tux-daemon 2>/dev/null || true
+    sudo cp target/release/tux-daemon /usr/bin/tux-daemon
+    sudo cp dist/tux-daemon.dinit /etc/dinit.d/tux-daemon
+    sudo dinitctl start tux-daemon
 
 # Run live regression test against a running daemon (requires tux-daemon on system or session bus)
 live-test:
@@ -75,6 +83,8 @@ check: fmt clippy test
 ci:
     cargo fmt --all -- --check
     cargo clippy --workspace -- -D warnings
+    cargo check -p tux-daemon --no-default-features --features tcc-compat
+    cargo clippy -p tux-daemon --no-default-features --features tcc-compat -- -D warnings
     dbus-run-session -- cargo test --workspace
 
 # --- Kernel module recipes ---

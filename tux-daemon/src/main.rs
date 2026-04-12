@@ -457,11 +457,13 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // 10b. Notify systemd we're ready.
+    // 10b. Notify systemd we're ready (no-op without the "systemd" feature).
+    #[cfg(feature = "systemd")]
     let _ = sd_notify::notify(&[sd_notify::NotifyState::Ready]);
     info!("daemon ready");
 
     // 11. Spawn watchdog ping task (if systemd requests it).
+    #[cfg(feature = "systemd")]
     if let Some(wd_duration) = sd_notify::watchdog_enabled() {
         let interval = wd_duration / 2;
         tokio::spawn(async move {
@@ -499,6 +501,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 13. Graceful shutdown.
+    #[cfg(feature = "systemd")]
     let _ = sd_notify::notify(&[sd_notify::NotifyState::Stopping]);
     let _ = shutdown_tx.send(());
 

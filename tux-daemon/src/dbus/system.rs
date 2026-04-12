@@ -152,8 +152,8 @@ impl SystemInterface {
     }
 }
 
-/// Sysfs path for Fn Lock attribute (from tuxedo-uniwill driver).
-const FN_LOCK_PATH: &str = "/sys/devices/platform/tuxedo-uniwill/fn_lock";
+/// Sysfs path for Fn Lock attribute (from tuxedo_keyboard driver).
+const FN_LOCK_PATH: &str = "/sys/devices/platform/tuxedo_keyboard/fn_lock";
 
 /// Check if the fn_lock sysfs attribute exists.
 fn fn_lock_supported(path: &str) -> bool {
@@ -302,14 +302,13 @@ fn read_battery_info(base: &Path) -> BatteryInfoResponse {
         capacity_percent: read_u32("capacity"),
         status,
         cycle_count: {
-            let mut raw =
-                std::fs::read_to_string("/sys/devices/platform/tuxedo-uniwill/raw_cycle_count")
+            // Prefer raw_cycle_count from tuxedo_keyboard platform device (tuxedo-drivers
+            // EC direct read) — more accurate than ACPI cycle_count which may report 0.
+            let raw =
+                std::fs::read_to_string("/sys/devices/platform/tuxedo_keyboard/raw_cycle_count")
                     .map(|s| s.trim().parse::<u32>().unwrap_or(0))
                     .unwrap_or(0);
 
-            if raw == 0 {
-                raw = read_u32("raw_cycle_count");
-            }
             if raw > 0 {
                 raw
             } else {
@@ -510,9 +509,9 @@ mod tests {
 
         fs::write(bat.join("capacity"), "85\n").unwrap();
         fs::write(bat.join("status"), "Discharging\n").unwrap();
-        fs::write(bat.join("cycle_count"), "0\n").unwrap();
-        // raw_cycle_count from tuxedo driver (EC direct read) should be preferred
-        fs::write(bat.join("raw_cycle_count"), "35\n").unwrap();
+        fs::write(bat.join("cycle_count"), "35\n").unwrap();
+        // raw_cycle_count would be at /sys/devices/platform/tuxedo_keyboard/ on real hardware;
+        // in tests the platform path is absent so cycle_count is the fallback.
         // Values in µAh / µA / µV as per sysfs convention
         fs::write(bat.join("charge_now"), "4200000\n").unwrap();
         fs::write(bat.join("charge_full"), "5000000\n").unwrap();
@@ -528,7 +527,7 @@ mod tests {
         assert!(info.present);
         assert_eq!(info.capacity_percent, 85);
         assert_eq!(info.status, "Discharging");
-        assert_eq!(info.cycle_count, 35); // Uses raw_cycle_count, not ACPI's 0
+        assert_eq!(info.cycle_count, 35); // Falls back to cycle_count in test (no platform device)
         assert_eq!(info.charge_now_mah, 4200);
         assert_eq!(info.charge_full_mah, 5000);
         assert_eq!(info.charge_full_design_mah, 5300);
@@ -575,7 +574,8 @@ mod tests {
 
     #[test]
     fn battery_info_cycle_count_fallback() {
-        // When raw_cycle_count is absent, falls back to cycle_count
+        // raw_cycle_count is at /sys/devices/platform/tuxedo_keyboard/ on real hardware;
+        // in tests that path is absent, so cycle_count is the fallback.
         let tmp = tempfile::tempdir().unwrap();
         let bat = tmp.path().join("BAT0");
         fs::create_dir_all(&bat).unwrap();
@@ -583,7 +583,6 @@ mod tests {
         fs::write(bat.join("capacity"), "90\n").unwrap();
         fs::write(bat.join("status"), "Full\n").unwrap();
         fs::write(bat.join("cycle_count"), "42\n").unwrap();
-        // No raw_cycle_count — non-Tuxedo hardware or different driver
         fs::write(bat.join("charge_now"), "5000000\n").unwrap();
         fs::write(bat.join("charge_full"), "5000000\n").unwrap();
         fs::write(bat.join("charge_full_design"), "5000000\n").unwrap();

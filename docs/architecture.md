@@ -21,14 +21,14 @@
 │  │   Device table · Trait hierarchy · Platform types  │  │
 │  └────────────────────────┬───────────────────────────┘  │
 └───────────────────────────┼─────────────────────────────┘
-                            │ sysfs / hidraw / procfs
-┌───────────────────────────┴─────────────────────────────┐
-│              tux-kmod (5 kernel shims)                   │
+                            │ sysfs / hidraw / procfs / ioctl
+┌────────────────────────────┴───────────────────────────┐
+│          tuxedo-drivers (upstream kernel modules)          │
 │                                                         │
-│  tuxedo-ec · tuxedo-uniwill · tuxedo-clevo              │
-│  tuxedo-nb04 · tuxedo-tuxi                              │
+│  tuxedo_io · tuxedo_keyboard · tuxedo_nb05_*             │
+│  tuxedo_nb04_* · tuxedo_fan_control                     │
 │                                                         │
-│  Stateless passthrough — no policy in kernel             │
+│  Official TUXEDO Computers upstream drivers              │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -79,25 +79,24 @@ per-model color scaling from the device table.
 
 ---
 
-## tux-kmod — Kernel Shims
+## tuxedo-drivers — Kernel Modules
 
-Five minimal C modules (~2900 LOC total):
+Official upstream drivers from TUXEDO Computers. Vendored under `vendor/tuxedo-drivers/`.
+On NixOS, provided by `linuxPackages.tuxedo-drivers`; on other distros, install the
+`tuxedo-drivers-dkms` package or the out-of-tree DKMS modules.
 
-| Module           | Hardware Access          | sysfs Interface             |
-|------------------|--------------------------|-----------------------------|
-| `tuxedo-ec`      | SuperIO port I/O (0x4e/0x4f) | Binary `ec_ram` attribute (64 KiB) |
-| `tuxedo-uniwill` | ACPI EC + WMI BC (unified Uniwill platform) | Binary attributes per register + LED/fn_lock/charging |
-| `tuxedo-clevo`   | WMI + ACPI DSM (dual transport) | Binary attributes per command |
-| `tuxedo-nb04`    | WMI AB/BS methods        | Binary attributes per method |
-| `tuxedo-tuxi`    | ACPI TFAN evaluation     | Binary attributes per fan   |
+| Module(s) | Platform | Interface used |
+|-----------|----------|----------------|
+| `tuxedo_nb05_fan_control`, `tuxedo_nb05_sensors`, `tuxedo_nb05_ec`, `tuxedo_nb05_power_profiles` | NB05 (Pulse/InfinityFlex) | `hwmon` sysfs + `ec_ram` binary attribute |
+| `tuxedo_io` + `tuxedo_keyboard` | Uniwill + Clevo | `/dev/tuxedo_io` ioctl + `tuxedo_keyboard` platform sysfs |
+| `tuxedo_nb04_sensors`, `tuxedo_nb04_power_profiles`, `tuxedo_nb04_wmi_*` | NB04 (Sirius) | WMI + `hwmon` sysfs |
+| `tuxedo_fan_control` | Tuxi (IBP) | `tuxedo_fan_control` platform device sysfs |
 
-Design:
-- **Stateless passthrough** — no fan curves, no LED logic, no profiles in kernel.
-- **Binary sysfs attributes** — daemon uses `pread`/`pwrite` with offsets.
-- **DKMS-ready** — each module has its own Makefile and dkms.conf.
-- **No compatibility check module** — platform detection in userspace via DMI.
-
----
+Key sysfs paths used by the daemon:
+- Fan/sensor data: `/sys/class/hwmon/hwmon*/` (hwmon subsystem)
+- Charging (Clevo/Uniwill): `/sys/devices/platform/tuxedo_keyboard/charge_control_*`, `charging_profile/`, `charging_priority/`
+- Fn Lock + raw cycle count: `/sys/devices/platform/tuxedo_keyboard/fn_lock`, `raw_cycle_count`
+- ITE keyboard LEDs: `/dev/hidraw*` (USB HID) or `/sys/class/leds/rgb:kbd_backlight/`
 
 ## tux-daemon — D-Bus Service
 

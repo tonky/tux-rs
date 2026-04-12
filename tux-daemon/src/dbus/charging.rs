@@ -169,9 +169,9 @@ mod tests {
 
     fn setup_clevo() -> (MockSysfs, ChargingInterface) {
         let mock = MockSysfs::new();
-        let base = mock.platform_dir("tuxedo-clevo");
-        mock.create_attr("devices/platform/tuxedo-clevo/charge_start_threshold", "40");
-        mock.create_attr("devices/platform/tuxedo-clevo/charge_end_threshold", "80");
+        let base = mock.platform_dir("tuxedo_keyboard");
+        mock.create_attr("devices/platform/tuxedo_keyboard/charge_control_start_threshold", "40");
+        mock.create_attr("devices/platform/tuxedo_keyboard/charge_control_end_threshold", "80");
         let backend = ClevoCharging::with_path(base);
         let daemon_config = Arc::new(std::sync::RwLock::new(
             crate::config::DaemonConfig::default(),
@@ -227,9 +227,9 @@ end_threshold = 90
     fn setup_uniwill() -> (MockSysfs, ChargingInterface) {
         use crate::charging::uniwill::UniwillCharging;
         let mock = MockSysfs::new();
-        let base = mock.platform_dir("tuxedo-uniwill");
-        mock.create_attr("devices/platform/tuxedo-uniwill/charge_profile", "balanced");
-        mock.create_attr("devices/platform/tuxedo-uniwill/charge_priority", "charge");
+        let base = mock.platform_dir("tuxedo_keyboard");
+        mock.create_attr("devices/platform/tuxedo_keyboard/charging_profile/charging_profile", "balanced");
+        mock.create_attr("devices/platform/tuxedo_keyboard/charging_priority/charging_prio", "charge_battery");
         let backend = UniwillCharging::with_path(base);
         let daemon_config = Arc::new(std::sync::RwLock::new(
             crate::config::DaemonConfig::default(),
@@ -244,7 +244,7 @@ end_threshold = 90
         let toml_str = iface.get_charging_settings().unwrap();
         let settings: tux_core::profile::ChargingSettings = toml::from_str(&toml_str).unwrap();
         assert_eq!(settings.profile, Some("balanced".to_string()));
-        assert_eq!(settings.priority, Some("charge".to_string()));
+        assert_eq!(settings.priority, Some("charge_battery".to_string()));
         // Uniwill returns 0 for thresholds → omitted from TOML.
         assert!(settings.start_threshold.is_none());
         assert!(settings.end_threshold.is_none());

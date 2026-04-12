@@ -381,7 +381,7 @@ mod inner {
         }
 
         fn tuxedo_wmi_available(&self) -> bool {
-            Path::new("/sys/devices/platform/tuxedo-uniwill").exists()
+            Path::new("/sys/devices/platform/tuxedo_keyboard").exists()
         }
 
         fn fan_hwmon_available(&self) -> bool {
@@ -826,18 +826,18 @@ mod inner {
         }
 
         fn get_fn_lock_supported(&self) -> bool {
-            Path::new("/sys/devices/platform/tuxedo-uniwill/fn_lock").exists()
+            Path::new("/sys/devices/platform/tuxedo_keyboard/fn_lock").exists()
         }
 
         fn get_fn_lock_status(&self) -> bool {
-            std::fs::read_to_string("/sys/devices/platform/tuxedo-uniwill/fn_lock")
+            std::fs::read_to_string("/sys/devices/platform/tuxedo_keyboard/fn_lock")
                 .map(|v| v.trim() == "1")
                 .unwrap_or(false)
         }
 
         fn set_fn_lock_status(&self, status: bool) {
             let _ = std::fs::write(
-                "/sys/devices/platform/tuxedo-uniwill/fn_lock",
+                "/sys/devices/platform/tuxedo_keyboard/fn_lock",
                 if status { "1" } else { "0" },
             );
         }

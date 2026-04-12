@@ -129,9 +129,9 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 
 | Feature | tuxedo-drivers | tccd / TCC | tux-rs |
 |---------|---------------|------------|--------|
-| Start/end threshold (Clevo Flexicharger) | ✅ `tuxedo_io` ACPI | ✅ | ⚠️ backend implemented (`charging/clevo.rs`), sysfs path still uses tux-kmod path (follow-up f002) |
-| EC profile (Uniwill) | ✅ `tuxedo_io` | ✅ | ⚠️ backend implemented (`charging/uniwill.rs`), sysfs path uses tux-kmod path (follow-up f005) |
-| EC priority (Uniwill) | ✅ `tuxedo_io` | ✅ | ⚠️ same as above |
+| Start/end threshold (Clevo Flexicharger) | ✅ `tuxedo_keyboard` ACPI | ✅ | ✅ `charging/clevo.rs` — `charge_control_{start,end}_threshold` under `/sys/devices/platform/tuxedo_keyboard` |
+| EC profile (Uniwill) | ✅ `tuxedo_keyboard` | ✅ | ✅ `charging/uniwill.rs` — `charging_profile/charging_profile` subgroup |
+| EC priority (Uniwill) | ✅ `tuxedo_keyboard` | ✅ | ✅ `charging/uniwill.rs` — `charging_priority/charging_prio` subgroup |
 | Charging control (NB05) | — | — | — |
 | Charging control (NB04) | — | — | — |
 | Charging control (Tuxi) | — | — | — |
@@ -140,7 +140,7 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 
 | Feature | tuxedo-drivers | tccd / TCC | tux-rs |
 |---------|---------------|------------|--------|
-| PL1 read/write (NB05 EC) | ✅ `tuxedo_nb05_ec` ec_ram | ✅ | ⚠️ backend implemented (`cpu/tdp.rs`), no device table TDP entries for current SKUs (tux-kmod sysfs path) |
+| PL1 read/write (NB05 EC) | ✅ `tuxedo_nb05_ec` ec_ram | ✅ | ⚠️ backend implemented (`cpu/tdp.rs`), no device table TDP fields populated for current SKUs |
 | PL2 read/write (NB05 EC) | ✅ `tuxedo_nb05_ec` | ✅ | ⚠️ same |
 | Power profiles (NB05) | ✅ `tuxedo_nb05_power_profiles` | ✅ | ❌ not exposed |
 | Power profiles (NB04) | ✅ `tuxedo_nb04_power_profiles` | ✅ | ⚠️ mapped to fan Balanced via `td_nb04.rs`; no ODM profile API |
@@ -164,8 +164,8 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 | ITE829x per-key (Sirius NB04) | ✅ `ite_829x` | ✅ | ✅ `hid/ite829x.rs` |
 | White/single-color backlight (IBP Gen7, Aura Tuxi) | ✅ sysfs LED | ✅ | ✅ `hid/sysfs_kbd.rs` brightness |
 | RGB 3-zone (Polaris Gen2, Aura Gen3) | ✅ `tuxedo_keyboard` / `clevo_keyboard` | ✅ | ❌ Clevo 3-zone not implemented (no ITE chip on these) |
-| NB05 keyboard backlight | ✅ `tuxedo_nb05_keyboard` / `tuxedo_nb05_kbd_backlight` | ✅ | ❌ not implemented (follow-up f003 covers NB04 equivalent; NB05 not filed) |
-| NB04 keyboard backlight | ✅ `tuxedo_nb04_kbd_backlight` LED subsystem | ✅ | ❌ not implemented (follow-up f003) |
+| NB05 keyboard backlight | ✅ `tuxedo_nb05_keyboard` / `tuxedo_nb05_kbd_backlight` | ✅ | ❌ not implemented (NB05 Pulse has ITE8291 via hidraw; nb05-specific sysfs kbd-backlight path not wired) |
+| NB04 keyboard backlight | ✅ `tuxedo_nb04_kbd_backlight` → `rgb:kbd_backlight` LED | ✅ | ✅ handled via `hid/discover.rs` `discover_sysfs_keyboards()` + `SysfsRgbKeyboard` (sysfs fallback when no ITE HID found) |
 
 ### GPU power control (Nvidia dGPU)
 
@@ -210,10 +210,10 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 
 | ID | Feature | Status | Notes |
 |----|---------|--------|-------|
-| f002 | Clevo charging sysfs path | ⚠️ partially done | Backend written; path still reads tux-clevo device (not tuxedo_io path). Needs migration to tuxedo-drivers path. |
-| f003 | NB04 keyboard backlight | ❌ not done | `tuxedo_nb04_kbd_backlight` exposes LED class; need to wire into `hid/` |
-| f004 | Device table SKU sweep | ⚠️ ongoing | Vendors use `DMI_BOARD_NAME` for many older SKUs (POLARIS1501, PULSE1401, etc.); they fall through to platform fallback. No regression impact but table is incomplete. |
-| f005 | Uniwill charging sysfs path | ⚠️ partially done | Same as f002 for Uniwill EC profile/priority charging. |
+| f002 | Clevo charging sysfs path | ✅ done | `charging/clevo.rs` uses `/sys/devices/platform/tuxedo_keyboard/charge_control_{start,end}_threshold`. |
+| f003 | NB04 keyboard backlight | ✅ done | `tuxedo_nb04_kbd_backlight` exposes `rgb:kbd_backlight` LED; already handled by `discover_sysfs_keyboards()` → `SysfsRgbKeyboard`. No daemon changes needed. |
+| f004 | Device table SKU sweep | ✅ done | All 33 vendor `DMI_PRODUCT_SKU` entries are in `device_table.rs`. Extra entries (IBP14I07, IBP15I07, AURA15GEN1T/2T) are pre-tuxedo-drivers legacy models with correct platform fallback. |
+| f005 | Uniwill charging sysfs path | ✅ done | `charging/uniwill.rs` uses `charging_profile/charging_profile` and `charging_priority/charging_prio` subgroups; priority value corrected from `"charge"` to `"charge_battery"`. |
 | —   | Clevo RGB 3-zone keyboard | ❌ not done | Aura Gen3/Gen4 use `tuxedo_keyboard` / `clevo_keyboard` with 3-zone LED class, not ITE HID. Not wired into `hid/`. |
 | —   | NB05 keyboard backlight | ❌ not done | `tuxedo_nb05_keyboard` + `tuxedo_nb05_kbd_backlight` — NB05 Pulse/InfinityFlex have ITE8291, already handled via `hid/ite8291.rs`, but the nb05-specific sysfs kbd-backlight (WhiteLevels) path is not wired. |
 | —   | NB05 power profiles | ❌ not done | `tuxedo_nb05_power_profiles` platform sysfs not integrated. |

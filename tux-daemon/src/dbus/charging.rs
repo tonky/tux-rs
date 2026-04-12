@@ -1,6 +1,7 @@
 //! D-Bus Charging interface for battery threshold and profile control.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use zbus::interface;
 
@@ -10,6 +11,7 @@ use crate::charging::ChargingBackend;
 pub struct ChargingInterface {
     backend: Option<Arc<dyn ChargingBackend>>,
     daemon_config: std::sync::Arc<std::sync::RwLock<crate::config::DaemonConfig>>,
+    last_known: Arc<Mutex<Option<tux_core::profile::ChargingSettings>>>,
 }
 
 impl ChargingInterface {
@@ -17,9 +19,14 @@ impl ChargingInterface {
         backend: Option<Arc<dyn ChargingBackend>>,
         daemon_config: std::sync::Arc<std::sync::RwLock<crate::config::DaemonConfig>>,
     ) -> Self {
+        let last_known = daemon_config
+            .read()
+            .ok()
+            .and_then(|c| c.charging.clone());
         Self {
             backend,
             daemon_config,
+            last_known: Arc::new(Mutex::new(last_known)),
         }
     }
 
@@ -27,6 +34,26 @@ impl ChargingInterface {
         self.backend
             .as_ref()
             .ok_or_else(|| zbus::fdo::Error::Failed("charging hardware not available".into()))
+    }
+
+    fn read_settings_once(
+        backend: &Arc<dyn ChargingBackend>,
+    ) -> Result<tux_core::profile::ChargingSettings, std::io::Error> {
+        let start = backend.get_start_threshold()?;
+        let end = backend.get_end_threshold()?;
+        let profile = backend.get_profile()?;
+        let priority = backend.get_priority()?;
+
+        Ok(tux_core::profile::ChargingSettings {
+            profile,
+            priority,
+            start_threshold: if start > 0 { Some(start) } else { None },
+            end_threshold: if end > 0 { Some(end) } else { None },
+        })
+    }
+
+    fn is_transient_io_error(e: &std::io::Error) -> bool {
+        e.kind() == std::io::ErrorKind::Other || e.raw_os_error() == Some(5)
     }
 }
 
@@ -36,19 +63,63 @@ impl ChargingInterface {
     #[zbus(name = "GetChargingSettings")]
     fn get_charging_settings(&self) -> zbus::fdo::Result<String> {
         let backend = self.backend()?;
-        let map_err = |e: std::io::Error| zbus::fdo::Error::Failed(e.to_string());
-
-        let start = backend.get_start_threshold().map_err(map_err)?;
-        let end = backend.get_end_threshold().map_err(map_err)?;
-        let profile = backend.get_profile().map_err(map_err)?;
-        let priority = backend.get_priority().map_err(map_err)?;
-
-        let settings = tux_core::profile::ChargingSettings {
-            profile,
-            priority,
-            start_threshold: if start > 0 { Some(start) } else { None },
-            end_threshold: if end > 0 { Some(end) } else { None },
+        // Retry whole settings read to tolerate transient EC/sysfs EIO bursts.
+        let mut last_err: Option<std::io::Error> = None;
+        let mut settings: Option<tux_core::profile::ChargingSettings> = None;
+        for _ in 0..5 {
+            match Self::read_settings_once(backend) {
+                Ok(s) => {
+                    settings = Some(s);
+                    break;
+                }
+                Err(e) if Self::is_transient_io_error(&e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Err(e) => {
+                    return Err(zbus::fdo::Error::Failed(e.to_string()));
+                }
+            }
+        }
+        let settings = match settings {
+            Some(s) => s,
+            None => {
+                let cached = self
+                    .last_known
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone());
+                if let Some(cached) = cached {
+                    tracing::warn!(
+                        "charging read failed, returning cached settings: {}",
+                        last_err
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown error".to_string())
+                    );
+                    cached
+                } else {
+                    let config_fallback = self
+                        .daemon_config
+                        .read()
+                        .ok()
+                        .and_then(|cfg| cfg.charging.clone())
+                        .unwrap_or_default();
+                    tracing::warn!(
+                        "charging read failed without cache, returning config/default fallback: {}",
+                        last_err
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown error".to_string())
+                    );
+                    config_fallback
+                }
+            }
         };
+
+        if let Ok(mut cache) = self.last_known.lock() {
+            *cache = Some(settings.clone());
+        }
 
         toml::to_string(&settings)
             .map_err(|e| zbus::fdo::Error::Failed(format!("serialization error: {e}")))
@@ -89,6 +160,10 @@ impl ChargingInterface {
             backend
                 .set_priority(priority)
                 .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        }
+
+        if let Ok(mut cache) = self.last_known.lock() {
+            *cache = Some(settings.clone());
         }
 
         // Persist globally
@@ -142,7 +217,13 @@ impl ChargingInterface {
     fn set_charge_profile(&self, profile: &str) -> zbus::fdo::Result<()> {
         self.backend()?
             .set_profile(profile)
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        if let Ok(mut cache) = self.last_known.lock() {
+            let mut s = cache.clone().unwrap_or_default();
+            s.profile = Some(profile.to_string());
+            *cache = Some(s);
+        }
+        Ok(())
     }
 
     /// Get the charge priority, or empty string if unsupported.
@@ -157,7 +238,13 @@ impl ChargingInterface {
     fn set_charge_priority(&self, priority: &str) -> zbus::fdo::Result<()> {
         self.backend()?
             .set_priority(priority)
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        if let Ok(mut cache) = self.last_known.lock() {
+            let mut s = cache.clone().unwrap_or_default();
+            s.priority = Some(priority.to_string());
+            *cache = Some(s);
+        }
+        Ok(())
     }
 }
 

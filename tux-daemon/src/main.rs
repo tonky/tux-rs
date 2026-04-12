@@ -312,6 +312,14 @@ async fn main() -> anyhow::Result<()> {
     }
     if raw_keyboards.is_empty() {
         info!("no keyboards discovered");
+        if matches!(
+            device.descriptor.platform,
+            tux_core::platform::Platform::Uniwill
+        ) {
+            info!(
+                "Uniwill keyboard backlight backend not present; try loading module: modprobe uniwill_wmi"
+            );
+        }
     } else {
         info!("discovered {} keyboard(s)", raw_keyboards.len());
     }
@@ -409,8 +417,13 @@ async fn main() -> anyhow::Result<()> {
 
     // 8. Spawn fan curve engine (if fan control is available).
     let fan_failure_counter: std::sync::Arc<std::sync::atomic::AtomicU32>;
+    let (manual_pwms_tx, manual_pwms_rx) = watch::channel(Vec::<u8>::new());
     let engine_handle = if let Some(ref backend) = backend {
-        let mut engine = fan_engine::FanCurveEngine::new(backend.clone(), config_rx.clone());
+        let mut engine = fan_engine::FanCurveEngine::new_with_manual_pwms(
+            backend.clone(),
+            config_rx.clone(),
+            manual_pwms_rx,
+        );
         fan_failure_counter = engine.failure_counter();
         let shutdown_rx = shutdown_tx.subscribe();
         let handle = tokio::spawn(async move {
@@ -444,6 +457,7 @@ async fn main() -> anyhow::Result<()> {
         power_rx,
         daemon_config: daemon_config_arc,
         fan_failure_counter,
+        manual_pwms_tx,
     })
     .await?;
 

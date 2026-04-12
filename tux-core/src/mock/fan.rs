@@ -10,6 +10,7 @@ pub struct MockFanBackend {
     rpm: Vec<AtomicU16>,
     auto_mode: Vec<AtomicBool>,
     fail_temp: AtomicBool,
+    rpm_unsupported: AtomicBool,
     num_fans: u8,
 }
 
@@ -22,6 +23,7 @@ impl MockFanBackend {
             rpm: (0..n).map(|_| AtomicU16::new(0)).collect(),
             auto_mode: (0..n).map(|_| AtomicBool::new(true)).collect(),
             fail_temp: AtomicBool::new(false),
+            rpm_unsupported: AtomicBool::new(false),
             num_fans,
         }
     }
@@ -33,6 +35,12 @@ impl MockFanBackend {
     /// When set to true, `read_temp()` will return an error.
     pub fn set_fail_temp(&self, fail: bool) {
         self.fail_temp.store(fail, Ordering::Relaxed);
+    }
+
+    /// When set to true, `read_fan_rpm()` returns `Unsupported`
+    /// (simulates platforms like Inwill where RPM is not readable).
+    pub fn set_rpm_unsupported(&self, unsupported: bool) {
+        self.rpm_unsupported.store(unsupported, Ordering::Relaxed);
     }
 
     pub fn set_rpm(&self, fan: u8, rpm: u16) {
@@ -112,6 +120,12 @@ impl FanBackend for MockFanBackend {
                     "fan index {} out of range (max {})",
                     fan_index, self.num_fans
                 ),
+            ));
+        }
+        if self.rpm_unsupported.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "RPM not available on this platform",
             ));
         }
         Ok(self.rpm[idx].load(Ordering::Relaxed))

@@ -302,12 +302,18 @@ fn read_battery_info(base: &Path) -> BatteryInfoResponse {
         capacity_percent: read_u32("capacity"),
         status,
         cycle_count: {
-            // Prefer raw_cycle_count from tuxedo_keyboard platform device (tuxedo-drivers
-            // EC direct read) — more accurate than ACPI cycle_count which may report 0.
-            let raw =
-                std::fs::read_to_string("/sys/devices/platform/tuxedo_keyboard/raw_cycle_count")
-                    .map(|s| s.trim().parse::<u32>().unwrap_or(0))
-                    .unwrap_or(0);
+            // Prefer raw_cycle_count exposed on BAT* first (common on tuxedo-drivers),
+            // then tuxedo_keyboard platform raw counter, then legacy cycle_count.
+            let raw = {
+                let bat_raw = read_u32("raw_cycle_count");
+                if bat_raw > 0 {
+                    bat_raw
+                } else {
+                    std::fs::read_to_string("/sys/devices/platform/tuxedo_keyboard/raw_cycle_count")
+                        .map(|s| s.trim().parse::<u32>().unwrap_or(0))
+                        .unwrap_or(0)
+                }
+            };
 
             if raw > 0 {
                 raw
@@ -595,5 +601,29 @@ mod tests {
 
         let info = read_battery_info(tmp.path());
         assert_eq!(info.cycle_count, 42); // Falls back to ACPI cycle_count
+    }
+
+    #[test]
+    fn battery_info_prefers_bat_raw_cycle_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bat = tmp.path().join("BAT0");
+        fs::create_dir_all(&bat).unwrap();
+
+        fs::write(bat.join("capacity"), "90\n").unwrap();
+        fs::write(bat.join("status"), "Full\n").unwrap();
+        fs::write(bat.join("raw_cycle_count"), "36\n").unwrap();
+        fs::write(bat.join("cycle_count"), "0\n").unwrap();
+        fs::write(bat.join("charge_now"), "5000000\n").unwrap();
+        fs::write(bat.join("charge_full"), "5000000\n").unwrap();
+        fs::write(bat.join("charge_full_design"), "5000000\n").unwrap();
+        fs::write(bat.join("current_now"), "0\n").unwrap();
+        fs::write(bat.join("voltage_now"), "16000000\n").unwrap();
+        fs::write(bat.join("voltage_min_design"), "15000000\n").unwrap();
+        fs::write(bat.join("technology"), "Li-ion\n").unwrap();
+        fs::write(bat.join("manufacturer"), "OEM\n").unwrap();
+        fs::write(bat.join("model_name"), "standard\n").unwrap();
+
+        let info = read_battery_info(tmp.path());
+        assert_eq!(info.cycle_count, 36);
     }
 }

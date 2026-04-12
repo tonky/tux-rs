@@ -13,15 +13,37 @@ use tux_core::fan_curve::{FanConfig, FanMode, interpolate, percent_to_pwm};
 pub struct FanCurveEngine {
     backend: Arc<dyn FanBackend>,
     config_rx: watch::Receiver<FanConfig>,
+    /// Per-fan manual PWM setpoints. Updated by D-Bus `set_fan_speed` calls.
+    /// Only used when `backend.requires_manual_reapply()` is true.
+    manual_pwms_rx: watch::Receiver<Vec<u8>>,
     /// Shared counter of consecutive temperature-read failures (reset on success).
     consecutive_failures: Arc<AtomicU32>,
 }
 
 impl FanCurveEngine {
     pub fn new(backend: Arc<dyn FanBackend>, config_rx: watch::Receiver<FanConfig>) -> Self {
+        let (_, manual_pwms_rx) = watch::channel(Vec::new());
         Self {
             backend,
             config_rx,
+            manual_pwms_rx,
+            consecutive_failures: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Create an engine wired to a manual-PWM watch channel.
+    ///
+    /// Used by `main.rs` to wire the D-Bus `set_fan_speed` handler to the
+    /// engine so Inwill's EC-override workaround can re-apply setpoints each tick.
+    pub fn new_with_manual_pwms(
+        backend: Arc<dyn FanBackend>,
+        config_rx: watch::Receiver<FanConfig>,
+        manual_pwms_rx: watch::Receiver<Vec<u8>>,
+    ) -> Self {
+        Self {
+            backend,
+            config_rx,
+            manual_pwms_rx,
             consecutive_failures: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -59,7 +81,9 @@ impl FanCurveEngine {
                 info!("fan mode changed: {:?} → {:?}", current_mode, config.mode);
                 match config.mode {
                     FanMode::Auto => self.set_all_auto(),
-                    FanMode::Manual => { /* no-op — user controls PWM directly */ }
+                    FanMode::Manual => {
+                        // Setpoints will be read from manual_pwms_rx; no local state to clear.
+                    }
                     FanMode::CustomCurve => {
                         last_temp = None;
                         last_pwm = None;
@@ -69,7 +93,23 @@ impl FanCurveEngine {
             }
 
             let poll_ms = match current_mode {
-                FanMode::Auto | FanMode::Manual => config.idle_poll_ms,
+                FanMode::Auto => config.idle_poll_ms,
+                FanMode::Manual => {
+                    // On backends where the EC periodically restores its own fan
+                    // table (e.g. Inwill tuxedo_uw_fan), re-apply the user's
+                    // setpoints on every idle tick. Other backends are single-write.
+                    if self.backend.requires_manual_reapply() {
+                        let pwms = self.manual_pwms_rx.borrow();
+                        if !pwms.is_empty() {
+                            for (i, &pwm) in pwms.iter().enumerate() {
+                                if let Err(e) = self.backend.write_pwm(i as u8, pwm) {
+                                    warn!("failed to re-apply manual PWM to fan {i}: {e}");
+                                }
+                            }
+                        }
+                    }
+                    config.idle_poll_ms
+                }
                 FanMode::CustomCurve => {
                     self.tick_custom_curve(&config, &mut last_temp, &mut last_pwm)
                 }

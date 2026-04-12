@@ -23,6 +23,9 @@ pub struct FanInterface {
     power_rx: watch::Receiver<PowerState>,
     /// Shared counter of consecutive fan-engine temp-read failures.
     failure_counter: Arc<AtomicU32>,
+    /// Sends per-fan manual PWM setpoints to the fan engine for re-application
+    /// on backends where the EC overrides one-shot writes (e.g. Inwill).
+    manual_pwms_tx: watch::Sender<Vec<u8>>,
 }
 
 impl FanInterface {
@@ -34,6 +37,7 @@ impl FanInterface {
         assignments_rx: watch::Receiver<ProfileAssignments>,
         power_rx: watch::Receiver<PowerState>,
         failure_counter: Arc<AtomicU32>,
+        manual_pwms_tx: watch::Sender<Vec<u8>>,
     ) -> Self {
         Self {
             backend,
@@ -43,6 +47,7 @@ impl FanInterface {
             assignments_rx,
             power_rx,
             failure_counter,
+            manual_pwms_tx,
         }
     }
 
@@ -81,6 +86,15 @@ impl FanInterface {
         let idx = Self::check_fan_index(fan_index)?;
         self.config_tx
             .send_modify(|config| config.mode = FanMode::Manual);
+        // Record the per-fan setpoint so the engine can re-apply it on backends
+        // that require tick-level re-application (e.g. Inwill EC override workaround).
+        self.manual_pwms_tx.send_modify(|pwms| {
+            let needed = idx as usize + 1;
+            if pwms.len() < needed {
+                pwms.resize(needed, 128);
+            }
+            pwms[idx as usize] = pwm;
+        });
         self.backend
             .write_pwm(idx, pwm)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -98,10 +112,11 @@ impl FanInterface {
     /// PWM percentage (scaled to max_rpm range) for platforms without RPM sensors.
     fn get_fan_speed(&self, fan_index: u32) -> zbus::fdo::Result<u32> {
         let idx = Self::check_fan_index(fan_index)?;
-        let rpm = self
-            .backend
-            .read_fan_rpm(idx)
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let rpm = match self.backend.read_fan_rpm(idx) {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => 0,
+            Err(e) => return Err(zbus::fdo::Error::Failed(e.to_string())),
+        };
         if rpm > 0 {
             return Ok(rpm as u32);
         }
@@ -182,10 +197,11 @@ impl FanInterface {
     /// sensors (where `read_fan_rpm` always returns 0).
     fn get_fan_data(&self, fan_index: u32) -> zbus::fdo::Result<String> {
         let idx = Self::check_fan_index(fan_index)?;
-        let rpm = self
-            .backend
-            .read_fan_rpm(idx)
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let rpm = match self.backend.read_fan_rpm(idx) {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => 0,
+            Err(e) => return Err(zbus::fdo::Error::Failed(e.to_string())),
+        };
         let duty = self
             .backend
             .read_pwm(idx)
@@ -246,6 +262,7 @@ mod tests {
         let (_atx, arx) = watch::channel(ProfileAssignments::default());
         let (_ptx, prx) = watch::channel(PowerState::Ac);
         let failure_counter = Arc::new(AtomicU32::new(0));
+        let (manual_pwms_tx, _manual_pwms_rx) = watch::channel(Vec::<u8>::new());
         let iface = FanInterface::new(
             backend.clone() as Arc<dyn FanBackend>,
             config_tx,
@@ -254,6 +271,7 @@ mod tests {
             arx,
             prx,
             failure_counter,
+            manual_pwms_tx,
         );
         (backend, iface)
     }
@@ -382,6 +400,20 @@ mod tests {
         assert_eq!(data.rpm, 0);
         assert_eq!(data.duty_percent, 100);
         assert!(!data.rpm_available, "rpm_available should be false when rpm == 0");
+    }
+
+    #[test]
+    fn get_fan_data_succeeds_when_rpm_unsupported() {
+        // Regression: TdUwFanBackend returns Unsupported for read_fan_rpm.
+        // get_fan_data must not propagate that as a D-Bus error.
+        let (backend, iface) = make_fan_iface(1);
+        backend.set_rpm_unsupported(true);
+        backend.write_pwm(0, 180).unwrap();
+        let toml_str = iface.get_fan_data(0).unwrap();
+        let data: tux_core::dbus_types::FanData = toml::from_str(&toml_str).unwrap();
+        assert_eq!(data.rpm, 0, "rpm should be 0 when unsupported");
+        assert_eq!(data.duty_percent, 180, "duty must still be reported");
+        assert!(!data.rpm_available, "rpm_available must be false when unsupported");
     }
 
     #[test]

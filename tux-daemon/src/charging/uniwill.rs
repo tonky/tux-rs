@@ -15,6 +15,7 @@ use std::io;
 
 use super::ChargingBackend;
 use crate::platform::sysfs::SysfsReader;
+use tracing::info;
 
 const SYSFS_BASE: &str = "/sys/devices/platform/tuxedo_keyboard";
 
@@ -39,13 +40,29 @@ pub struct UniwillCharging {
 }
 
 impl UniwillCharging {
+    const IO_RETRY_ATTEMPTS: usize = 10;
+    const IO_RETRY_DELAY_MS: u64 = 100;
+
     /// Create a new backend, returning `None` if the charging sysfs files don't exist.
     pub fn new() -> Option<Self> {
         let sysfs = SysfsReader::new(SYSFS_BASE);
-        if sysfs.exists(ATTR_PROFILE) || sysfs.exists(ATTR_PRIO) {
-            Some(Self { sysfs })
-        } else {
+        let has_profile = sysfs.exists(ATTR_PROFILE);
+        let has_prio = sysfs.exists(ATTR_PRIO);
+        if !has_profile && !has_prio {
             None
+        } else {
+            // Require at least one readable charging attribute. Some systems expose
+            // paths that still return EIO at runtime; treat those as unavailable.
+            let profile_ok = has_profile && sysfs.read_str(ATTR_PROFILE).is_ok();
+            let prio_ok = has_prio && sysfs.read_str(ATTR_PRIO).is_ok();
+            if profile_ok || prio_ok {
+                Some(Self { sysfs })
+            } else {
+                info!(
+                    "Uniwill charging attributes present but not readable; disabling charging backend"
+                );
+                None
+            }
         }
     }
 
@@ -84,6 +101,41 @@ impl UniwillCharging {
             ))
         }
     }
+
+    fn read_str_retry(&self, attr: &str) -> io::Result<String> {
+        let mut last_err: Option<io::Error> = None;
+        for _ in 0..Self::IO_RETRY_ATTEMPTS {
+            match self.sysfs.read_str(attr) {
+                Ok(v) => return Ok(v),
+                Err(e) if Self::is_transient_io_error(&e) => {
+                    // Transient EIO has been observed on some Uniwill nodes.
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(Self::IO_RETRY_DELAY_MS));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| io::Error::other("charging read failed")))
+    }
+
+    fn write_str_retry(&self, attr: &str, value: &str) -> io::Result<()> {
+        let mut last_err: Option<io::Error> = None;
+        for _ in 0..Self::IO_RETRY_ATTEMPTS {
+            match self.sysfs.write_str(attr, value) {
+                Ok(()) => return Ok(()),
+                Err(e) if Self::is_transient_io_error(&e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(Self::IO_RETRY_DELAY_MS));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| io::Error::other("charging write failed")))
+    }
+
+    fn is_transient_io_error(e: &io::Error) -> bool {
+        e.kind() == io::ErrorKind::Other || e.raw_os_error() == Some(5)
+    }
 }
 
 impl ChargingBackend for UniwillCharging {
@@ -108,21 +160,21 @@ impl ChargingBackend for UniwillCharging {
     }
 
     fn get_profile(&self) -> io::Result<Option<String>> {
-        self.sysfs.read_str(ATTR_PROFILE).map(Some)
+        self.read_str_retry(ATTR_PROFILE).map(Some)
     }
 
     fn set_profile(&self, profile: &str) -> io::Result<()> {
         Self::validate_profile(profile)?;
-        self.sysfs.write_str(ATTR_PROFILE, profile)
+        self.write_str_retry(ATTR_PROFILE, profile)
     }
 
     fn get_priority(&self) -> io::Result<Option<String>> {
-        self.sysfs.read_str(ATTR_PRIO).map(Some)
+        self.read_str_retry(ATTR_PRIO).map(Some)
     }
 
     fn set_priority(&self, priority: &str) -> io::Result<()> {
         Self::validate_priority(priority)?;
-        self.sysfs.write_str(ATTR_PRIO, priority)
+        self.write_str_retry(ATTR_PRIO, priority)
     }
 }
 

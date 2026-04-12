@@ -77,6 +77,9 @@ pub struct DbusConfig<'a> {
     pub daemon_config: Arc<RwLock<crate::config::DaemonConfig>>,
     /// Consecutive temp-read failure counter shared with the fan curve engine.
     pub fan_failure_counter: Arc<AtomicU32>,
+    /// Sender for manual PWM setpoints, shared with the fan curve engine for
+    /// EC-override re-application (Inwill tuxedo_uw_fan workaround).
+    pub manual_pwms_tx: tokio::sync::watch::Sender<Vec<u8>>,
 }
 
 /// Build and start the D-Bus connection on the specified bus.
@@ -104,6 +107,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         power_rx,
         daemon_config,
         fan_failure_counter,
+        manual_pwms_tx,
     } = config;
 
     // Clone resources needed by the TCC compat interface before they're consumed.
@@ -151,6 +155,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         keyboards.clone(),
         cpu_governor.clone(),
         display,
+        charging.is_some(),
     );
 
     // Clone before SystemInterface consumes them by value
@@ -180,6 +185,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
             fan_assignments_rx,
             fan_power_rx,
             fan_failure_counter,
+            manual_pwms_tx,
         );
         builder = builder.serve_at(OBJECT_PATH, fan_iface)?;
     }

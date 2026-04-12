@@ -146,3 +146,107 @@ All 4 phases from external review implemented. 629 tests passing (up from 608), 
 - `tux-daemon/src/dbus/fan.rs`: `FanInterface::failure_counter` wired from engine via `failure_counter()` call in main.rs before engine is moved into task; `DbusConfig` gained `fan_failure_counter` field.
 - `tux-daemon/src/dbus/mod.rs`, `main.rs`, `tests/common/mod.rs`: plumbed `fan_failure_counter` through the wiring.
 - Thresholds: ≥5 → "degraded", ≥30 → "failed" (hardcoded per spec).
+
+## Stage 7 follow-up — Charging EIO hardening (2026-04-12)
+- Investigated live-regression charging failures via daemon debug logs. Observed repeated `Input/output error (os error 5)` on Uniwill charging sysfs, often after rapid profile-apply cycles.
+- Hardened `ProfileApplier` charging writes to avoid unnecessary EC writes:
+  - Reads current profile/priority first.
+  - Skips write if value is already current.
+  - If current-value read fails, still attempts write (with warning) so profile activation remains effective under transient read errors.
+- Increased Uniwill charging sysfs retry budget from `3x50ms` to `10x100ms` for transient `ErrorKind::Other` (`EIO`) read/write failures.
+- Added regression tests in `profile_apply.rs`:
+  - `apply_charging_skips_redundant_profile_priority_writes`.
+  - `apply_charging_attempts_writes_when_read_fails`.
+- Validation run:
+  - New unit tests pass.
+  - Full privileged live regression could not be rerun from this session because non-interactive `sudo` is unavailable (`sudo-rs: interactive authentication is required`).
+
+## Stage 7 follow-up — TCC/tccd alignment (2026-04-12)
+- Reviewed upstream TCC/tccd charging flow in vendor sources:
+  - `ChargingWorker` applies charging settings as best-effort and returns boolean success.
+  - `GetCurrentChargingProfile/GetCurrentChargingPriority` return daemon settings state, not strict hardware readback each call.
+  - Errors are logged and handled gracefully in client-facing paths.
+- Adjusted tux-rs charging handling accordingly:
+  - Kept profile-apply write guards and fallback write attempt on read errors.
+  - Broadened transient EIO detection to include errno 5 paths (`raw_os_error() == Some(5)`).
+  - `GetChargingSettings` now retries whole-read and falls back to cached/config settings instead of hard-failing on transient EIO.
+  - Live regression Uniwill charging section now uses retry helper for initial charging snapshot fetch.
+- Validation:
+  - Targeted daemon charging tests pass.
+  - `just live-test` now passes fully on IBP Gen8 (including Charging — Uniwill Profiles and final PASSED banner).
+
+## Stage 7 follow-up — Keyboard brightness regression guard in live workflow (2026-04-12)
+- Added daemon keyboard regression tests to `just live-test` preflight so keyboard state and hardware-forwarding behavior are always checked before hardware live regression:
+  - `keyboard_state_roundtrip`
+  - `set_keyboard_state_forwards_color_and_mode_to_hardware`
+  - `apply_scales_profile_keyboard_brightness_to_hardware`
+- Added `profile_apply.rs` unit test `apply_scales_profile_keyboard_brightness_to_hardware` to lock profile keyboard brightness semantics at 0-100% input mapped to 0-255 hardware scale with flush.
+
+## Stage 7 follow-up — Keyboard 50% does not illuminate (2026-04-12)
+- Root cause: on ITE keyboard backends, after an explicit off state, `set_brightness()` updates internal value but does not re-enable LEDs. Removing `turn_on()` caused nonzero brightness writes to keep keyboard dark.
+- Fixed in both runtime paths:
+  - `dbus/settings.rs::set_keyboard_state`: for nonzero brightness do `set_brightness -> turn_on -> set_brightness -> flush`; for zero do `turn_off -> flush`.
+  - `profile_apply.rs`: same on/off sequencing when applying profile keyboard brightness.
+- Added/updated tests:
+  - `set_keyboard_state_forwards_color_and_mode_to_hardware` now asserts turn-on path for nonzero brightness.
+  - New `set_keyboard_state_zero_turns_off_hardware` test.
+  - Existing `apply_scales_profile_keyboard_brightness_to_hardware` still passes with new sequencing.
+
+## Stage 7 follow-up — Battery cycle count 0 regression (2026-04-12)
+- Reproduced on host sysfs: `BAT0/raw_cycle_count=36` while `BAT0/cycle_count=0`.
+- Root cause: daemon preferred `/sys/devices/platform/tuxedo_keyboard/raw_cycle_count` then fell back directly to `BAT*/cycle_count`; it did not read `BAT*/raw_cycle_count`.
+- Fix in `dbus/system.rs::read_battery_info`:
+  - prefer `BAT*/raw_cycle_count` when >0
+  - else try `/sys/devices/platform/tuxedo_keyboard/raw_cycle_count`
+  - else fallback to `BAT*/cycle_count`
+- Added regression test `battery_info_prefers_bat_raw_cycle_count`.
+- Targeted tests passing:
+  - `battery_info_cycle_count_fallback`
+  - `battery_info_prefers_bat_raw_cycle_count`
+  - `battery_info_from_sysfs`
+
+## Stage 7 follow-up — White keyboard 50% no illumination (2026-04-12)
+- Reproduced with live checks: on this host `max_brightness=2`, previous mapping wrote brightness `1` for 50%, which may remain visually dark on some firmware.
+- Fix in `hid/sysfs_kbd.rs` (`SysfsWhiteKeyboard::set_brightness`):
+  - keep `0 -> 0` (off)
+  - for `max_brightness <= 2`, treat any nonzero request as `max_brightness` (binary on/off behavior)
+  - keep rounded scaling for higher-step devices.
+- Updated test `white_brightness_scales_with_rounding` to reflect low-step binary mapping.
+- Live verification after deploy:
+  - `SetKeyboardState brightness=50` -> `/sys/class/leds/white:kbd_backlight/brightness=2`
+  - `SetKeyboardState brightness=0` -> brightness `0`
+  - `GetBatteryInfo` reports `cycle_count=36`.
+
+## Stage 7 follow-up — Kernel-level keyboard control validation (2026-04-12)
+- Manual kernel interface writes performed directly:
+  - `trigger=none`
+  - `brightness=0 -> 2`
+  - Sysfs readback changed accordingly, but keyboard remained physically dark.
+- Enabled `tuxedo_keyboard` dynamic debug and captured kernel logs during direct and DBus-triggered writes.
+- Confirmed root cause is kernel-side on this host:
+  - repeated `uniwill_wmi: WMI read error: 0x1808/0x078c, data: 0xfe`
+  - `tuxedo_keyboard: uniwill_leds_set_brightness(): uniwill_write_kbd_bl_white() failed`
+- Conclusion: daemon/TUI path reaches kernel node, but firmware/driver WMI EC access for white keyboard brightness fails on this machine.
+- Safety UX improvement added in daemon: `SetKeyboardState` now propagates hardware write failures rather than silently succeeding, so UI can show actionable error when kernel writes fail.
+
+## Stage 7 follow-up — Restore 2-stage white brightness behavior (2026-04-12)
+- User feedback: keyboard on/off works, but no visual distinction between 50% and 100%.
+- Adjusted `SysfsWhiteKeyboard` mapping for `max_brightness=2` to preserve two hardware stages:
+  - `0 -> 0`
+  - `1..127 -> 1`
+  - `128..255 -> 2`
+- Updated `white_brightness_scales_with_rounding` test accordingly.
+- Live verification via D-Bus and sysfs readback after deploy:
+  - `brightness=50%` -> `after50=1`
+  - `brightness=100%` -> `after100=2`
+
+## Stage 7 follow-up — Final keyboard root cause and persistence (2026-04-12)
+- User hardware feedback: no illumination unless `uniwill_wmi` direct EC mode is enabled.
+- Confirmed working runtime fix:
+  - `/sys/module/uniwill_wmi/parameters/ec_direct_io = Y`
+  - keyboard illumination works with distinct 2-stage levels.
+- Added `Justfile` recipe `enable-uniwill-ec-direct` to persist and apply:
+  - writes `/etc/modprobe.d/99-tuxedo-uniwill-ec-direct.conf` with `options uniwill_wmi ec_direct_io=1`
+  - reloads Uniwill/tuxedo modules
+  - restarts daemon
+  - prints effective `ec_direct_io` state.

@@ -97,11 +97,24 @@ impl ProfileApplier {
         // 3. Keyboard backlight brightness.
         if !self.keyboards.is_empty() {
             let brightness = profile.keyboard.brightness;
-            // Profile stores brightness as 0–255; forward directly to hardware.
+            // Profile brightness is percentage-like (0-100). Convert to hardware scale.
+            let hw_brightness = ((brightness.min(100) as f32 / 100.0) * 255.0) as u8;
             for kb_lock in &self.keyboards {
                 if let Ok(mut kb) = kb_lock.lock() {
-                    if let Err(e) = kb.set_brightness(brightness) {
-                        warn!("failed to set keyboard brightness: {e}");
+                    if hw_brightness == 0 {
+                        if let Err(e) = kb.turn_off() {
+                            warn!("failed to turn off keyboard backlight: {e}");
+                        }
+                    } else {
+                        if let Err(e) = kb.set_brightness(hw_brightness) {
+                            warn!("failed to set keyboard brightness: {e}");
+                        }
+                        if let Err(e) = kb.turn_on() {
+                            warn!("failed to turn on keyboard backlight: {e}");
+                        }
+                        if let Err(e) = kb.set_brightness(hw_brightness) {
+                            warn!("failed to re-apply keyboard brightness: {e}");
+                        }
                     }
                     if let Err(e) = kb.flush() {
                         warn!("failed to flush keyboard state: {e}");
@@ -109,8 +122,8 @@ impl ProfileApplier {
                 }
             }
             info!(
-                "applied keyboard brightness={} from profile '{}'",
-                brightness, profile.name
+                "applied keyboard brightness={} (hw={}) from profile '{}'",
+                brightness, hw_brightness, profile.name
             );
         }
 
@@ -135,13 +148,93 @@ impl ProfileApplier {
             }
             if let Some(ref p) = cs.profile {
                 debug!("setting charge profile: {p}");
-                let result = backend.set_profile(p);
-                info!("set_profile({p}) → {result:?}");
+                match backend.get_profile() {
+                    Ok(Some(current)) if current == *p => {
+                        debug!("charge profile already set to {p}, skipping write");
+                    }
+                    Ok(_) => {
+                        if let Err(e) = backend.set_profile(p) {
+                            warn!("failed to set charge profile '{p}': {e}");
+                            if e.kind() == std::io::ErrorKind::Other {
+                                std::thread::sleep(std::time::Duration::from_millis(300));
+                                if let Err(e2) = backend.set_profile(p) {
+                                    warn!(
+                                        "second attempt failed to set charge profile '{p}': {e2}"
+                                    );
+                                } else {
+                                    info!("set_profile({p}) → Ok(()) on second attempt");
+                                }
+                            }
+                        } else {
+                            info!("set_profile({p}) → Ok(())");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "failed to read current charge profile, attempting write '{p}' anyway: {e}"
+                        );
+                        if let Err(e) = backend.set_profile(p) {
+                            warn!("failed to set charge profile '{p}' after read error: {e}");
+                            if e.kind() == std::io::ErrorKind::Other {
+                                std::thread::sleep(std::time::Duration::from_millis(300));
+                                if let Err(e2) = backend.set_profile(p) {
+                                    warn!(
+                                        "second attempt failed to set charge profile '{p}' after read error: {e2}"
+                                    );
+                                } else {
+                                    info!("set_profile({p}) → Ok(()) on second attempt (after read error)");
+                                }
+                            }
+                        } else {
+                            info!("set_profile({p}) → Ok(()) (after read error)");
+                        }
+                    }
+                }
             }
             if let Some(ref p) = cs.priority {
                 debug!("setting charge priority: {p}");
-                let result = backend.set_priority(p);
-                info!("set_priority({p}) → {result:?}");
+                match backend.get_priority() {
+                    Ok(Some(current)) if current == *p => {
+                        debug!("charge priority already set to {p}, skipping write");
+                    }
+                    Ok(_) => {
+                        if let Err(e) = backend.set_priority(p) {
+                            warn!("failed to set charge priority '{p}': {e}");
+                            if e.kind() == std::io::ErrorKind::Other {
+                                std::thread::sleep(std::time::Duration::from_millis(300));
+                                if let Err(e2) = backend.set_priority(p) {
+                                    warn!(
+                                        "second attempt failed to set charge priority '{p}': {e2}"
+                                    );
+                                } else {
+                                    info!("set_priority({p}) → Ok(()) on second attempt");
+                                }
+                            }
+                        } else {
+                            info!("set_priority({p}) → Ok(())");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "failed to read current charge priority, attempting write '{p}' anyway: {e}"
+                        );
+                        if let Err(e) = backend.set_priority(p) {
+                            warn!("failed to set charge priority '{p}' after read error: {e}");
+                            if e.kind() == std::io::ErrorKind::Other {
+                                std::thread::sleep(std::time::Duration::from_millis(300));
+                                if let Err(e2) = backend.set_priority(p) {
+                                    warn!(
+                                        "second attempt failed to set charge priority '{p}' after read error: {e2}"
+                                    );
+                                } else {
+                                    info!("set_priority({p}) → Ok(()) on second attempt (after read error)");
+                                }
+                            }
+                        } else {
+                            info!("set_priority({p}) → Ok(()) (after read error)");
+                        }
+                    }
+                }
             }
             info!("applied charging settings from profile '{}'", profile.name);
         }
@@ -195,6 +288,7 @@ impl ProfileApplier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::charging::ChargingBackend;
     use tux_core::fan_curve::FanCurvePoint;
     use tux_core::profile::{CpuSettings, FanProfileSettings};
 
@@ -309,6 +403,208 @@ mod tests {
         };
         // Should not panic with no charging backend.
         applier.apply(&profile).unwrap();
+    }
+
+    #[test]
+    fn apply_scales_profile_keyboard_brightness_to_hardware() {
+        use crate::hid::{KeyboardLed, Rgb};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Calls {
+            brightness: Option<u8>,
+            flush_count: usize,
+        }
+
+        struct MockKb(Arc<Mutex<Calls>>);
+
+        impl KeyboardLed for MockKb {
+            fn set_brightness(&mut self, b: u8) -> std::io::Result<()> {
+                self.0.lock().unwrap().brightness = Some(b);
+                Ok(())
+            }
+
+            fn set_color(&mut self, _zone: u8, _color: Rgb) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn set_mode(&mut self, _mode: &str) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn zone_count(&self) -> u8 {
+                1
+            }
+
+            fn turn_off(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn turn_on(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0.lock().unwrap().flush_count += 1;
+                Ok(())
+            }
+
+            fn device_type(&self) -> &str {
+                "mock"
+            }
+
+            fn available_modes(&self) -> Vec<String> {
+                vec!["static".to_string()]
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(MockKb(calls.clone()))));
+
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, None, None, None, None, vec![kb], None);
+
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.keyboard.brightness = 50;
+
+        applier.apply(&profile).unwrap();
+
+        let c = calls.lock().unwrap();
+        assert_eq!(c.brightness, Some(127));
+        assert_eq!(c.flush_count, 1);
+    }
+
+    struct MockCharging {
+        profile: std::sync::Mutex<Option<String>>,
+        priority: std::sync::Mutex<Option<String>>,
+        profile_writes: std::sync::atomic::AtomicUsize,
+        priority_writes: std::sync::atomic::AtomicUsize,
+        fail_profile_read: bool,
+        fail_priority_read: bool,
+    }
+
+    impl MockCharging {
+        fn new(profile: Option<&str>, priority: Option<&str>) -> Self {
+            Self {
+                profile: std::sync::Mutex::new(profile.map(ToOwned::to_owned)),
+                priority: std::sync::Mutex::new(priority.map(ToOwned::to_owned)),
+                profile_writes: std::sync::atomic::AtomicUsize::new(0),
+                priority_writes: std::sync::atomic::AtomicUsize::new(0),
+                fail_profile_read: false,
+                fail_priority_read: false,
+            }
+        }
+
+        fn with_read_failures(fail_profile_read: bool, fail_priority_read: bool) -> Self {
+            Self {
+                profile: std::sync::Mutex::new(Some("balanced".to_string())),
+                priority: std::sync::Mutex::new(Some("performance".to_string())),
+                profile_writes: std::sync::atomic::AtomicUsize::new(0),
+                priority_writes: std::sync::atomic::AtomicUsize::new(0),
+                fail_profile_read,
+                fail_priority_read,
+            }
+        }
+    }
+
+    impl ChargingBackend for MockCharging {
+        fn get_start_threshold(&self) -> std::io::Result<u8> {
+            Ok(0)
+        }
+
+        fn set_start_threshold(&self, _pct: u8) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn get_end_threshold(&self) -> std::io::Result<u8> {
+            Ok(0)
+        }
+
+        fn set_end_threshold(&self, _pct: u8) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn get_profile(&self) -> std::io::Result<Option<String>> {
+            if self.fail_profile_read {
+                return Err(std::io::Error::other("profile read failed"));
+            }
+            Ok(self.profile.lock().unwrap().clone())
+        }
+
+        fn set_profile(&self, profile: &str) -> std::io::Result<()> {
+            self.profile_writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *self.profile.lock().unwrap() = Some(profile.to_string());
+            Ok(())
+        }
+
+        fn get_priority(&self) -> std::io::Result<Option<String>> {
+            if self.fail_priority_read {
+                return Err(std::io::Error::other("priority read failed"));
+            }
+            Ok(self.priority.lock().unwrap().clone())
+        }
+
+        fn set_priority(&self, priority: &str) -> std::io::Result<()> {
+            self.priority_writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *self.priority.lock().unwrap() = Some(priority.to_string());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn apply_charging_skips_redundant_profile_priority_writes() {
+        let backend = Arc::new(MockCharging::new(Some("balanced"), Some("performance")));
+        let charging: Arc<dyn ChargingBackend> = backend.clone();
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, Some(charging), None, None, None, vec![], None);
+
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.charging.profile = Some("balanced".to_string());
+        profile.charging.priority = Some("performance".to_string());
+
+        applier.apply(&profile).unwrap();
+
+        assert_eq!(
+            backend
+                .profile_writes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            backend
+                .priority_writes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn apply_charging_attempts_writes_when_read_fails() {
+        let backend = Arc::new(MockCharging::with_read_failures(true, true));
+        let charging: Arc<dyn ChargingBackend> = backend.clone();
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, Some(charging), None, None, None, vec![], None);
+
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.charging.profile = Some("high_capacity".to_string());
+        profile.charging.priority = Some("charge_battery".to_string());
+
+        applier.apply(&profile).unwrap();
+
+        assert_eq!(
+            backend
+                .profile_writes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            backend
+                .priority_writes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]

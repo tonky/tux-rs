@@ -4,6 +4,8 @@ use tux_core::backend::fan::FanBackend;
 use tux_core::dmi::DetectedDevice;
 use tux_core::platform::Platform;
 
+use tracing::debug;
+
 pub mod sysfs;
 pub mod tuxedo_io;
 
@@ -11,12 +13,14 @@ mod td_clevo;
 mod td_nb04;
 mod td_nb05;
 mod td_tuxi;
+mod td_uw_fan;
 mod td_uniwill;
 
 pub use td_clevo::TdClevoFanBackend;
 pub use td_nb04::TdNb04FanBackend;
 pub use td_nb05::TdNb05FanBackend;
 pub use td_tuxi::TdTuxiFanBackend;
+pub use td_uw_fan::TdUwFanBackend;
 pub use td_uniwill::TdUniwillFanBackend;
 
 /// Create the appropriate `FanBackend` for the detected hardware.
@@ -26,8 +30,21 @@ pub use td_uniwill::TdUniwillFanBackend;
 pub fn init_fan_backend(device: &DetectedDevice) -> Option<Arc<dyn FanBackend>> {
     match device.descriptor.platform {
         Platform::Uniwill => {
-            let io_dev = tuxedo_io::TuxedoIoDevice::open()?;
+            // Prefer the sysfs interface from tuxedo_uw_fan if available.
+            if let Some(backend) = TdUwFanBackend::new() {
+                debug!("Uniwill: using tuxedo_uw_fan sysfs backend");
+                return Some(Arc::new(backend));
+            }
+            // Fallback: ioctl via tuxedo_io (requires tuxedo_keyboard WMI registration).
+            let io_dev = match tuxedo_io::TuxedoIoDevice::open() {
+                Some(d) => d,
+                None => {
+                    debug!("Uniwill: failed to open {}", tuxedo_io::TUXEDO_IO_DEVICE);
+                    return None;
+                }
+            };
             if !io_dev.is_uniwill_hardware() {
+                debug!("Uniwill: R_HWCHECK_UW returned false/error");
                 return None;
             }
             let backend =

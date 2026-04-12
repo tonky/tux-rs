@@ -9,12 +9,54 @@ use tokio::sync::{broadcast, watch};
 use zbus::Connection;
 
 use tux_core::backend::fan::FanBackend;
+use tux_core::device::KeyboardType;
 use tux_core::dmi::DetectedDevice;
 use tux_core::fan_curve::FanConfig;
 use tux_core::mock::fan::MockFanBackend;
 
 use tux_daemon::charging::ChargingBackend;
 use tux_daemon::fan_engine::FanCurveEngine;
+use tux_daemon::hid::{KeyboardLed, Rgb, SharedKeyboard};
+
+struct MockKeyboard;
+
+impl KeyboardLed for MockKeyboard {
+    fn set_brightness(&mut self, _brightness: u8) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn set_color(&mut self, _zone: u8, _color: Rgb) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn set_mode(&mut self, _mode: &str) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn zone_count(&self) -> u8 {
+        1
+    }
+
+    fn turn_off(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn turn_on(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn device_type(&self) -> &str {
+        "mock"
+    }
+
+    fn available_modes(&self) -> Vec<String> {
+        vec!["static".into()]
+    }
+}
 
 /// A test daemon running on the session bus with mock backends.
 pub struct TestDaemon {
@@ -147,13 +189,22 @@ impl TestDaemon {
         let assignments = tux_daemon::config::ProfileAssignments::default();
         let (assignments_tx, assignments_rx) = watch::channel(assignments);
 
+        let keyboards: Vec<SharedKeyboard> = if matches!(
+            device.descriptor.keyboard,
+            KeyboardType::None
+        ) {
+            vec![]
+        } else {
+            vec![Arc::new(std::sync::Mutex::new(Box::new(MockKeyboard)))]
+        };
+
         let applier = Arc::new(tux_daemon::profile_apply::ProfileApplier::new(
             config_tx.clone(),
             None,   // no charging backend in applier
             None,   // no CPU governor
             None,   // no TDP backend
             None,   // no GPU backend
-            vec![], // no keyboards
+            keyboards.clone(),
             None,   // no display
         ));
 
@@ -161,7 +212,9 @@ impl TestDaemon {
 
         // Start fan engine and extract its failure counter before moving it.
         let engine_backend = fan_backend.clone() as Arc<dyn FanBackend>;
-        let mut engine = FanCurveEngine::new(engine_backend, config_rx.clone());
+        let (manual_pwms_tx, manual_pwms_rx) = watch::channel(Vec::<u8>::new());
+        let mut engine =
+            FanCurveEngine::new_with_manual_pwms(engine_backend, config_rx.clone(), manual_pwms_rx);
         let fan_failure_counter = engine.failure_counter();
         let engine_shutdown = shutdown_tx.subscribe();
         let engine_handle = tokio::spawn(async move {
@@ -172,7 +225,7 @@ impl TestDaemon {
             bus_type: tux_daemon::dbus::BusType::Session,
             device,
             fan_backend: backend.clone(),
-            keyboards: vec![], // no keyboards
+            keyboards,
             charging,
             cpu_governor: None,
             tdp_backend: None,
@@ -189,6 +242,7 @@ impl TestDaemon {
                 tux_daemon::config::DaemonConfig::default(),
             )),
             fan_failure_counter,
+            manual_pwms_tx,
         })
         .await
         .expect("failed to start D-Bus service on session bus");

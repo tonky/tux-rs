@@ -553,7 +553,7 @@ pub fn charging_form() -> FormTabState {
             label: "Charging Priority".into(),
             key: Some("priority".into()),
             field_type: FieldType::Select {
-                options: vec!["charge".into(), "performance".into()],
+                options: vec!["charge_battery".into(), "performance".into()],
                 selected: 0,
             },
             enabled: true,

@@ -27,14 +27,14 @@ in
       enable = mkOption {
         type = types.bool;
         default = true;
-        description = "Whether to include and auto-load the TUXEDO kernel modules.";
+        description = "Whether to include and auto-load the tuxedo-drivers kernel modules.";
       };
 
       package = mkOption {
         type = types.package;
-        default = pkgs.tux-kmod;
-        defaultText = literalExpression "pkgs.tux-kmod";
-        description = "The tux-kmod package to use.";
+        default = pkgs.linuxPackages.tuxedo-drivers;
+        defaultText = literalExpression "pkgs.linuxPackages.tuxedo-drivers";
+        description = "The tuxedo-drivers kernel module package to use.";
       };
     };
   };
@@ -46,11 +46,12 @@ in
 
     boot.extraModulePackages = mkIf cfg.kernelModules.enable [ cfg.kernelModules.package ];
     boot.kernelModules = mkIf cfg.kernelModules.enable [
-      "tuxedo_ec"
-      "tuxedo_uniwill"
-      "tuxedo_clevo"
-      "tuxedo_tuxi"
-      "tuxedo_nb04"
+      "tuxedo_io"
+      "tuxedo_nb05_fan_control"
+      "tuxedo_nb05_sensors"
+      "tuxedo_nb04_sensors"
+      "tuxedo_nb04_power_profiles"
+      "tuxedo_fan_control"
     ];
 
     systemd.services.tux-daemon = {

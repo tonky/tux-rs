@@ -36,7 +36,7 @@
       in
       {
         packages = {
-          inherit (tux-rs) tux-daemon tux-tui tux-kmod;
+          inherit (tux-rs) tux-daemon tux-tui;
           default = tux-rs.tux-daemon;
         };
 
@@ -93,7 +93,6 @@
       overlays.default = final: prev: {
         tux-daemon = self.packages.${final.system}.tux-daemon;
         tux-tui = self.packages.${final.system}.tux-tui;
-        tux-kmod = self.packages.${final.system}.tux-kmod;
       };
 
       nixosModules.default = { pkgs, ... }: {

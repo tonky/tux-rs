@@ -68,6 +68,30 @@ All tests passing (648+), zero clippy warnings.
 ## Review of Stages 1–4 (2026-04-12)
 Two sub-agents reviewed all implemented changes for conformance and code quality.
 
+## Stage 5 — Remove tux-kmod, update packaging
+- Deleted `tux-kmod/` directory entirely (5 C shim kernel modules no longer needed).
+- Deleted `nix/tux-kmod.nix` Nix package derivation.
+- Removed all `kmod-*` recipes from `Justfile` (kmod-build, kmod-build-one, kmod-clean, kmod-install, kmod-remove, kmod-load, kmod-unload, kmod-reload, kmod-swap, plus `kmod_version`/`kmod_src` variables).
+- Updated `default.nix`: removed `tux-kmod = pkgsWithRust.callPackage ./nix/tux-kmod.nix {...}`.
+- Updated `nix/overlay.nix`: removed `tux-kmod` entry.
+- Updated `flake.nix`: removed `tux-kmod` from `inherit (tux-rs)` packages and from `overlays.default`.
+- Updated `nixos/default.nix`:
+  - `kernelModules.package` default changed from `pkgs.tux-kmod` → `pkgs.linuxPackages.tuxedo-drivers`.
+  - `boot.kernelModules` list changed from tux-kmod module names (tuxedo_ec, tuxedo_clevo, etc.) to tuxedo-drivers names (tuxedo_io, tuxedo_nb05_fan_control, tuxedo_nb05_sensors, tuxedo_nb04_sensors, tuxedo_nb04_power_profiles, tuxedo_fan_control).
+- Updated `README.md`: removed "Kernel Modules" section, removed "### Kernel module development" with kmod-* commands, removed "### 1. Kernel modules (DKMS)" installation section; added tuxedo-drivers prerequisite note; renumbered Installation sections.
+- All tests passing (648+), zero errors.
+
+## Stage 6 — Cleanup & validation
+- Deleted old tux-kmod fan backends: `nb05.rs`, `clevo.rs`, `uniwill.rs`, `tuxi.rs`.
+- Updated `platform/mod.rs`: removed `mod`/`use` declarations for old backends; removed all fallback branches from `init_fan_backend` — now uses tuxedo-drivers td_* backends exclusively.
+- Simplified `PlatformRegisters` enum to unit variants: removed all structs (`Nb05Registers`, `UniwillRegisters`, `ClevoRegisters`, `Nb04Registers`, `TuxiRegisters`) and all dead fields (`sysfs_base`, `num_fans`, `fanctl_onereg`, `max_fans`). All tux-kmod-specific addressing was in these fields, and the td_* backends use hard-coded tuxedo-drivers sysfs paths.
+- Updated all callsites: `device.rs` tests, `device_table.rs` (all device entries, via perl multi-line regex), `custom_device.rs`, `dbus/settings.rs` test.
+- Fixed `device_table.rs` test `nb05_infinityflex_has_one_fan`: replaced `fanctl_onereg` check with `platform` + `registers` equality assertions.
+- `CustomPlatformRegisters` in `custom_device.rs` simplified to unit variants (config schema no longer requires `sysfs_base` or other tux-kmod path fields).
+- Fixed unused import warnings introduced by `cargo fix` clobbering test-only imports (`PathBuf`, `HashMap`, `Mutex`) — restored them under `#[cfg(test)]`.
+- Added `Default` impl for `MockTuxedoIo` (clippy suggestion, `#[cfg(test)]`).
+- All 607 tests passing (reduction from 648 expected: deleted old backend test suites), zero clippy warnings in library code.
+
 **Correctness bugs fixed (MAJOR):**
 - `td_uniwill.rs` `ec_to_pwm`: `ec as u16` wraps silently on negative hardware values; replaced with `.clamp(0, EC_PWM_MAX as i32) as u16`.
 - `td_nb04.rs` `set_auto`: accepted out-of-range `fan_index`; added bounds check for API consistency.

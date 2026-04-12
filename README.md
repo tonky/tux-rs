@@ -26,10 +26,6 @@ See [docs/architecture.md](docs/architecture.md) for the architecture deep dive,
 | `tux-daemon` | bin | Root system daemon — fan control, D-Bus API, profile management |
 | `tux-tui` | bin | Terminal UI — ratatui-based control interface |
 
-## Kernel Modules
-
-`tux-kmod/` contains 5 minimal C kernel shims for raw hardware access via sysfs.
-
 ## Development
 
 Requires Rust stable and [just](https://github.com/casey/just).
@@ -52,24 +48,11 @@ just clippy             # lint with warnings as errors
 just fmt                # check formatting
 ```
 
-### Kernel module development
-
-```sh
-just kmod-swap                        # unload vendor modules, build + load tuxedo-uniwill
-just kmod-reload tuxedo-uniwill       # rebuild + reload a single module
-just kmod-build                       # build all modules
-```
-
 ## Installation
 
-### 1. Kernel modules (DKMS)
+**Prerequisite:** Install [tuxedo-drivers](https://github.com/tuxedocomputers/tuxedo-drivers) for your kernel (available via DKMS or your distro's package manager).
 
-```sh
-just kmod-install       # copies to /usr/src, builds via DKMS, installs for current kernel
-sudo modprobe tuxedo_uniwill  # load your platform's module (varies by laptop)
-```
-
-### 2. Daemon
+### 1. Daemon
 
 #### Systemd (most distros)
 
@@ -92,7 +75,7 @@ sudo dinitctl enable tux-daemon
 sudo dinitctl start tux-daemon
 ```
 
-### 3. TUI
+### 2. TUI
 
 ```sh
 just install-tui        # install tux-tui binary

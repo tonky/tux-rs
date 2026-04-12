@@ -1,4 +1,5 @@
 use std::io;
+#[cfg(test)]
 use std::path::PathBuf;
 
 use tux_core::backend::fan::FanBackend;

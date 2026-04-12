@@ -73,9 +73,6 @@ in
 rec {
   tux-daemon = pkgsWithRust.callPackage ./nix/tux-daemon.nix { inherit rustPlatform; };
   tux-tui = pkgsWithRust.callPackage ./nix/tux-tui.nix { inherit rustPlatform; };
-  tux-kmod = pkgsWithRust.callPackage ./nix/tux-kmod.nix {
-    kernel = pkgsWithRust.linuxPackages_latest.kernel;
-  };
 
   overlays = {
     default = import ./nix/overlay.nix;

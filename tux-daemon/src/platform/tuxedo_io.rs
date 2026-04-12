@@ -1,8 +1,6 @@
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
-use std::sync::Mutex;
 
 /// Path to the tuxedo_io character device.
 pub const TUXEDO_IO_DEVICE: &str = "/dev/tuxedo_io";
@@ -139,20 +137,27 @@ impl TuxedoIo for TuxedoIoDevice {
 #[cfg(test)]
 pub struct MockTuxedoIo {
     /// Pre-programmed return values for read-type ioctls.
-    reads: HashMap<u64, i32>,
+    reads: std::collections::HashMap<u64, i32>,
     /// All write_i32 calls recorded as (cmd, value).
-    pub writes: Mutex<Vec<(u64, i32)>>,
+    pub writes: std::sync::Mutex<Vec<(u64, i32)>>,
     /// All ioctl_noarg calls recorded as cmd.
-    pub noarg_calls: Mutex<Vec<u64>>,
+    pub noarg_calls: std::sync::Mutex<Vec<u64>>,
+}
+
+#[cfg(test)]
+impl Default for MockTuxedoIo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
 impl MockTuxedoIo {
     pub fn new() -> Self {
         Self {
-            reads: HashMap::new(),
-            writes: Mutex::new(Vec::new()),
-            noarg_calls: Mutex::new(Vec::new()),
+            reads: std::collections::HashMap::new(),
+            writes: std::sync::Mutex::new(Vec::new()),
+            noarg_calls: std::sync::Mutex::new(Vec::new()),
         }
     }
 

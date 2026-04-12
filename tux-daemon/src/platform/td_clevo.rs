@@ -202,7 +202,7 @@ mod tests {
         let (cmd, val) = writes[0];
         assert_eq!(cmd, W_CL_FANSPEED);
         // packed = fan0=0x32 | fan1=0xC8<<8 | fan2=0x00<<16
-        let expected = 0x32 | (0xC8 << 8) | (0 << 16);
+        let expected = 0x32 | (0xC8 << 8);
         assert_eq!(val, expected);
     }
 

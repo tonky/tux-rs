@@ -316,7 +316,7 @@ mod tests {
     use super::*;
     use tux_core::device::*;
     use tux_core::platform::Platform;
-    use tux_core::registers::{PlatformRegisters, UniwillRegisters};
+    use tux_core::registers::PlatformRegisters;
 
     fn make_test_device() -> DetectedDevice {
         let desc = Box::leak(Box::new(DeviceDescriptor {
@@ -337,9 +337,7 @@ mod tests {
             charging: ChargingCapability::Flexicharger,
             tdp: None,
             gpu_power: GpuPowerCapability::None,
-            registers: PlatformRegisters::Uniwill(UniwillRegisters {
-                sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-            }),
+            registers: PlatformRegisters::Uniwill,
         }));
         DetectedDevice {
             descriptor: desc,

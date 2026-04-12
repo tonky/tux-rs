@@ -1,29 +1,9 @@
-# Follow-up tasks for kmod removal / tuxedo-drivers migration
+title = "Follow-up tasks for: Remove kmod, use tuxedo-drivers"
 
-[[tasks]]
-description = "Verify tuxedo_io ioctl command stability across tuxedo-drivers versions"
-status = "pending"
+[[task]]
+id = "f001"
+description = "Verify with user if `stage-*` files capture the correct implementation scope."
+status = "open"
 priority = "high"
-context = "Clevo and Uniwill backends depend on /dev/tuxedo_io ioctl interface"
-reasoning = "If ioctl commands change between versions, our daemon would break silently"
-
-[[tasks]]
-description = "Check if NB04 fan curve control is feasible via tuxedo-drivers"
-status = "pending"
-priority = "medium"
-context = "tuxedo-drivers only exposes power profiles (low-power/balanced/performance) for NB04, no direct PWM"
-reasoning = "May need to degrade gracefully to profile-only control for NB04 devices"
-
-[[tasks]]
-description = "Enumerate all SKUs from tuxedo-drivers DMI tables for device_table.rs expansion"
-status = "pending"
-priority = "medium"
-context = "Need full TCC parity — all supported devices must work"
-reasoning = "Current table has ~40 SKUs; tuxedo-drivers likely supports more"
-
-[[tasks]]
-description = "Test Pulse 14 Gen 4 on tuxedo-drivers NB05 modules"
-status = "pending"
-priority = "high"
-context = "User's priority device, NixOS issue #3 requester"
-reasoning = "First real-hardware validation target"
+context = "Created stage-1.md through stage-6.md per the high level plan."
+reasoning = "We must iterate and agree on plan and stage details before starting to implement Stage 1, per AGENTS.md rules."

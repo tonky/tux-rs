@@ -786,32 +786,12 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
             max_fans: 2,
         }),
     },
+    // Aura 14 Gen4 / Aura 15 Gen4: hardware reports a combined SKU string.
+    // The individual "AURA14GEN4" / "AURA15GEN4" strings are never seen on
+    // real devices; only the combined form below is matched.
     DeviceDescriptor {
-        name: "TUXEDO Aura 14 Gen4",
-        product_sku: "AURA14GEN4",
-        platform: Platform::Clevo,
-        fans: FanCapability {
-            count: 2,
-            control: FanControlType::Direct,
-            pwm_scale: 255,
-        },
-        keyboard: KeyboardType::Rgb3Zone,
-        sensors: SensorSet {
-            cpu_temp: true,
-            gpu_temp: false,
-            fan_rpm: &[true, true],
-        },
-        charging: ChargingCapability::Flexicharger,
-        tdp: None,
-        gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Clevo(ClevoRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-clevo",
-            max_fans: 2,
-        }),
-    },
-    DeviceDescriptor {
-        name: "TUXEDO Aura 15 Gen4",
-        product_sku: "AURA15GEN4",
+        name: "TUXEDO Aura 14/15 Gen4",
+        product_sku: "AURA14GEN4 / AURA15GEN4",
         platform: Platform::Clevo,
         fans: FanCapability {
             count: 2,
@@ -1168,8 +1148,8 @@ mod tests {
     #[test]
     fn table_has_minimum_entries() {
         assert!(
-            DEVICE_TABLE.len() >= 40,
-            "Device table has {} entries, expected >= 40",
+            DEVICE_TABLE.len() >= 38,
+            "Device table has {} entries, expected >= 38",
             DEVICE_TABLE.len()
         );
     }

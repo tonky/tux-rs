@@ -32,6 +32,6 @@ By switching to tuxedo-drivers:
 
 ## User note
 
-> daemon and TUI should support all the hardware that legacy TCC supports. for example the NixOS requester had 'Pulse 14 Gen 4'
+> daemon and TUI should support all the hardware that legacy TCC supports. for example the NixOS requester had 'Pulse 14 Gen 4'. 'InfinityBook Pro 16 Gen8' should be a priority, it's the hardware we're tesing on.
 
 Pulse 14 Gen 4 is NB05 platform — currently supported via tux-kmod's `tuxedo-ec`. With tuxedo-drivers, this becomes `tuxedo_nb05_ec` + `tuxedo_nb05_fan_control` + `tuxedo_nb05_sensors`.

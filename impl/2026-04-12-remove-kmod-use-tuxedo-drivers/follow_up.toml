@@ -3,7 +3,39 @@ title = "Follow-up tasks for: Remove kmod, use tuxedo-drivers"
 [[task]]
 id = "f001"
 description = "Verify with user if `stage-*` files capture the correct implementation scope."
-status = "open"
+status = "closed"
 priority = "high"
 context = "Created stage-1.md through stage-6.md per the high level plan."
 reasoning = "We must iterate and agree on plan and stage details before starting to implement Stage 1, per AGENTS.md rules."
+
+[[task]]
+id = "f002"
+description = "Update charging control sysfs paths for tuxedo-drivers: tux-daemon/src/charging/clevo.rs and charging/uniwill.rs still reference tux-kmod paths (/sys/devices/platform/tuxedo-clevo, /tuxedo-uniwill). After Stage 5 (kmod removal), these must be updated to tuxedo-drivers chardev/WMI paths."
+status = "open"
+priority = "high"
+context = "Stage 2 spec required charging control via tuxedo_keyboard sysfs interfaces. Conformance review identified this gap. The charging modules are separate from fan backends and need their own migration."
+reasoning = "Without this, Clevo flexicharger and Uniwill charge profiles will break when tux-kmod is removed in Stage 5."
+
+[[task]]
+id = "f003"
+description = "Implement NB04 keyboard backlight control via tuxedo_nb04_kbd_backlight LED subsystem. Stage 3 spec required integrating standard Linux LED class at /sys/class/leds/tuxedo_nb04_kbd_backlight/."
+status = "open"
+priority = "medium"
+context = "Stage 3 spec item. The vendor source for the LED driver is at vendor/tuxedo-drivers/src/tuxedo_nb04/tuxedo_nb04_kbd_backlight.c. Current hid/discover.rs could be extended to scan for this LED name."
+reasoning = "NB04 (Sirius series) users cannot control keyboard backlight without this. Medium priority because NB04 already lacks fan PWM control so impact surface is smaller."
+
+[[task]]
+id = "f004"
+description = "Perform a systematic sweep of tuxedo-drivers DMI match tables vs our device_table.rs to verify no SKUs are missing. Produce a reconciliation artifact (a table in stage-4.md or a separate file) documenting which vendor SKUs are matched and why others are absent."
+status = "open"
+priority = "medium"
+context = "Stage 4 spec required full SKU parity. Old Polaris/Pulse/Aura1501 SKUs use DMI_BOARD_NAME so fall to platform fallback (OK). But the sweep was incomplete and not documented."
+reasoning = "Without this artifact, we cannot claim full TCC parity. Needed before Stage 8 (polish/packaging)."
+
+[[task]]
+id = "f005"
+description = "Investigate and document tuxedo-drivers charging sysfs interface layout. Specifically: what sysfs paths does tuxedo_keyboard expose for flexicharger threshold and Uniwill charge profiles? Are they under /sys/devices/platform/tuxedo_keyboard/ or elsewhere?"
+status = "open"
+priority = "high"
+context = "Prerequisite for f002. Need to read vendor/tuxedo-drivers/src/tuxedo_keyboard/ source to find the correct attribute paths."
+reasoning = "Cannot fix charging control (f002) without knowing the correct paths."

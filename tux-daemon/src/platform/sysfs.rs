@@ -1,8 +1,47 @@
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tracing::debug;
+
+// ─── Shared fan sysfs constants ──────────────────────────────────────────────
+
+/// `fan{N}_pwm_enable` value: fan is under manual (user) control.
+pub const PWM_ENABLE_MANUAL: u8 = 1;
+
+/// `fan{N}_pwm_enable` value: fan is under automatic (firmware) control.
+pub const PWM_ENABLE_AUTO: u8 = 2;
+
+// ─── Shared fan sysfs helpers ─────────────────────────────────────────────────
+
+/// Build a 1-indexed fan attribute name (e.g. `fan1_pwm`, `fan2_input`).
+pub fn fan_attr(fan_index: u8, suffix: &str) -> String {
+    format!("fan{}_{}", fan_index + 1, suffix)
+}
+
+/// Validate a 0-based fan index against the backend's fan count.
+pub fn check_fan_index(fan_index: u8, num_fans: u8) -> io::Result<()> {
+    if fan_index >= num_fans {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("fan index {fan_index} out of range (num_fans={num_fans})"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Walk `base` and return the path of the first `hwmonN` subdirectory.
+///
+/// Used by backends that expose sensors through a dynamically-numbered hwmon
+/// device (e.g. `tuxedo_nb05_sensors`, `tuxedo_fan_control`, `tuxedo_nb04_sensors`).
+pub fn discover_hwmon(base: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(Path::new(base)).ok()?;
+    entries
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("hwmon"))
+        .map(|e| e.path())
+}
 
 /// Helper for reading/writing sysfs attributes under a platform device directory.
 pub struct SysfsReader {

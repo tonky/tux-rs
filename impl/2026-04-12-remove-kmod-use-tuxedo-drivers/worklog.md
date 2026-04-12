@@ -338,6 +338,32 @@ All 4 phases from external review implemented. 629 tests passing (up from 608), 
   - `just test`
   - `just ci`
 
+## Stage 7 follow-up — Implausible temp filter with CPU load gate (2026-04-12)
+- Added implausible-temperature handling in `tux-daemon/src/fan_engine.rs` for Uniwill-style spikes (e.g. 120°C).
+- Policy:
+  - requires 5 consecutive implausible samples before acting on them;
+  - if CPU load is below 30%, skips acting on the implausible sample and keeps previous PWM.
+- Reused existing daemon CPU sampler (`/proc/stat`) via an internal fan-engine load source.
+- Added regression tests:
+  - `implausible_temp_with_low_cpu_load_keeps_previous_pwm`
+  - `implausible_temp_requires_five_consecutive_with_high_cpu_load`
+- Validation:
+  - `cargo test -p tux-daemon fan_engine -- --nocapture` (13 passed)
+
+## Stage 7 follow-up — Prefer coretemp/hwmon CPU temp for fan curve (2026-04-12)
+- Updated fan control temperature source in `tux-daemon/src/fan_engine.rs`:
+  - Prefer CPU hwmon sensors (`coretemp`, `k10temp`, `zenpower`, `cpu_thermal`) for control-loop temperature.
+  - If hwmon read fails, fall back to backend temperature (`tuxedo-uw-fan` / `tuxedo_io` path).
+- Added `HwmonCpuTempSource` with sensor discovery and label preference (`Package id`/`Tdie`/`Tctl` labels preferred when available).
+- Existing implausible-temp filtering and CPU-load gating continue to apply to the selected control temperature.
+- Added regression tests:
+  - `read_control_temp_prefers_hwmon_source`
+  - `read_control_temp_falls_back_to_backend`
+  - `hwmon_cpu_temp_source_prefers_package_label`
+- Ensured tests are deterministic by disabling real host hwmon probing in test default source unless explicitly mocked.
+- Validation:
+  - `cargo test -p tux-daemon fan_engine -- --nocapture` (16 passed)
+
 ## Stage 7 follow-up — Default fan polling semantics and hysteresis cleanup (2026-04-12)
 - Corrected `FanConfig::default()` so changing temperatures poll faster than stable ones:
   - `active_poll_ms = 1000`

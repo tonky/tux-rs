@@ -49,3 +49,9 @@
 - Updated help/status hints for debug toggle discoverability.
 - Validation:
 	- `cargo test -p tux-tui` (132 passed, 0 failed)
+
+## Stage 3 — Periodic repaint cadence (in progress)
+- Adjusted main event loop rendering policy so the UI repaints on every 1s tick,
+	not only when marked dirty.
+- This keeps Event Log and clock-like UI state visually fresh even when no explicit
+	interaction occurs.

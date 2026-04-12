@@ -487,7 +487,10 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             }
             // Push average fan speed to history (derived from duty, not RPM).
             if !fan_duties.is_empty() {
-                let avg = fan_duties.iter().map(|&d| d as f32 * 100.0 / 255.0).sum::<f32>()
+                let avg = fan_duties
+                    .iter()
+                    .map(|&d| d as f32 * 100.0 / 255.0)
+                    .sum::<f32>()
                     / fan_duties.len() as f32;
                 let avg_clamped = avg.min(100.0);
                 model.dashboard.push_speed(avg_clamped);
@@ -524,8 +527,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             }
         }
         DbusUpdate::FanHealth(toml_str) => {
-            if let Ok(health) =
-                toml::from_str::<tux_core::dbus_types::FanHealthResponse>(&toml_str)
+            if let Ok(health) = toml::from_str::<tux_core::dbus_types::FanHealthResponse>(&toml_str)
             {
                 model.dashboard.fan_health = if health.status == "ok" {
                     None

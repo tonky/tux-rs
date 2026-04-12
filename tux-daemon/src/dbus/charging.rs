@@ -19,10 +19,7 @@ impl ChargingInterface {
         backend: Option<Arc<dyn ChargingBackend>>,
         daemon_config: std::sync::Arc<std::sync::RwLock<crate::config::DaemonConfig>>,
     ) -> Self {
-        let last_known = daemon_config
-            .read()
-            .ok()
-            .and_then(|c| c.charging.clone());
+        let last_known = daemon_config.read().ok().and_then(|c| c.charging.clone());
         Self {
             backend,
             daemon_config,
@@ -84,11 +81,7 @@ impl ChargingInterface {
         let settings = match settings {
             Some(s) => s,
             None => {
-                let cached = self
-                    .last_known
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.clone());
+                let cached = self.last_known.lock().ok().and_then(|g| g.clone());
                 if let Some(cached) = cached {
                     tracing::warn!(
                         "charging read failed, returning cached settings: {}",
@@ -257,8 +250,14 @@ mod tests {
     fn setup_clevo() -> (MockSysfs, ChargingInterface) {
         let mock = MockSysfs::new();
         let base = mock.platform_dir("tuxedo_keyboard");
-        mock.create_attr("devices/platform/tuxedo_keyboard/charge_control_start_threshold", "40");
-        mock.create_attr("devices/platform/tuxedo_keyboard/charge_control_end_threshold", "80");
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charge_control_start_threshold",
+            "40",
+        );
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charge_control_end_threshold",
+            "80",
+        );
         let backend = ClevoCharging::with_path(base);
         let daemon_config = Arc::new(std::sync::RwLock::new(
             crate::config::DaemonConfig::default(),
@@ -315,8 +314,14 @@ end_threshold = 90
         use crate::charging::uniwill::UniwillCharging;
         let mock = MockSysfs::new();
         let base = mock.platform_dir("tuxedo_keyboard");
-        mock.create_attr("devices/platform/tuxedo_keyboard/charging_profile/charging_profile", "balanced");
-        mock.create_attr("devices/platform/tuxedo_keyboard/charging_priority/charging_prio", "charge_battery");
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charging_profile/charging_profile",
+            "balanced",
+        );
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charging_priority/charging_prio",
+            "charge_battery",
+        );
         let backend = UniwillCharging::with_path(base);
         let daemon_config = Arc::new(std::sync::RwLock::new(
             crate::config::DaemonConfig::default(),

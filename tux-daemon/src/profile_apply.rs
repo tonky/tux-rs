@@ -182,7 +182,9 @@ impl ProfileApplier {
                                         "second attempt failed to set charge profile '{p}' after read error: {e2}"
                                     );
                                 } else {
-                                    info!("set_profile({p}) → Ok(()) on second attempt (after read error)");
+                                    info!(
+                                        "set_profile({p}) → Ok(()) on second attempt (after read error)"
+                                    );
                                 }
                             }
                         } else {
@@ -227,7 +229,9 @@ impl ProfileApplier {
                                         "second attempt failed to set charge priority '{p}' after read error: {e2}"
                                     );
                                 } else {
-                                    info!("set_priority({p}) → Ok(()) on second attempt (after read error)");
+                                    info!(
+                                        "set_priority({p}) → Ok(()) on second attempt (after read error)"
+                                    );
                                 }
                             }
                         } else {

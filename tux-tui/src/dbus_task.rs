@@ -116,8 +116,7 @@ async fn poll_dashboard_checked(
     let mut fan_rpm_available = Vec::new();
     for i in 0..num_fans as u32 {
         if let Ok(toml_str) = client.get_fan_data(i).await
-            && let Ok(data) =
-                toml::from_str::<tux_core::dbus_types::FanData>(&toml_str)
+            && let Ok(data) = toml::from_str::<tux_core::dbus_types::FanData>(&toml_str)
         {
             fan_speeds.push(data.rpm);
             fan_duties.push(data.duty_percent);

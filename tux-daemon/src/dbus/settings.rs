@@ -198,32 +198,38 @@ impl SettingsInterface {
             for kb in &self.keyboards {
                 if let Ok(mut guard) = kb.lock() {
                     let dev = guard.device_type().to_string();
-                    guard
-                        .set_color(0, color)
-                        .map_err(|e| zbus::fdo::Error::Failed(format!("keyboard {dev}: set_color failed: {e}")))?;
-                    guard
-                        .set_mode(&mode)
-                        .map_err(|e| zbus::fdo::Error::Failed(format!("keyboard {dev}: set_mode failed: {e}")))?;
+                    guard.set_color(0, color).map_err(|e| {
+                        zbus::fdo::Error::Failed(format!("keyboard {dev}: set_color failed: {e}"))
+                    })?;
+                    guard.set_mode(&mode).map_err(|e| {
+                        zbus::fdo::Error::Failed(format!("keyboard {dev}: set_mode failed: {e}"))
+                    })?;
                     if hw_brightness == 0 {
-                        guard
-                            .turn_off()
-                            .map_err(|e| zbus::fdo::Error::Failed(format!("keyboard {dev}: turn_off failed: {e}")))?;
+                        guard.turn_off().map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: turn_off failed: {e}"
+                            ))
+                        })?;
                     } else {
                         // Re-enable LEDs on stateful backends (ITE), then re-apply target
                         // brightness so sysfs backends don't stay at max after turn_on().
-                        guard
-                            .set_brightness(hw_brightness)
-                            .map_err(|e| zbus::fdo::Error::Failed(format!("keyboard {dev}: set_brightness failed: {e}")))?;
-                        guard
-                            .turn_on()
-                            .map_err(|e| zbus::fdo::Error::Failed(format!("keyboard {dev}: turn_on failed: {e}")))?;
-                        guard
-                            .set_brightness(hw_brightness)
-                            .map_err(|e| zbus::fdo::Error::Failed(format!("keyboard {dev}: set_brightness (reapply) failed: {e}")))?;
+                        guard.set_brightness(hw_brightness).map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: set_brightness failed: {e}"
+                            ))
+                        })?;
+                        guard.turn_on().map_err(|e| {
+                            zbus::fdo::Error::Failed(format!("keyboard {dev}: turn_on failed: {e}"))
+                        })?;
+                        guard.set_brightness(hw_brightness).map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: set_brightness (reapply) failed: {e}"
+                            ))
+                        })?;
                     }
-                    guard
-                        .flush()
-                        .map_err(|e| zbus::fdo::Error::Failed(format!("keyboard {dev}: flush failed: {e}")))?;
+                    guard.flush().map_err(|e| {
+                        zbus::fdo::Error::Failed(format!("keyboard {dev}: flush failed: {e}"))
+                    })?;
                 }
             }
         }
@@ -377,15 +383,33 @@ mod tests {
         use std::sync::{Arc, Mutex};
         struct DummyKb;
         impl KeyboardLed for DummyKb {
-            fn set_brightness(&mut self, _: u8) -> std::io::Result<()> { Ok(()) }
-            fn set_color(&mut self, _: u8, _: Rgb) -> std::io::Result<()> { Ok(()) }
-            fn set_mode(&mut self, _: &str) -> std::io::Result<()> { Ok(()) }
-            fn zone_count(&self) -> u8 { 1 }
-            fn turn_off(&mut self) -> std::io::Result<()> { Ok(()) }
-            fn turn_on(&mut self) -> std::io::Result<()> { Ok(()) }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-            fn device_type(&self) -> &str { "dummy" }
-            fn available_modes(&self) -> Vec<String> { vec!["static".into()] }
+            fn set_brightness(&mut self, _: u8) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn set_color(&mut self, _: u8, _: Rgb) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn set_mode(&mut self, _: &str) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn zone_count(&self) -> u8 {
+                1
+            }
+            fn turn_off(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn turn_on(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn device_type(&self) -> &str {
+                "dummy"
+            }
+            fn available_modes(&self) -> Vec<String> {
+                vec!["static".into()]
+            }
         }
         let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(DummyKb)));
         let device = make_test_device();
@@ -409,7 +433,10 @@ mod tests {
         let iface = SettingsInterface::new(&device, true, 2, vec![], None, None, true);
         let caps_toml = iface.get_capabilities().unwrap();
         let caps: CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
-        assert!(!caps.keyboard_backlight, "keyboard_backlight must be false when no backends discovered");
+        assert!(
+            !caps.keyboard_backlight,
+            "keyboard_backlight must be false when no backends discovered"
+        );
     }
 
     #[test]
@@ -620,9 +647,14 @@ mod tests {
         let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None, true);
 
         let input = "brightness = 50\ncolor = \"#ffffff\"\nmode = \"static\"";
-        let err = iface.set_keyboard_state(input).expect_err("must propagate hw failure");
+        let err = iface
+            .set_keyboard_state(input)
+            .expect_err("must propagate hw failure");
         let msg = err.to_string();
-        assert!(msg.contains("set_brightness failed"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("set_brightness failed"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]

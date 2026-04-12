@@ -123,9 +123,7 @@ impl PowerStateMonitor {
             .online_path
             .parent()
             .unwrap_or(Path::new("/sys/class/power_supply"));
-        let _ = inotify
-            .watches()
-            .add(watch_path, power_dir_watch_mask());
+        let _ = inotify.watches().add(watch_path, power_dir_watch_mask());
 
         // The buffer must live as long as the event stream — both are in this scope.
         let mut buffer = [0u8; 1024];

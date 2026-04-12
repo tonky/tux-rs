@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tux_core::backend::fan::FanBackend;
 
 use super::tuxedo_io::{
-    TuxedoIo, R_UW_FAN_TEMP, R_UW_FANSPEED, R_UW_FANSPEED2, W_UW_FANAUTO, W_UW_FANSPEED,
+    R_UW_FAN_TEMP, R_UW_FANSPEED, R_UW_FANSPEED2, TuxedoIo, W_UW_FANAUTO, W_UW_FANSPEED,
     W_UW_FANSPEED2,
 };
 
@@ -64,19 +64,29 @@ impl TdUniwillFanBackend {
 impl FanBackend for TdUniwillFanBackend {
     fn read_temp(&self) -> io::Result<u8> {
         // R_UW_FAN_TEMP returns raw °C from EC RAM 0x043e.
-        self.io.read_i32(R_UW_FAN_TEMP).map(|v| v.clamp(0, 255) as u8)
+        self.io
+            .read_i32(R_UW_FAN_TEMP)
+            .map(|v| v.clamp(0, 255) as u8)
     }
 
     fn write_pwm(&self, fan_index: u8, pwm: u8) -> io::Result<()> {
         Self::check_fan_index(fan_index)?;
         let ec = Self::pwm_to_ec(pwm);
-        let cmd = if fan_index == 0 { W_UW_FANSPEED } else { W_UW_FANSPEED2 };
+        let cmd = if fan_index == 0 {
+            W_UW_FANSPEED
+        } else {
+            W_UW_FANSPEED2
+        };
         self.io.write_i32(cmd, ec)
     }
 
     fn read_pwm(&self, fan_index: u8) -> io::Result<u8> {
         Self::check_fan_index(fan_index)?;
-        let cmd = if fan_index == 0 { R_UW_FANSPEED } else { R_UW_FANSPEED2 };
+        let cmd = if fan_index == 0 {
+            R_UW_FANSPEED
+        } else {
+            R_UW_FANSPEED2
+        };
         let ec = self.io.read_i32(cmd)?;
         Ok(Self::ec_to_pwm(ec))
     }
@@ -194,7 +204,10 @@ mod tests {
         let arc = Arc::new(mock);
         arc.set_fail_reads(true);
         let backend = TdUniwillFanBackend::new(arc as Arc<dyn TuxedoIo>);
-        assert!(backend.read_temp().is_err(), "read_temp should propagate ioctl error");
+        assert!(
+            backend.read_temp().is_err(),
+            "read_temp should propagate ioctl error"
+        );
     }
 
     #[test]

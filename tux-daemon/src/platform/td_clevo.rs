@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use tux_core::backend::fan::FanBackend;
 
-use super::tuxedo_io::{TuxedoIo, R_CL_FANINFO1, R_CL_FANINFO2, R_CL_FANINFO3, W_CL_FANAUTO, W_CL_FANSPEED};
+use super::tuxedo_io::{
+    R_CL_FANINFO1, R_CL_FANINFO2, R_CL_FANINFO3, TuxedoIo, W_CL_FANAUTO, W_CL_FANSPEED,
+};
 
 /// Maximum number of Clevo fans supported by the tuxedo_io interface.
 const CLEVO_MAX_FANS: u8 = 3;
@@ -54,7 +56,10 @@ impl TdClevoFanBackend {
             2 => Ok(R_CL_FANINFO3),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("fan index {fan_index} out of range (max {})", CLEVO_MAX_FANS - 1),
+                format!(
+                    "fan index {fan_index} out of range (max {})",
+                    CLEVO_MAX_FANS - 1
+                ),
             )),
         }
     }
@@ -106,15 +111,10 @@ impl FanBackend for TdClevoFanBackend {
             } else {
                 // Use the EC's current value; if reading fails (e.g. no third
                 // fan), leave slot as 0 — firmware ignores it on 2-fan hardware.
-                duties[i as usize] = self
-                    .read_fan_info_raw(i)
-                    .map(Self::parse_duty)
-                    .unwrap_or(0);
+                duties[i as usize] = self.read_fan_info_raw(i).map(Self::parse_duty).unwrap_or(0);
             }
         }
-        let packed: i32 = duties[0] as i32
-            | ((duties[1] as i32) << 8)
-            | ((duties[2] as i32) << 16);
+        let packed: i32 = duties[0] as i32 | ((duties[1] as i32) << 8) | ((duties[2] as i32) << 16);
         self.io.write_i32(W_CL_FANSPEED, packed)
     }
 
@@ -235,7 +235,10 @@ mod tests {
         let arc = Arc::new(MockTuxedoIo::new());
         arc.set_fail_reads(true);
         let backend = TdClevoFanBackend::new(arc as Arc<dyn TuxedoIo>, 2);
-        assert!(backend.read_temp().is_err(), "read_temp should propagate ioctl error");
+        assert!(
+            backend.read_temp().is_err(),
+            "read_temp should propagate ioctl error"
+        );
     }
 
     #[test]
@@ -256,7 +259,10 @@ mod tests {
         arc.set_fail_writes(true);
         // write_pwm does read-modify-write: reads duty from fan info, then writes packed speed.
         let result = backend.write_pwm(1, 0xAA);
-        assert!(result.is_err(), "write_pwm should fail when the write ioctl fails");
+        assert!(
+            result.is_err(),
+            "write_pwm should fail when the write ioctl fails"
+        );
     }
 
     #[test]

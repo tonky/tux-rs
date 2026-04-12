@@ -235,7 +235,10 @@ mod tests {
     #[test]
     fn get_priority() {
         let (_mock, backend) = setup();
-        assert_eq!(backend.get_priority().unwrap(), Some("charge_battery".to_string()));
+        assert_eq!(
+            backend.get_priority().unwrap(),
+            Some("charge_battery".to_string())
+        );
     }
 
     #[test]

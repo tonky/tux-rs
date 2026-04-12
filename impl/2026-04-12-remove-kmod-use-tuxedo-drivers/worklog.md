@@ -307,3 +307,17 @@ All 4 phases from external review implemented. 629 tests passing (up from 608), 
 - Validation:
   - `just test` passed across the full workspace.
   - Aggregate results: 657 passed, 0 failed, 2 ignored.
+
+## Stage 7 follow-up — fmt/clippy remediation (2026-04-12)
+- Addressed clippy failure (`too_many_arguments`) in `tux-daemon/src/dbus/fan.rs` by introducing `FanInterfaceDeps` and changing `FanInterface::new` to accept the deps struct.
+- Updated fan interface construction in `tux-daemon/src/dbus/mod.rs` accordingly.
+- Ran `just fmt-fix` to apply rustfmt normalization and then re-ran checks.
+- Validation:
+  - `just fmt` passed.
+  - `just clippy` passed (`-D warnings`).
+
+## Stage 7 follow-up — CI fmt mismatch (`init_system.rs`) (2026-04-12)
+- Investigated GitHub Actions formatting failure on `tux-daemon/tests/init_system.rs` (`ExecStart` assertion line wrapping).
+- Confirmed local file now matches rustfmt single-line output for the reported block.
+- Validation:
+  - `cargo fmt --all -- --check` passed.

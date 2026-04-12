@@ -111,20 +111,17 @@ fn detect_platform(source: &dyn DmiSource, dmi: &DmiInfo) -> Option<Platform> {
     }
 
     // Uniwill: tuxedo-drivers exposes WMI event GUID 2 unique to Uniwill hardware.
-    if source.wmi_guid_exists(UNIWILL_WMI_EVENT_GUID_2)
-    {
+    if source.wmi_guid_exists(UNIWILL_WMI_EVENT_GUID_2) {
         return Some(Platform::Uniwill);
     }
 
     // Clevo: tuxedo-drivers exposes WMI event GUID unique to Clevo hardware.
-    if source.wmi_guid_exists(CLEVO_WMI_EVENT_GUID)
-    {
+    if source.wmi_guid_exists(CLEVO_WMI_EVENT_GUID) {
         return Some(Platform::Clevo);
     }
 
     // Tuxi: tuxedo-drivers registers a tuxedo_fan_control platform device.
-    if source.sysfs_path_exists("/sys/devices/platform/tuxedo_fan_control/")
-    {
+    if source.sysfs_path_exists("/sys/devices/platform/tuxedo_fan_control/") {
         return Some(Platform::Tuxi);
     }
 
@@ -319,7 +316,10 @@ mod tests {
         // Must always exact-match by SKU so the correct Uniwill backend is selected.
         let source = MockDmiSource::new().tuxedo_base("IBP16I08MK2");
         let result = detect_device(&source).unwrap();
-        assert!(result.exact_match, "IBP16I08MK2 must match by SKU, not platform fallback");
+        assert!(
+            result.exact_match,
+            "IBP16I08MK2 must match by SKU, not platform fallback"
+        );
         assert_eq!(result.descriptor.product_sku, "IBP16I08MK2");
         assert_eq!(result.descriptor.platform, Platform::Uniwill);
     }

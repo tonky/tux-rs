@@ -203,7 +203,9 @@ async fn ibp_gen8_live_regression() {
         caps.keyboard_backlight, caps.keyboard_type
     );
     if !caps.keyboard_backlight {
-        println!("  keyboard backlight backend unavailable; keyboard illumination tests will be skipped");
+        println!(
+            "  keyboard backlight backend unavailable; keyboard illumination tests will be skipped"
+        );
     }
     println!(
         "  charging_thresholds={} charging_profiles={}",
@@ -518,9 +520,7 @@ governor = "powersave"
                 Some("performance"),
                 "profile activation should have set charging priority to 'performance'"
             );
-            println!(
-                "  profile charging applied: profile=balanced, priority=performance — OK"
-            );
+            println!("  profile charging applied: profile=balanced, priority=performance — OK");
         } else {
             assert_eq!(
                 applied.start_threshold,

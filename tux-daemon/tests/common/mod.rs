@@ -189,23 +189,21 @@ impl TestDaemon {
         let assignments = tux_daemon::config::ProfileAssignments::default();
         let (assignments_tx, assignments_rx) = watch::channel(assignments);
 
-        let keyboards: Vec<SharedKeyboard> = if matches!(
-            device.descriptor.keyboard,
-            KeyboardType::None
-        ) {
-            vec![]
-        } else {
-            vec![Arc::new(std::sync::Mutex::new(Box::new(MockKeyboard)))]
-        };
+        let keyboards: Vec<SharedKeyboard> =
+            if matches!(device.descriptor.keyboard, KeyboardType::None) {
+                vec![]
+            } else {
+                vec![Arc::new(std::sync::Mutex::new(Box::new(MockKeyboard)))]
+            };
 
         let applier = Arc::new(tux_daemon::profile_apply::ProfileApplier::new(
             config_tx.clone(),
-            None,   // no charging backend in applier
-            None,   // no CPU governor
-            None,   // no TDP backend
-            None,   // no GPU backend
+            None, // no charging backend in applier
+            None, // no CPU governor
+            None, // no TDP backend
+            None, // no GPU backend
             keyboards.clone(),
-            None,   // no display
+            None, // no display
         ));
 
         let (_power_tx, power_rx) = watch::channel(tux_daemon::power_monitor::PowerState::Ac);

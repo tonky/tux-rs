@@ -34,7 +34,6 @@ pub struct FanConfig {
     pub idle_poll_ms: u64,
     /// Hysteresis in °C — skip update if temp change is smaller.
     pub hysteresis_degrees: u8,
-
 }
 
 impl Default for FanConfig {

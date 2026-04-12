@@ -13,15 +13,15 @@ mod td_clevo;
 mod td_nb04;
 mod td_nb05;
 mod td_tuxi;
-mod td_uw_fan;
 mod td_uniwill;
+mod td_uw_fan;
 
 pub use td_clevo::TdClevoFanBackend;
 pub use td_nb04::TdNb04FanBackend;
 pub use td_nb05::TdNb05FanBackend;
 pub use td_tuxi::TdTuxiFanBackend;
-pub use td_uw_fan::TdUwFanBackend;
 pub use td_uniwill::TdUniwillFanBackend;
+pub use td_uw_fan::TdUwFanBackend;
 
 /// Create the appropriate `FanBackend` for the detected hardware.
 ///

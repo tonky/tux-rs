@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use tux_core::backend::fan::FanBackend;
 
-use super::sysfs::{SysfsReader, PWM_ENABLE_AUTO, PWM_ENABLE_MANUAL, check_fan_index, discover_hwmon, fan_attr};
+use super::sysfs::{
+    PWM_ENABLE_AUTO, PWM_ENABLE_MANUAL, SysfsReader, check_fan_index, discover_hwmon, fan_attr,
+};
 
 /// sysfs base for tuxedo_tuxi_fan_control platform device.
 ///
@@ -83,8 +85,7 @@ impl FanBackend for TdTuxiFanBackend {
 
     fn write_pwm(&self, fan_index: u8, pwm: u8) -> io::Result<()> {
         check_fan_index(fan_index, self.num_fans)?;
-        self.fanctl
-            .write_u8(&fan_attr(fan_index, "pwm"), pwm)?;
+        self.fanctl.write_u8(&fan_attr(fan_index, "pwm"), pwm)?;
         self.fanctl
             .write_u8(&fan_attr(fan_index, "pwm_enable"), PWM_ENABLE_MANUAL)
     }

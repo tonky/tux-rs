@@ -92,8 +92,14 @@ mod tests {
     fn setup() -> (MockSysfs, ClevoCharging) {
         let mock = MockSysfs::new();
         let base = mock.platform_dir("tuxedo_keyboard");
-        mock.create_attr("devices/platform/tuxedo_keyboard/charge_control_start_threshold", "40");
-        mock.create_attr("devices/platform/tuxedo_keyboard/charge_control_end_threshold", "80");
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charge_control_start_threshold",
+            "40",
+        );
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charge_control_end_threshold",
+            "80",
+        );
         let backend = ClevoCharging::with_path(base);
         (mock, backend)
     }

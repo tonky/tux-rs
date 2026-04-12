@@ -371,7 +371,9 @@ async fn main() -> anyhow::Result<()> {
                         error!("failed to apply initial profile '{initial_profile_id}': {e}");
                     } else {
                         if initial_state == PowerState::Ac {
-                            force_ac_performance_profile_if_configured(force_uniwill_ac_performance);
+                            force_ac_performance_profile_if_configured(
+                                force_uniwill_ac_performance,
+                            );
                         }
                         info!(
                             "applied initial profile '{}' (power: {:?})",
@@ -658,7 +660,9 @@ fn force_ac_performance_profile_if_configured(enabled: bool) {
             tracing::info!("forced Uniwill performance profile on AC (ioctl W_UW_PERF_PROF=2)");
         }
     } else {
-        tracing::warn!("cannot force Uniwill performance profile on AC: /dev/tuxedo_io unavailable");
+        tracing::warn!(
+            "cannot force Uniwill performance profile on AC: /dev/tuxedo_io unavailable"
+        );
     }
 }
 

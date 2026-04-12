@@ -1,7 +1,7 @@
 //! D-Bus server setup and lifecycle.
 
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicU32;
+use std::sync::{Arc, RwLock};
 
 use tokio::sync::watch;
 use tracing::info;
@@ -38,6 +38,7 @@ pub use charging::ChargingInterface;
 pub use cpu::CpuInterface;
 pub use device::DeviceInterface;
 pub use fan::FanInterface;
+pub use fan::FanInterfaceDeps;
 pub use gpu_power::GpuPowerInterface;
 pub use keyboard::KeyboardInterface;
 pub use profile::ProfileInterface;
@@ -177,16 +178,16 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         .serve_at(OBJECT_PATH, system_iface)?;
 
     if let Some(backend) = backend {
-        let fan_iface = FanInterface::new(
+        let fan_iface = FanInterface::new(FanInterfaceDeps {
             backend,
             config_tx,
             config_rx,
-            fan_store,
-            fan_assignments_rx,
-            fan_power_rx,
-            fan_failure_counter,
+            store: fan_store,
+            assignments_rx: fan_assignments_rx,
+            power_rx: fan_power_rx,
+            failure_counter: fan_failure_counter,
             manual_pwms_tx,
-        );
+        });
         builder = builder.serve_at(OBJECT_PATH, fan_iface)?;
     }
 

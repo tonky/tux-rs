@@ -102,9 +102,8 @@ impl TuxedoIo for TuxedoIoDevice {
     fn read_i32(&self, cmd: u64) -> io::Result<i32> {
         let mut val: i32 = 0;
         // SAFETY: cmd is a valid tuxedo_io ioctl code; val is a properly aligned i32.
-        let ret = unsafe {
-            nix::libc::ioctl(self.file.as_raw_fd(), cmd as nix::libc::c_ulong, &mut val)
-        };
+        let ret =
+            unsafe { nix::libc::ioctl(self.file.as_raw_fd(), cmd as nix::libc::c_ulong, &mut val) };
         if ret < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -114,9 +113,8 @@ impl TuxedoIo for TuxedoIoDevice {
     fn write_i32(&self, cmd: u64, val: i32) -> io::Result<()> {
         let mut arg = val;
         // SAFETY: cmd is a valid tuxedo_io ioctl code; arg is a properly aligned i32.
-        let ret = unsafe {
-            nix::libc::ioctl(self.file.as_raw_fd(), cmd as nix::libc::c_ulong, &mut arg)
-        };
+        let ret =
+            unsafe { nix::libc::ioctl(self.file.as_raw_fd(), cmd as nix::libc::c_ulong, &mut arg) };
         if ret < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -177,12 +175,14 @@ impl MockTuxedoIo {
 
     /// When `fail` is `true`, all read-type ioctls will return an error.
     pub fn set_fail_reads(&self, fail: bool) {
-        self.fail_reads.store(fail, std::sync::atomic::Ordering::Relaxed);
+        self.fail_reads
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// When `fail` is `true`, all write-type and no-arg ioctls will return an error.
     pub fn set_fail_writes(&self, fail: bool) {
-        self.fail_writes.store(fail, std::sync::atomic::Ordering::Relaxed);
+        self.fail_writes
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -190,17 +190,22 @@ impl MockTuxedoIo {
 impl TuxedoIo for MockTuxedoIo {
     fn read_i32(&self, cmd: u64) -> io::Result<i32> {
         if self.fail_reads.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(io::Error::new(io::ErrorKind::Other, "simulated read failure"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "simulated read failure",
+            ));
         }
-        self.reads
-            .get(&cmd)
-            .copied()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no mock for cmd {cmd:#x}")))
+        self.reads.get(&cmd).copied().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("no mock for cmd {cmd:#x}"))
+        })
     }
 
     fn write_i32(&self, cmd: u64, val: i32) -> io::Result<()> {
         if self.fail_writes.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(io::Error::new(io::ErrorKind::Other, "simulated write failure"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "simulated write failure",
+            ));
         }
         self.writes.lock().unwrap().push((cmd, val));
         Ok(())
@@ -208,7 +213,10 @@ impl TuxedoIo for MockTuxedoIo {
 
     fn ioctl_noarg(&self, cmd: u64) -> io::Result<()> {
         if self.fail_writes.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(io::Error::new(io::ErrorKind::Other, "simulated write failure"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "simulated write failure",
+            ));
         }
         self.noarg_calls.lock().unwrap().push(cmd);
         Ok(())
@@ -253,22 +261,34 @@ mod tests {
         let mut m = MockTuxedoIo::new();
         m.set_read(R_CL_FANINFO1, 42);
         m.set_fail_reads(true);
-        assert!(m.read_i32(R_CL_FANINFO1).is_err(), "should error when fail_reads is set");
+        assert!(
+            m.read_i32(R_CL_FANINFO1).is_err(),
+            "should error when fail_reads is set"
+        );
     }
 
     #[test]
     fn mock_fail_writes_blocks_writes_and_noarg() {
         let m = MockTuxedoIo::new();
         m.set_fail_writes(true);
-        assert!(m.write_i32(W_CL_FANSPEED, 0).is_err(), "write_i32 should error");
-        assert!(m.ioctl_noarg(W_UW_FANAUTO).is_err(), "ioctl_noarg should error");
+        assert!(
+            m.write_i32(W_CL_FANSPEED, 0).is_err(),
+            "write_i32 should error"
+        );
+        assert!(
+            m.ioctl_noarg(W_UW_FANAUTO).is_err(),
+            "ioctl_noarg should error"
+        );
     }
 
     #[test]
     fn mock_fail_reads_does_not_affect_writes() {
         let m = MockTuxedoIo::new();
         m.set_fail_reads(true);
-        assert!(m.write_i32(W_CL_FANSPEED, 0).is_ok(), "writes should still work");
+        assert!(
+            m.write_i32(W_CL_FANSPEED, 0).is_ok(),
+            "writes should still work"
+        );
     }
 
     #[test]
@@ -276,6 +296,10 @@ mod tests {
         let mut m = MockTuxedoIo::new();
         m.set_read(R_CL_FANINFO1, 42);
         m.set_fail_writes(true);
-        assert_eq!(m.read_i32(R_CL_FANINFO1).unwrap(), 42, "reads should still work");
+        assert_eq!(
+            m.read_i32(R_CL_FANINFO1).unwrap(),
+            42,
+            "reads should still work"
+        );
     }
 }

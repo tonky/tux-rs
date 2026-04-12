@@ -151,7 +151,9 @@ impl FanCurveEngine {
             }
             Err(e) => {
                 let n = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
-                warn!("failed to read temperature: {e}, setting 100% safety (consecutive failure {n})");
+                warn!(
+                    "failed to read temperature: {e}, setting 100% safety (consecutive failure {n})"
+                );
                 self.set_all_percent(100);
                 return config.active_poll_ms;
             }
@@ -501,7 +503,10 @@ mod tests {
         backend.set_fail_temp(true);
         settle().await;
         let after_failure = counter.load(Ordering::Relaxed);
-        assert!(after_failure >= 1, "counter should increment on failure, got {after_failure}");
+        assert!(
+            after_failure >= 1,
+            "counter should increment on failure, got {after_failure}"
+        );
 
         drop(shutdown_tx);
         handle.await.unwrap();

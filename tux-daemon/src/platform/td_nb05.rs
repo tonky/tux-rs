@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use tux_core::backend::fan::FanBackend;
 
-use super::sysfs::{SysfsReader, PWM_ENABLE_AUTO, PWM_ENABLE_MANUAL, check_fan_index, discover_hwmon, fan_attr};
+use super::sysfs::{
+    PWM_ENABLE_AUTO, PWM_ENABLE_MANUAL, SysfsReader, check_fan_index, discover_hwmon, fan_attr,
+};
 
 /// sysfs base for tuxedo_nb05_fan_control platform device.
 const FANCTL_SYSFS: &str = "/sys/devices/platform/tuxedo_nb05_fan_control";
@@ -59,7 +61,6 @@ impl TdNb05FanBackend {
             num_fans,
         }
     }
-
 }
 
 impl FanBackend for TdNb05FanBackend {
@@ -71,8 +72,7 @@ impl FanBackend for TdNb05FanBackend {
 
     fn write_pwm(&self, fan_index: u8, pwm: u8) -> io::Result<()> {
         check_fan_index(fan_index, self.num_fans)?;
-        self.fanctl
-            .write_u8(&fan_attr(fan_index, "pwm"), pwm)?;
+        self.fanctl.write_u8(&fan_attr(fan_index, "pwm"), pwm)?;
         self.fanctl
             .write_u8(&fan_attr(fan_index, "pwm_enable"), PWM_ENABLE_MANUAL)
     }
@@ -142,10 +142,7 @@ mod tests {
     fn write_pwm_sets_manual_enable() {
         let (_dir, backend) = setup_mock(2);
         backend.write_pwm(0, 200).unwrap();
-        let enable = backend
-            .fanctl
-            .read_u8("fan1_pwm_enable")
-            .unwrap();
+        let enable = backend.fanctl.read_u8("fan1_pwm_enable").unwrap();
         assert_eq!(enable, PWM_ENABLE_MANUAL);
     }
 
@@ -156,10 +153,7 @@ mod tests {
         backend.write_pwm(0, 200).unwrap();
         // Then release to auto
         backend.set_auto(0).unwrap();
-        let enable = backend
-            .fanctl
-            .read_u8("fan1_pwm_enable")
-            .unwrap();
+        let enable = backend.fanctl.read_u8("fan1_pwm_enable").unwrap();
         assert_eq!(enable, PWM_ENABLE_AUTO);
     }
 

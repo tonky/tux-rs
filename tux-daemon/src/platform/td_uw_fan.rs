@@ -44,7 +44,10 @@ impl TdUwFanBackend {
         } else {
             2
         };
-        Some(Self { base: base.to_path_buf(), num_fans })
+        Some(Self {
+            base: base.to_path_buf(),
+            num_fans,
+        })
     }
 
     fn fan_pwm_attr(&self, fan_index: u8) -> io::Result<PathBuf> {
@@ -57,7 +60,10 @@ impl TdUwFanBackend {
         if fan_index >= self.num_fans {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("fan index {fan_index} out of range (max {})", self.num_fans - 1),
+                format!(
+                    "fan index {fan_index} out of range (max {})",
+                    self.num_fans - 1
+                ),
             ))
         } else {
             Ok(())
@@ -79,8 +85,8 @@ impl TdUwFanBackend {
 
     /// EC scale (0–200) → Linux PWM (0–255).
     fn ec_to_pwm(ec: u16) -> u8 {
-        ((ec.min(EC_PWM_MAX) as u32 * PWM_MAX as u32 + EC_PWM_MAX as u32 / 2)
-            / EC_PWM_MAX as u32) as u8
+        ((ec.min(EC_PWM_MAX) as u32 * PWM_MAX as u32 + EC_PWM_MAX as u32 / 2) / EC_PWM_MAX as u32)
+            as u8
     }
 
     /// Linux PWM (0–255) → EC scale (0–200).
@@ -122,7 +128,10 @@ impl FanBackend for TdUwFanBackend {
     fn read_fan_rpm(&self, fan_index: u8) -> io::Result<u16> {
         self.check_fan_index(fan_index)?;
         // tuxedo_uw_fan does not expose RPM.
-        Err(io::Error::new(io::ErrorKind::Unsupported, "RPM not available via tuxedo_uw_fan"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "RPM not available via tuxedo_uw_fan",
+        ))
     }
 
     fn num_fans(&self) -> u8 {
@@ -223,15 +232,24 @@ mod tests {
     fn read_fan_rpm_returns_unsupported() {
         let dir = make_base(2, 60, 80, "0", 50);
         let b = TdUwFanBackend::with_base(dir.path()).unwrap();
-        assert_eq!(b.read_fan_rpm(0).unwrap_err().kind(), io::ErrorKind::Unsupported);
+        assert_eq!(
+            b.read_fan_rpm(0).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
     }
 
     #[test]
     fn out_of_range_fan_index_errors() {
         let dir = make_base(2, 60, 80, "0", 50);
         let b = TdUwFanBackend::with_base(dir.path()).unwrap();
-        assert_eq!(b.read_pwm(2).unwrap_err().kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(b.write_pwm(2, 128).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            b.read_pwm(2).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            b.write_pwm(2, 128).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]
@@ -246,7 +264,10 @@ mod tests {
         for pwm in [0u8, 64, 128, 192, 255] {
             let ec = TdUwFanBackend::pwm_to_ec(pwm);
             let back = TdUwFanBackend::ec_to_pwm(ec);
-            assert!((back as i16 - pwm as i16).abs() <= 1, "pwm={pwm} ec={ec} back={back}");
+            assert!(
+                (back as i16 - pwm as i16).abs() <= 1,
+                "pwm={pwm} ec={ec} back={back}"
+            );
         }
     }
 }

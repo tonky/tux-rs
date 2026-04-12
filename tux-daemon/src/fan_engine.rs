@@ -9,6 +9,13 @@ use tracing::{debug, info, warn};
 use tux_core::backend::fan::FanBackend;
 use tux_core::fan_curve::{FanConfig, FanMode, interpolate, percent_to_pwm};
 
+/// Number of consecutive temperature-read failures tolerated before forcing
+/// a reduced safety PWM when the engine already has a previously computed setpoint.
+const SAFETY_FAILURE_THRESHOLD: u32 = 5;
+
+/// Safety fallback duty used after persistent temperature-read failures.
+const SAFETY_FAILURE_PERCENT: u8 = 60;
+
 /// Core fan control loop: polls temperature, interpolates curve, writes PWM.
 pub struct FanCurveEngine {
     backend: Arc<dyn FanBackend>,
@@ -151,10 +158,19 @@ impl FanCurveEngine {
             }
             Err(e) => {
                 let n = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                if n < SAFETY_FAILURE_THRESHOLD
+                    && let Some(pwm) = *last_pwm
+                {
+                    warn!(
+                        "failed to read temperature: {e}, keeping previous PWM {pwm} on transient failure {n}/{SAFETY_FAILURE_THRESHOLD}"
+                    );
+                    self.set_all_pwm(pwm);
+                    return config.active_poll_ms;
+                }
                 warn!(
-                    "failed to read temperature: {e}, setting 100% safety (consecutive failure {n})"
+                    "failed to read temperature: {e}, setting {SAFETY_FAILURE_PERCENT}% safety after consecutive failure {n}"
                 );
-                self.set_all_percent(100);
+                self.set_all_percent(SAFETY_FAILURE_PERCENT);
                 return config.active_poll_ms;
             }
         };
@@ -215,10 +231,14 @@ impl FanCurveEngine {
 
     fn set_all_percent(&self, percent: u8) {
         let pwm = percent_to_pwm(percent);
+        self.set_all_pwm(pwm);
+    }
+
+    fn set_all_pwm(&self, pwm: u8) {
         let num_fans = self.backend.num_fans();
         for i in 0..num_fans {
             if let Err(e) = self.backend.write_pwm(i, pwm) {
-                warn!("failed to write safety PWM to fan {i}: {e}");
+                warn!("failed to write PWM to fan {i}: {e}");
             }
         }
     }
@@ -450,33 +470,54 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn temp_read_failure_sets_full_speed() {
+    async fn transient_temp_read_failure_keeps_last_pwm() {
         let backend = Arc::new(MockFanBackend::new(1));
         backend.set_temp(50);
 
         let (_config_tx, config_rx) = watch::channel(test_config());
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let engine = FanCurveEngine::new(backend.clone(), config_rx);
+        let config = test_config();
+        let mut last_temp = Some(50);
+        let mut last_pwm = Some(77);
 
-        let engine_backend = backend.clone();
-        let handle = tokio::spawn(async move {
-            let mut engine = FanCurveEngine::new(engine_backend, config_rx);
-            engine.run(shutdown_rx).await;
-        });
-
-        // Let normal operation establish a PWM value.
-        settle().await;
-
-        // Inject temp read failure.
+        backend.write_pwm(0, 77).unwrap();
         backend.set_fail_temp(true);
-        settle().await;
+        let poll_ms = engine.tick_custom_curve(&config, &mut last_temp, &mut last_pwm);
 
-        // Should have set 100% safety PWM = 255.
-        let pwm = backend.read_pwm(0).unwrap();
+        assert_eq!(poll_ms, config.active_poll_ms);
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+        assert_eq!(engine.failure_counter().load(Ordering::Relaxed), 1);
+    }
 
-        drop(shutdown_tx);
-        handle.await.unwrap();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_temp_read_failure_sets_reduced_safety_speed() {
+        let backend = Arc::new(MockFanBackend::new(1));
+        backend.set_temp(50);
 
-        assert_eq!(pwm, 255, "temp read failure should set 100% safety speed");
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let engine = FanCurveEngine::new(backend.clone(), config_rx);
+        let config = test_config();
+        let mut last_temp = Some(50);
+        let mut last_pwm = Some(77);
+
+        backend.write_pwm(0, 77).unwrap();
+        backend.set_fail_temp(true);
+
+        engine.tick_custom_curve(&config, &mut last_temp, &mut last_pwm);
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+
+        engine.tick_custom_curve(&config, &mut last_temp, &mut last_pwm);
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+
+        engine.tick_custom_curve(&config, &mut last_temp, &mut last_pwm);
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+
+        engine.tick_custom_curve(&config, &mut last_temp, &mut last_pwm);
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+
+        engine.tick_custom_curve(&config, &mut last_temp, &mut last_pwm);
+        assert_eq!(backend.read_pwm(0).unwrap(), 153);
+        assert_eq!(engine.failure_counter().load(Ordering::Relaxed), 5);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

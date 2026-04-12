@@ -321,3 +321,29 @@ All 4 phases from external review implemented. 629 tests passing (up from 608), 
 - Confirmed local file now matches rustfmt single-line output for the reported block.
 - Validation:
   - `cargo fmt --all -- --check` passed.
+
+## Stage 7 follow-up — Fan fault fallback softened on IBP Gen8 (2026-04-12)
+- Investigated periodic fan bursts on InfinityBook Pro 16 Gen8 (Uniwill path).
+- Confirmed fan engine safety behavior was too aggressive for transient temperature-read faults.
+- Updated `tux-daemon/src/fan_engine.rs`:
+  - keep the previously computed PWM for the first 4 consecutive temp-read failures
+  - on the 5th consecutive failure, ramp to 60% safety PWM instead of 100%
+- Added/updated regression tests for:
+  - transient read failure keeps prior PWM
+  - persistent read failure ramps to reduced safety speed
+- Validation:
+  - `cargo test -p tux-daemon transient_temp_read_failure_keeps_last_pwm`
+  - `cargo test -p tux-daemon repeated_temp_read_failure_sets_reduced_safety_speed`
+  - `cargo clippy -p tux-daemon -- -D warnings`
+  - `just test`
+  - `just ci`
+
+## Stage 7 follow-up — Default fan polling semantics and hysteresis cleanup (2026-04-12)
+- Corrected `FanConfig::default()` so changing temperatures poll faster than stable ones:
+  - `active_poll_ms = 1000`
+  - `idle_poll_ms = 2000`
+- Raised default `hysteresis_degrees` from `3` to `10` to reduce needless fan curve churn on small temperature fluctuations.
+- Added assertions in `tux-core/src/fan_curve.rs` tests to lock the intended default semantics.
+- Validation:
+  - `just test`
+  - `just ci`

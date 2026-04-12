@@ -122,6 +122,11 @@ mod tests {
             .map(format_event_line)
             .collect();
 
-        assert!(rendered.first().map(|l| l.contains("newer")).unwrap_or(false));
+        assert!(
+            rendered
+                .first()
+                .map(|l| l.contains("newer"))
+                .unwrap_or(false)
+        );
     }
 }

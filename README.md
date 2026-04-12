@@ -1,16 +1,16 @@
 # Disclaimer
 
-1. This is 100% LLM-assisted project. I haven't looked much at the code. My last C experience was last century :)
+1. This is 100% LLM-assisted project. I haven't looked much at the code.
 I did quite a lot of planning, steering and testing, though(you can check the `impl` folder). I did fix some obvious hallucinations like `Arc<Mutex<Arc<dyn Settings>>>`.
 
-2. This is only tested on my machine(Infinitybook Pro 16 Gen8). Drivers are ported only for it, no other hardware is expected to work. Not all features are implemented yet. Original TCC compatibility is partially implemented.
+2. This is only tested on my machine(Infinitybook Pro 16 Gen8). Support is currently limited to it, no other hardware is expected to work. Not all features are implemented yet. Original TCC compatibility is partially implemented.
 
-3. My goal was to see if this could be done via LLM power-coding as a weekend project. Now it looks like a good starting point to gather interest and community feedback. Maybe people with other Tuxedo hardware and C/Rust knowledge will find this useful and contribue as well.
+3. My goal was to see if this could be done via LLM power-coding as a weekend project. Now it looks like a good starting point to gather interest and community feedback. Maybe people with other Tuxedo hardware knowledge will find this useful and contribue as well.
 
 # tux-rs
 
-Unified Rust rewrite of TUXEDO laptop drivers and Tuxedo Control Center as a TUI app.
-Kernel drivers are still in C, but they are machine-focuse,d stateless and much smaller.
+Unified Rust implementation of TUXEDO laptop support and Tuxedo Control Center as a TUI app.
+Hardware support is currently only for a single machine that i own, rest are untested.
 
 See [docs/architecture.md](docs/architecture.md) for the architecture deep dive, and [docs/hardware_support.md](docs/hardware_support.md) for the supported hardware list.
 

@@ -364,6 +364,20 @@ All 4 phases from external review implemented. 629 tests passing (up from 608), 
 - Validation:
   - `cargo test -p tux-daemon fan_engine -- --nocapture` (16 passed)
 
+## Stage 7 follow-up — Power unplug detection and profile auto-switch reliability (2026-04-12)
+- Investigated report: unplugging AC did not switch daemon/TUI power state to battery; battery profile was not applied.
+- Root cause likely multi-source power-supply setups where a single watched `AC/ADP` online node is not authoritative.
+- Updated `tux-daemon/src/power_monitor.rs`:
+  - detect all AC-like online sources (prefer `type=Mains`, plus `AC*`/`ADP*` fallback),
+  - derive power state from all sources (`AC` if any online, otherwise `Battery`),
+  - watch all discovered `online` files and supply directories,
+  - add periodic 2s resync check to prevent missed state changes even if inotify event is dropped.
+- Added tests for multi-path state aggregation:
+  - any-online => `Ac`
+  - all-offline => `Battery`
+- Validation:
+  - `cargo test -p tux-daemon power_monitor -- --nocapture` (9 passed)
+
 ## Stage 7 follow-up — Default fan polling semantics and hysteresis cleanup (2026-04-12)
 - Corrected `FanConfig::default()` so changing temperatures poll faster than stable ones:
   - `active_poll_ms = 1000`

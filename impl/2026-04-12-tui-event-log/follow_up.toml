@@ -3,7 +3,7 @@ title = "Follow-up tasks for: TUI Event Log"
 [[task]]
 id = "f001"
 description = "Confirm whether the event log should be a dedicated tab or an overlay/popup before implementation."
-status = "open"
+status = "done"
 priority = "high"
 context = "Current plan recommends a dedicated tab for simpler integration and testing."
 reasoning = "This affects keybindings, navigation, and rendering architecture."

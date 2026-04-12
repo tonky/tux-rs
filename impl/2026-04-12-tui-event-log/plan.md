@@ -8,11 +8,13 @@
 - bind `l` to jump to the Event Log view
 - log key state transitions in the update layer, including what changed and why
 
-## Stage 2: CLI/headless access and debug coverage
+## Stage 2: Debug filter and high-detail events
 
-- add a CLI flag to dump recent event log entries in JSON or plain text
-- decide whether CLI mode should read a live in-process log snapshot only, or synthesize a trace from one polling cycle
-- add tests for key binding, model log retention, follow mode behavior, and CLI parsing/output
+- add a toggleable debug filter (default off) for Event Log
+- keep normal mode concise while allowing full-detail/debug events when enabled
+- enrich user and daemon log entries with numeric values (brightness %, fan %, temp C, charging profile/priority, thresholds)
+- log fan change events with explicit duty/rpm/temperature context
+- add tests for toggle behavior and enriched event output paths
 
 ## Open design choices
 

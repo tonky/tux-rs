@@ -191,6 +191,13 @@ async fn poll_dashboard_checked(
             .await;
     }
 
+    // Keep Info tab battery telemetry fresh instead of only loading it once at startup.
+    if let Ok(toml_str) = client.get_battery_info().await {
+        let _ = tx
+            .send(AppEvent::DbusData(DbusUpdate::BatteryInfo(toml_str)))
+            .await;
+    }
+
     any_ok
 }
 

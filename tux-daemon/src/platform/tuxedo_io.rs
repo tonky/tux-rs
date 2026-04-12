@@ -50,6 +50,9 @@ pub const W_UW_FANSPEED2: u64 = 0x4008_F011;
 /// `_IO(0xF0, 0x14)` — Uniwill restore fan auto mode (no data argument).
 pub const W_UW_FANAUTO: u64 = 0x0000_F014;
 
+/// `_IOW(0xF0, 0x18, int32_t*)` — Uniwill set performance profile (1=power-save, 2=enthusiast, 3=overboost).
+pub const W_UW_PERF_PROF: u64 = 0x4008_F018;
+
 // ─── Trait ────────────────────────────────────────────────────────────────────
 
 /// Abstraction over the `/dev/tuxedo_io` ioctl interface.

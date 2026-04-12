@@ -250,3 +250,29 @@ All 4 phases from external review implemented. 629 tests passing (up from 608), 
   - reloads Uniwill/tuxedo modules
   - restarts daemon
   - prints effective `ec_direct_io` state.
+
+## Stage 7 follow-up — TUI cycle count stale output fix (2026-04-12)
+- Investigated user report that Info tab showed an implausible cycle count (`32804`).
+- Confirmed data path: Info view renders `battery.cycle_count` from `DbusUpdate::BatteryInfo`.
+- Root cause: `tux-tui` fetched battery info only once in `fetch_info_data()` at startup, so Info tab could display stale values until reconnect/restart.
+- Fix: added periodic battery refresh in `dbus_task::poll_dashboard_checked()` by polling `GetBatteryInfo` and emitting `DbusUpdate::BatteryInfo` every tick.
+- Added headless verification helper in CLI mode:
+  - new `--dump-battery-info` command in `tux-tui/src/cli.rs`.
+  - prints parsed `BatteryInfoResponse` as JSON for quick live checks.
+- Validation:
+  - `cargo test -p tux-tui parse_dump_battery_info` passed.
+  - `cargo run -q -p tux-tui -- --dump-battery-info` shows `"cycle_count": 36` on host.
+
+## Stage 7 follow-up — Cycle count oscillation (36 vs 12836) fix (2026-04-12)
+- Reproduced live oscillation in sysfs and daemon output:
+  - `/sys/class/power_supply/BAT0/raw_cycle_count` intermittently returned `36`, `50`, `52`, `12836`, `13348`.
+  - `GetBatteryInfo` mirrored these values, confirming this was not a TUI formatting issue.
+- Root cause: firmware/driver exposes unstable packed/noisy values via `raw_cycle_count` on this platform.
+- Hardening in `tux-daemon/src/dbus/system.rs`:
+  - added `normalize_raw_cycle_count(raw)` to decode packed values by low-byte fallback (`12836 -> 36`, `13348 -> 36`).
+  - added `read_battery_raw_cycle_count(bat_path)` that samples `raw_cycle_count` 5 times and picks the minimum non-zero normalized sample to reject transient spikes.
+  - `read_battery_info()` now uses this robust sampled raw value.
+- Added regression test `battery_info_normalizes_large_bat_raw_cycle_count`.
+- Validation:
+  - `cargo test -p tux-daemon battery_info_prefers_bat_raw_cycle_count` passed.
+  - `cargo test -p tux-daemon battery_info_normalizes_large_bat_raw_cycle_count` passed.

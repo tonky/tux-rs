@@ -26,10 +26,6 @@ See [docs/architecture.md](docs/architecture.md) for the architecture deep dive,
 | `tux-daemon` | bin | Root system daemon — fan control, D-Bus API, profile management |
 | `tux-tui` | bin | Terminal UI — ratatui-based control interface |
 
-## Kernel Modules
-
-`tux-kmod/` contains 5 minimal C kernel shims for raw hardware access via sysfs.
-
 ## Development
 
 Requires Rust stable and [just](https://github.com/casey/just).
@@ -52,24 +48,11 @@ just clippy             # lint with warnings as errors
 just fmt                # check formatting
 ```
 
-### Kernel module development
-
-```sh
-just kmod-swap                        # unload vendor modules, build + load tuxedo-uniwill
-just kmod-reload tuxedo-uniwill       # rebuild + reload a single module
-just kmod-build                       # build all modules
-```
-
 ## Installation
 
-### 1. Kernel modules (DKMS)
+**Prerequisite:** Install [tuxedo-drivers](https://github.com/tuxedocomputers/tuxedo-drivers) for your kernel (available via DKMS or your distro's package manager).
 
-```sh
-just kmod-install       # copies to /usr/src, builds via DKMS, installs for current kernel
-sudo modprobe tuxedo_uniwill  # load your platform's module (varies by laptop)
-```
-
-### 2. Daemon
+### 1. Daemon
 
 #### Systemd (most distros)
 
@@ -92,7 +75,7 @@ sudo dinitctl enable tux-daemon
 sudo dinitctl start tux-daemon
 ```
 
-### 3. TUI
+### 2. TUI
 
 ```sh
 just install-tui        # install tux-tui binary
@@ -113,7 +96,7 @@ Then enable the module in your NixOS configuration:
 
 ```nix
 { inputs, ... }: {
-  imports = [ inputs.tux-rs.nixosModules.default ];
+  imports = [ inputs.tux-rs.nixosModule ];
   services.tux-daemon.enable = true;
 }
 ```
@@ -121,7 +104,7 @@ Then enable the module in your NixOS configuration:
 This will automatically:
 - Install `tux-daemon` and `tux-tui`.
 - Configure the systemd service and D-Bus policy.
-- Build and load the necessary kernel modules for your kernel version.
+- Build and load `tuxedo-drivers` for your configured kernel package.
 
 You can also run the TUI directly without installing:
 ```sh
@@ -130,9 +113,7 @@ nix run github:tonky/tux-rs#tux-tui
 
 ### NixOS (classic Nix, no flakes)
 
-If you're not using flakes, the repository also exposes a plain `default.nix`
-that accepts `{ pkgs, nixpkgs, rust-overlay }` as an attribute set, so you can
-pin your own dependency versions.
+If you're not using flakes, the repository exposes `default.nix`.
 
 #### Simple usage
 
@@ -144,50 +125,8 @@ let
     url = "https://github.com/tonky/tux-rs/archive/main.tar.gz";
   }) { inherit pkgs; };
 in {
-  imports = [ tux-rs.nixosModules.default ];
+  imports = [ tux-rs.nixosModule ];
   services.tux-daemon.enable = true;
-}
-```
-
-#### npins-style usage (pinned nixpkgs + rust-overlay)
-
-```sh
-npins add github nixos nixpkgs
-npins add github oxalica rust-overlay
-npins add github tonky tux-rs
-```
-
-```nix
-{ ... }:
-let
-  sources = import ./npins;
-  pkgs = import sources.nixpkgs {
-    overlays = [ (import sources.rust-overlay) ];
-  };
-  tux-rs = import sources.tux-rs {
-    inherit pkgs;
-    nixpkgs = sources.nixpkgs;
-    rust-overlay = sources.rust-overlay;
-  };
-in {
-  imports = [ tux-rs.nixosModules.default ];
-  services.tux-daemon.enable = true;
-
-  # Optional: use the rust-overlay-pinned binaries instead of the ones the
-  # overlay builds with nixpkgs' ambient rustPlatform.
-  services.tux-daemon.package = tux-rs.tux-daemon;
-  services.tux-daemon.tui.package = tux-rs.tux-tui;
-}
-```
-
-#### Per-package overrides
-
-Each `nix/*.nix` is a plain `callPackage`-style function, so you can override
-any dependency — for example, pinning a specific `rustPlatform` yourself:
-
-```nix
-pkgs.callPackage (tux-rs-src + "/nix/tux-daemon.nix") {
-  rustPlatform = myPinnedRustPlatform;
 }
 ```
 

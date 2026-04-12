@@ -120,7 +120,7 @@ pub enum GpuPowerCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registers::*;
+    use crate::registers::PlatformRegisters;
     use serde::{Deserialize, Serialize};
 
     #[test]
@@ -143,9 +143,7 @@ mod tests {
             charging: ChargingCapability::EcProfilePriority,
             tdp: None,
             gpu_power: GpuPowerCapability::None,
-            registers: PlatformRegisters::Uniwill(UniwillRegisters {
-                sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-            }),
+            registers: PlatformRegisters::Uniwill,
         };
 
         assert_eq!(desc.platform, Platform::Uniwill);
@@ -183,10 +181,7 @@ mod tests {
                 pl4_max: None,
             }),
             gpu_power: GpuPowerCapability::None,
-            registers: PlatformRegisters::Nb05(Nb05Registers {
-                num_fans: 1,
-                fanctl_onereg: false,
-            }),
+            registers: PlatformRegisters::Nb05,
         };
 
         assert_eq!(desc.platform, Platform::Nb05);
@@ -216,9 +211,7 @@ mod tests {
             charging: ChargingCapability::None,
             tdp: None,
             gpu_power: GpuPowerCapability::None,
-            registers: PlatformRegisters::Nb04(Nb04Registers {
-                sysfs_base: "/sys/devices/platform/tuxedo-nb04",
-            }),
+            registers: PlatformRegisters::Nb04,
         };
 
         assert_eq!(desc.platform, Platform::Nb04);
@@ -246,10 +239,7 @@ mod tests {
             charging: ChargingCapability::Flexicharger,
             tdp: None,
             gpu_power: GpuPowerCapability::None,
-            registers: PlatformRegisters::Clevo(ClevoRegisters {
-                sysfs_base: "/sys/devices/platform/tuxedo-clevo",
-                max_fans: 3,
-            }),
+            registers: PlatformRegisters::Clevo,
         };
 
         assert_eq!(desc.fans.count, 3);
@@ -277,9 +267,7 @@ mod tests {
             charging: ChargingCapability::None,
             tdp: None,
             gpu_power: GpuPowerCapability::None,
-            registers: PlatformRegisters::Tuxi(TuxiRegisters {
-                sysfs_base: "/sys/devices/platform/tuxedo-tuxi",
-            }),
+            registers: PlatformRegisters::Tuxi,
         };
 
         assert_eq!(desc.platform, Platform::Tuxi);

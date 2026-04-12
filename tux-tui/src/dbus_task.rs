@@ -58,6 +58,9 @@ pub async fn run_dbus_task(
         // Track consecutive poll failures to detect connection loss.
         let mut consecutive_failures: u32 = 0;
         const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+        // Last active profile seen from telemetry. Used to refresh fan curve when
+        // profile changes due to explicit assignment or power auto-switch.
+        let mut last_active_profile: Option<String> = None;
 
         // Poll + command loop.
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -67,7 +70,7 @@ pub async fn run_dbus_task(
                     if tx.is_closed() {
                         return; // TUI shut down.
                     }
-                    if poll_dashboard_checked(&client, &tx, num_fans).await {
+                    if poll_dashboard_checked(&client, &tx, num_fans, &mut last_active_profile).await {
                         consecutive_failures = 0;
                     } else {
                         consecutive_failures += 1;
@@ -100,17 +103,29 @@ async fn poll_dashboard_checked(
     client: &DaemonClient,
     tx: &mpsc::Sender<AppEvent>,
     num_fans: u8,
+    last_active_profile: &mut Option<String>,
 ) -> bool {
     // Temperature (millidegrees → degrees).
     let temp_result = client.get_temperature(0).await;
     let temp = temp_result.as_ref().map(|t| *t as f32 / 1000.0).ok();
     let any_ok = temp_result.is_ok();
 
-    // Fan speeds — poll all known fans.
+    // Fan telemetry — poll all known fans via GetFanData.
     let mut fan_speeds = Vec::new();
+    let mut fan_duties = Vec::new();
+    let mut fan_rpm_available = Vec::new();
     for i in 0..num_fans as u32 {
-        if let Ok(rpm) = client.get_fan_speed(i).await {
+        if let Ok(toml_str) = client.get_fan_data(i).await
+            && let Ok(data) = toml::from_str::<tux_core::dbus_types::FanData>(&toml_str)
+        {
+            fan_speeds.push(data.rpm);
+            fan_duties.push(data.duty_percent);
+            fan_rpm_available.push(data.rpm_available);
+        } else if let Ok(rpm) = client.get_fan_speed(i).await {
+            // Fallback for older daemons without GetFanData.
             fan_speeds.push(rpm);
+            fan_duties.push(0);
+            fan_rpm_available.push(rpm > 0);
         }
     }
 
@@ -145,16 +160,60 @@ async fn poll_dashboard_checked(
         .send(AppEvent::DbusData(DbusUpdate::DashboardTelemetry {
             cpu_temp: temp,
             fan_speeds,
+            fan_duties,
+            fan_rpm_available,
             power_state: power,
             cpu_freq_mhz: cpu_freq,
-            active_profile: profile,
+            active_profile: profile.clone(),
             cpu_load_overall,
             cpu_load_per_core,
             cpu_freq_per_core,
         }))
         .await;
 
+    // Keep fan curve editor in sync with the actually active profile.
+    // This handles both manual profile assignment and daemon auto-switch
+    // when power state changes.
+    if should_refresh_fan_curve(last_active_profile, profile.as_deref())
+        && let Ok(toml_str) = client.get_active_fan_curve().await
+        && let Ok(config) = toml::from_str::<tux_core::fan_curve::FanConfig>(&toml_str)
+    {
+        let _ = tx
+            .send(AppEvent::DbusData(DbusUpdate::FanCurve(config.curve)))
+            .await;
+    }
+
+    // Poll fan health separately — non-fatal if the method is unavailable.
+    if let Ok(toml_str) = client.get_fan_health().await {
+        let _ = tx
+            .send(AppEvent::DbusData(DbusUpdate::FanHealth(toml_str)))
+            .await;
+    }
+
+    // Keep Info tab battery telemetry fresh instead of only loading it once at startup.
+    if let Ok(toml_str) = client.get_battery_info().await {
+        let _ = tx
+            .send(AppEvent::DbusData(DbusUpdate::BatteryInfo(toml_str)))
+            .await;
+    }
+
     any_ok
+}
+
+/// Returns true when the active profile changed and fan curve should be refreshed.
+/// Updates `last_active_profile` to the new value when changed.
+fn should_refresh_fan_curve(
+    last_active_profile: &mut Option<String>,
+    current_profile: Option<&str>,
+) -> bool {
+    let Some(current_profile) = current_profile else {
+        return false;
+    };
+    if last_active_profile.as_deref() == Some(current_profile) {
+        return false;
+    }
+    *last_active_profile = Some(current_profile.to_string());
+    true
 }
 
 /// Handle a single D-Bus command. Returns `false` when the channel is closed.
@@ -484,5 +543,38 @@ where
                 ))))
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_refresh_fan_curve;
+
+    #[test]
+    fn first_seen_profile_triggers_refresh() {
+        let mut last = None;
+        assert!(should_refresh_fan_curve(&mut last, Some("quiet")));
+        assert_eq!(last.as_deref(), Some("quiet"));
+    }
+
+    #[test]
+    fn unchanged_profile_does_not_refresh() {
+        let mut last = Some("quiet".to_string());
+        assert!(!should_refresh_fan_curve(&mut last, Some("quiet")));
+        assert_eq!(last.as_deref(), Some("quiet"));
+    }
+
+    #[test]
+    fn changed_profile_triggers_refresh() {
+        let mut last = Some("quiet".to_string());
+        assert!(should_refresh_fan_curve(&mut last, Some("new")));
+        assert_eq!(last.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn missing_current_profile_does_not_refresh_or_reset_last() {
+        let mut last = Some("quiet".to_string());
+        assert!(!should_refresh_fan_curve(&mut last, None));
+        assert_eq!(last.as_deref(), Some("quiet"));
     }
 }

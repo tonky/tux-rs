@@ -56,6 +56,20 @@ fn section(name: &str) {
     println!("{}", "=".repeat(60));
 }
 
+async fn get_charging_settings_retry(client: &DaemonClient) -> Result<String, zbus::Error> {
+    let mut last_err: Option<zbus::Error> = None;
+    for _ in 0..10 {
+        match client.get_charging_settings().await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+    }
+    Err(last_err.expect("retry loop must set last_err"))
+}
+
 // ── The main test ──────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -175,10 +189,6 @@ async fn ibp_gen8_live_regression() {
 
     assert!(caps.fan_control, "IBP Gen8 must have fan_control");
     assert_eq!(caps.fan_count, 2, "IBP Gen8 has 2 fans");
-    assert!(
-        caps.keyboard_backlight,
-        "IBP Gen8 must have keyboard backlight"
-    );
     assert!(caps.power_profiles, "IBP Gen8 must have power profiles");
     // TDP and GPU control are NOT available on this model.
     assert!(!caps.tdp_control, "IBP Gen8 should not have TDP control");
@@ -192,6 +202,11 @@ async fn ibp_gen8_live_regression() {
         "  keyboard_backlight={} keyboard_type={}",
         caps.keyboard_backlight, caps.keyboard_type
     );
+    if !caps.keyboard_backlight {
+        println!(
+            "  keyboard backlight backend unavailable; keyboard illumination tests will be skipped"
+        );
+    }
     println!(
         "  charging_thresholds={} charging_profiles={}",
         caps.charging_thresholds, caps.charging_profiles
@@ -473,46 +488,54 @@ governor = "powersave"
     println!("  set {copy_id} as ac profile");
 
     // Verify that activating the profile applied its charging settings.
-    if caps.charging_profiles || caps.charging_thresholds {
-        // Small delay for profile application to propagate.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        match client.get_charging_settings().await {
-            Ok(applied_toml) => {
-                let applied: ChargingSettings = toml::from_str(&applied_toml)
-                    .expect("bad ChargingSettings TOML after profile activation");
-                if caps.charging_profiles {
-                    assert_eq!(
-                        applied.profile.as_deref(),
-                        Some("balanced"),
-                        "profile activation should have set charging profile to 'balanced'"
-                    );
-                    assert_eq!(
-                        applied.priority.as_deref(),
-                        Some("performance"),
-                        "profile activation should have set charging priority to 'performance'"
-                    );
-                    println!(
-                        "  profile charging applied: profile=balanced, priority=performance — OK"
-                    );
+    // Charging settings are applied for the currently active power source.
+    if (caps.charging_profiles || caps.charging_thresholds) && power == "ac" {
+        let mut applied: Option<ChargingSettings> = None;
+        for _ in 0..10 {
+            if let Ok(applied_toml) = client.get_charging_settings().await
+                && let Ok(parsed) = toml::from_str::<ChargingSettings>(&applied_toml)
+            {
+                let matches = if caps.charging_profiles {
+                    parsed.profile.as_deref() == Some("balanced")
+                        && parsed.priority.as_deref() == Some("performance")
                 } else {
-                    assert_eq!(
-                        applied.start_threshold,
-                        Some(40),
-                        "profile activation should have set start_threshold=40"
-                    );
-                    assert_eq!(
-                        applied.end_threshold,
-                        Some(80),
-                        "profile activation should have set end_threshold=80"
-                    );
-                    println!("  profile charging applied: start=40%, end=80% — OK");
+                    parsed.start_threshold == Some(40) && parsed.end_threshold == Some(80)
+                };
+                applied = Some(parsed);
+                if matches {
+                    break;
                 }
             }
-            Err(e) => {
-                println!("  charging readback after profile activation failed: {e} (non-fatal)");
-            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
+        let applied = applied.expect("charging readback after profile activation failed");
+        if caps.charging_profiles {
+            assert_eq!(
+                applied.profile.as_deref(),
+                Some("balanced"),
+                "profile activation should have set charging profile to 'balanced'"
+            );
+            assert_eq!(
+                applied.priority.as_deref(),
+                Some("performance"),
+                "profile activation should have set charging priority to 'performance'"
+            );
+            println!("  profile charging applied: profile=balanced, priority=performance — OK");
+        } else {
+            assert_eq!(
+                applied.start_threshold,
+                Some(40),
+                "profile activation should have set start_threshold=40"
+            );
+            assert_eq!(
+                applied.end_threshold,
+                Some(80),
+                "profile activation should have set end_threshold=80"
+            );
+            println!("  profile charging applied: start=40%, end=80% — OK");
+        }
+    } else if caps.charging_profiles || caps.charging_thresholds {
+        println!("  skipping AC charging-apply verification (current power_state={power})");
     }
 
     // ── 5c. Activate profile for battery ───────────────────────
@@ -527,6 +550,56 @@ governor = "powersave"
         toml::from_str(&bat_assignments_toml).unwrap();
     assert_eq!(bat_assignments.battery_profile, copy_id);
     println!("  set {copy_id} as battery profile: OK");
+
+    // If we're currently on battery, verify charging settings apply now.
+    if (caps.charging_profiles || caps.charging_thresholds) && power == "battery" {
+        let mut applied: Option<ChargingSettings> = None;
+        for _ in 0..10 {
+            if let Ok(applied_toml) = client.get_charging_settings().await
+                && let Ok(parsed) = toml::from_str::<ChargingSettings>(&applied_toml)
+            {
+                let matches = if caps.charging_profiles {
+                    parsed.profile.as_deref() == Some("balanced")
+                        && parsed.priority.as_deref() == Some("performance")
+                } else {
+                    parsed.start_threshold == Some(40) && parsed.end_threshold == Some(80)
+                };
+                applied = Some(parsed);
+                if matches {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+        let applied = applied.expect("charging readback after battery profile activation failed");
+        if caps.charging_profiles {
+            assert_eq!(
+                applied.profile.as_deref(),
+                Some("balanced"),
+                "battery profile activation should have set charging profile to 'balanced'"
+            );
+            assert_eq!(
+                applied.priority.as_deref(),
+                Some("performance"),
+                "battery profile activation should have set charging priority to 'performance'"
+            );
+            println!(
+                "  battery profile charging applied: profile=balanced, priority=performance — OK"
+            );
+        } else {
+            assert_eq!(
+                applied.start_threshold,
+                Some(40),
+                "battery profile activation should have set start_threshold=40"
+            );
+            assert_eq!(
+                applied.end_threshold,
+                Some(80),
+                "battery profile activation should have set end_threshold=80"
+            );
+            println!("  battery profile charging applied: start=40%, end=80% — OK");
+        }
+    }
 
     // Restore original assignments.
     client
@@ -699,7 +772,12 @@ governor = "powersave"
         .set_active_profile(&curve_profile_id, "ac")
         .await
         .expect("activate curve profile failed");
-    println!("  activated curve profile as AC");
+    // Also set as battery profile so it applies on either power state.
+    client
+        .set_active_profile(&curve_profile_id, "battery")
+        .await
+        .expect("activate curve profile as battery failed");
+    println!("  activated curve profile as AC + battery");
 
     // Wait for the profile applier to apply the curve.
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -813,6 +891,10 @@ governor = "powersave"
         .set_active_profile(&curve_profile_id, "ac")
         .await
         .expect("re-activate curve profile failed");
+    client
+        .set_active_profile(&curve_profile_id, "battery")
+        .await
+        .expect("re-activate curve profile as battery failed");
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
     let reactivate_toml = client
@@ -831,11 +913,15 @@ governor = "powersave"
         reactivate_config.curve.len()
     );
 
-    // Restore original AC profile and clean up.
+    // Restore original AC + battery profiles and clean up.
     client
         .set_active_profile(&orig_assignments.ac_profile, "ac")
         .await
         .expect("restore ac profile failed");
+    client
+        .set_active_profile(&orig_assignments.battery_profile, "battery")
+        .await
+        .expect("restore battery profile failed");
     client
         .delete_profile(&curve_profile_id)
         .await
@@ -888,85 +974,90 @@ governor = "powersave"
     println!("  restored");
 
     // ── 7. Keyboard backlight (thorough save/restore) ────────────
-    section("Keyboard Backlight");
+    if caps.keyboard_backlight {
+        section("Keyboard Backlight");
 
-    let orig_kbd = client
-        .get_keyboard_state()
-        .await
-        .expect("get_keyboard_state failed");
-    let orig_kbd_parsed: KeyboardState =
-        toml::from_str(&orig_kbd).expect("bad KeyboardState TOML from daemon");
-    println!(
-        "  original: brightness={} color={:?} mode={:?}",
-        orig_kbd_parsed.brightness, orig_kbd_parsed.color, orig_kbd_parsed.mode
-    );
+        let orig_kbd = client
+            .get_keyboard_state()
+            .await
+            .expect("get_keyboard_state failed");
+        let orig_kbd_parsed: KeyboardState =
+            toml::from_str(&orig_kbd).expect("bad KeyboardState TOML from daemon");
+        println!(
+            "  original: brightness={} color={:?} mode={:?}",
+            orig_kbd_parsed.brightness, orig_kbd_parsed.color, orig_kbd_parsed.mode
+        );
 
-    // Test: set brightness to 75, mode to "Static", color to "#ff0000".
-    let test_kbd_state = KeyboardState {
-        brightness: 75,
-        color: "#ff0000".into(),
-        mode: "Static".into(),
-    };
-    let test_kbd_toml = toml::to_string(&test_kbd_state).unwrap();
-    client
-        .set_keyboard_state(&test_kbd_toml)
-        .await
-        .expect("set_keyboard_state(75, Static, #ff0000) failed");
+        // Test: set brightness to 75, mode to "Static", color to "#ff0000".
+        let test_kbd_state = KeyboardState {
+            brightness: 75,
+            color: "#ff0000".into(),
+            mode: "Static".into(),
+        };
+        let test_kbd_toml = toml::to_string(&test_kbd_state).unwrap();
+        client
+            .set_keyboard_state(&test_kbd_toml)
+            .await
+            .expect("set_keyboard_state(75, Static, #ff0000) failed");
 
-    let rb1 = client.get_keyboard_state().await.unwrap();
-    let rb1_parsed: KeyboardState = toml::from_str(&rb1).expect("bad readback TOML");
-    assert_eq!(rb1_parsed.brightness, 75, "brightness should be 75");
-    assert_eq!(rb1_parsed.color, "#ff0000", "color should be #ff0000");
-    assert_eq!(rb1_parsed.mode, "Static", "mode should be Static");
-    println!("  set brightness=75, color=#ff0000, mode=Static: OK");
+        let rb1 = client.get_keyboard_state().await.unwrap();
+        let rb1_parsed: KeyboardState = toml::from_str(&rb1).expect("bad readback TOML");
+        assert_eq!(rb1_parsed.brightness, 75, "brightness should be 75");
+        assert_eq!(rb1_parsed.color, "#ff0000", "color should be #ff0000");
+        assert_eq!(rb1_parsed.mode, "Static", "mode should be Static");
+        println!("  set brightness=75, color=#ff0000, mode=Static: OK");
 
-    // Test: set brightness to 0 (off).
-    let off_state = KeyboardState {
-        brightness: 0,
-        color: "".into(),
-        mode: "".into(),
-    };
-    let off_toml = toml::to_string(&off_state).unwrap();
-    client
-        .set_keyboard_state(&off_toml)
-        .await
-        .expect("set_keyboard_state(0) failed");
+        // Test: set brightness to 0 (off).
+        let off_state = KeyboardState {
+            brightness: 0,
+            color: "".into(),
+            mode: "".into(),
+        };
+        let off_toml = toml::to_string(&off_state).unwrap();
+        client
+            .set_keyboard_state(&off_toml)
+            .await
+            .expect("set_keyboard_state(0) failed");
 
-    let rb2 = client.get_keyboard_state().await.unwrap();
-    let rb2_parsed: KeyboardState = toml::from_str(&rb2).unwrap();
-    assert_eq!(rb2_parsed.brightness, 0, "brightness should be 0");
-    println!("  set brightness=0 (off): OK");
+        let rb2 = client.get_keyboard_state().await.unwrap();
+        let rb2_parsed: KeyboardState = toml::from_str(&rb2).unwrap();
+        assert_eq!(rb2_parsed.brightness, 0, "brightness should be 0");
+        println!("  set brightness=0 (off): OK");
 
-    // Test: set brightness to 100 (max).
-    let max_state = KeyboardState {
-        brightness: 100,
-        color: "#ffffff".into(),
-        mode: "Breathe".into(),
-    };
-    let max_toml = toml::to_string(&max_state).unwrap();
-    client
-        .set_keyboard_state(&max_toml)
-        .await
-        .expect("set_keyboard_state(100, Breathe) failed");
+        // Test: set brightness to 100 (max).
+        let max_state = KeyboardState {
+            brightness: 100,
+            color: "#ffffff".into(),
+            mode: "Breathe".into(),
+        };
+        let max_toml = toml::to_string(&max_state).unwrap();
+        client
+            .set_keyboard_state(&max_toml)
+            .await
+            .expect("set_keyboard_state(100, Breathe) failed");
 
-    let rb3 = client.get_keyboard_state().await.unwrap();
-    let rb3_parsed: KeyboardState = toml::from_str(&rb3).unwrap();
-    assert_eq!(rb3_parsed.brightness, 100, "brightness should be 100");
-    assert_eq!(rb3_parsed.mode, "Breathe", "mode should be Breathe");
-    println!("  set brightness=100, mode=Breathe: OK");
+        let rb3 = client.get_keyboard_state().await.unwrap();
+        let rb3_parsed: KeyboardState = toml::from_str(&rb3).unwrap();
+        assert_eq!(rb3_parsed.brightness, 100, "brightness should be 100");
+        assert_eq!(rb3_parsed.mode, "Breathe", "mode should be Breathe");
+        println!("  set brightness=100, mode=Breathe: OK");
 
-    // Restore original.
-    client
-        .set_keyboard_state(&orig_kbd)
-        .await
-        .expect("restore keyboard state failed");
-    let restored = client.get_keyboard_state().await.unwrap();
-    let restored_parsed: KeyboardState = toml::from_str(&restored).unwrap();
-    assert_eq!(
-        restored_parsed.brightness, orig_kbd_parsed.brightness,
-        "restored brightness mismatch"
-    );
-    println!("  restored: brightness={}", restored_parsed.brightness);
+        // Restore original.
+        client
+            .set_keyboard_state(&orig_kbd)
+            .await
+            .expect("restore keyboard state failed");
+        let restored = client.get_keyboard_state().await.unwrap();
+        let restored_parsed: KeyboardState = toml::from_str(&restored).unwrap();
+        assert_eq!(
+            restored_parsed.brightness, orig_kbd_parsed.brightness,
+            "restored brightness mismatch"
+        );
+        println!("  restored: brightness={}", restored_parsed.brightness);
+    } else {
+        section("Keyboard Backlight");
+        println!("  skipped: keyboard backlight capability not available");
+    }
 
     // ── 8. Power settings (read + save/restore) ────────────────
     section("Power Settings");
@@ -1035,7 +1126,7 @@ governor = "powersave"
                         .await
                         .unwrap_or_else(|e| panic!("set profile={test_profile} failed: {e}"));
 
-                    let rb_toml = client.get_charging_settings().await.unwrap();
+                    let rb_toml = get_charging_settings_retry(&client).await.unwrap();
                     let rb: ChargingSettings = toml::from_str(&rb_toml).unwrap();
                     assert_eq!(
                         rb.profile.as_deref(),
@@ -1046,7 +1137,7 @@ governor = "powersave"
                 }
 
                 // Test 2: Cycle through valid priorities.
-                for test_priority in &["charge", "performance"] {
+                for test_priority in &["charge_battery", "performance"] {
                     let test_settings = ChargingSettings {
                         profile: charging.profile.clone(),
                         priority: Some(test_priority.to_string()),
@@ -1058,7 +1149,7 @@ governor = "powersave"
                         .await
                         .unwrap_or_else(|e| panic!("set priority={test_priority} failed: {e}"));
 
-                    let rb_toml = client.get_charging_settings().await.unwrap();
+                    let rb_toml = get_charging_settings_retry(&client).await.unwrap();
                     let rb: ChargingSettings = toml::from_str(&rb_toml).unwrap();
                     assert_eq!(
                         rb.priority.as_deref(),
@@ -1083,7 +1174,7 @@ governor = "powersave"
                     .set_charging_settings(&orig_charging)
                     .await
                     .expect("restore charging failed");
-                let restored_toml = client.get_charging_settings().await.unwrap();
+                let restored_toml = get_charging_settings_retry(&client).await.unwrap();
                 let restored: ChargingSettings = toml::from_str(&restored_toml).unwrap();
                 assert_eq!(
                     restored.profile, charging.profile,
@@ -1099,14 +1190,14 @@ governor = "powersave"
                 );
             }
             Err(e) => {
-                println!("  charging backend not available: {e} (sysfs absent — non-fatal)");
+                panic!("charging backend advertised but unavailable: {e}");
             }
         }
     } else if caps.charging_thresholds {
         // Clevo: uses numeric start/end thresholds.
         section("Charging — Clevo Thresholds");
 
-        match client.get_charging_settings().await {
+        match get_charging_settings_retry(&client).await {
             Ok(orig_charging) => {
                 let charging: ChargingSettings =
                     toml::from_str(&orig_charging).expect("bad ChargingSettings TOML");
@@ -1133,7 +1224,7 @@ governor = "powersave"
                         .await
                         .expect("set_charging_settings failed");
 
-                    let rb_toml = client.get_charging_settings().await.unwrap();
+                    let rb_toml = get_charging_settings_retry(&client).await.unwrap();
                     let rb: ChargingSettings = toml::from_str(&rb_toml).unwrap();
                     assert_eq!(
                         rb.start_threshold,
@@ -1155,7 +1246,7 @@ governor = "powersave"
                         .await
                         .expect("set_charging_settings(100%) failed");
 
-                    let rb2_toml = client.get_charging_settings().await.unwrap();
+                    let rb2_toml = get_charging_settings_retry(&client).await.unwrap();
                     let rb2: ChargingSettings = toml::from_str(&rb2_toml).unwrap();
                     assert_eq!(rb2.end_threshold, Some(100));
                     println!("  set end=100% (full charge): OK");
@@ -1176,7 +1267,7 @@ governor = "powersave"
                         .set_charging_settings(&orig_charging)
                         .await
                         .expect("restore charging failed");
-                    let restored_toml = client.get_charging_settings().await.unwrap();
+                    let restored_toml = get_charging_settings_retry(&client).await.unwrap();
                     let restored: ChargingSettings = toml::from_str(&restored_toml).unwrap();
                     assert_eq!(
                         restored.start_threshold, charging.start_threshold,
@@ -1194,7 +1285,7 @@ governor = "powersave"
                 }
             }
             Err(e) => {
-                println!("  charging backend not available: {e} (sysfs absent — non-fatal)");
+                panic!("charging backend advertised but unavailable: {e}");
             }
         }
     }

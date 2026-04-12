@@ -83,6 +83,7 @@ impl SettingsInterface {
         keyboards: Vec<SharedKeyboard>,
         cpu_governor: Option<Arc<CpuGovernor>>,
         display: Option<SharedDisplay>,
+        charging_available: bool,
     ) -> Self {
         let kb = device.descriptor.keyboard;
         // Collect available modes from discovered keyboard hardware.
@@ -113,7 +114,7 @@ impl SettingsInterface {
         let caps = CapabilitiesResponse {
             fan_control: has_fan,
             fan_count,
-            keyboard_backlight: !matches!(kb, KeyboardType::None),
+            keyboard_backlight: !keyboards.is_empty(),
             keyboard_type: match kb {
                 KeyboardType::None => "none",
                 KeyboardType::White | KeyboardType::WhiteLevels(_) => "white",
@@ -124,14 +125,13 @@ impl SettingsInterface {
             }
             .to_string(),
             keyboard_modes,
-            charging_thresholds: matches!(
-                device.descriptor.charging,
-                ChargingCapability::Flexicharger
-            ),
-            charging_profiles: matches!(
-                device.descriptor.charging,
-                ChargingCapability::EcProfilePriority
-            ),
+            charging_thresholds: charging_available
+                && matches!(device.descriptor.charging, ChargingCapability::Flexicharger),
+            charging_profiles: charging_available
+                && matches!(
+                    device.descriptor.charging,
+                    ChargingCapability::EcProfilePriority
+                ),
             tdp_control: device.descriptor.tdp.is_some(),
             power_profiles: true,
             gpu_control: false,
@@ -197,15 +197,39 @@ impl SettingsInterface {
             let mode = new_state.mode.to_lowercase();
             for kb in &self.keyboards {
                 if let Ok(mut guard) = kb.lock() {
-                    let _ = guard.set_color(0, color);
-                    let _ = guard.set_brightness(hw_brightness);
-                    let _ = guard.set_mode(&mode);
-                    if hw_brightness > 0 {
-                        let _ = guard.turn_on();
+                    let dev = guard.device_type().to_string();
+                    guard.set_color(0, color).map_err(|e| {
+                        zbus::fdo::Error::Failed(format!("keyboard {dev}: set_color failed: {e}"))
+                    })?;
+                    guard.set_mode(&mode).map_err(|e| {
+                        zbus::fdo::Error::Failed(format!("keyboard {dev}: set_mode failed: {e}"))
+                    })?;
+                    if hw_brightness == 0 {
+                        guard.turn_off().map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: turn_off failed: {e}"
+                            ))
+                        })?;
                     } else {
-                        let _ = guard.turn_off();
+                        // Re-enable LEDs on stateful backends (ITE), then re-apply target
+                        // brightness so sysfs backends don't stay at max after turn_on().
+                        guard.set_brightness(hw_brightness).map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: set_brightness failed: {e}"
+                            ))
+                        })?;
+                        guard.turn_on().map_err(|e| {
+                            zbus::fdo::Error::Failed(format!("keyboard {dev}: turn_on failed: {e}"))
+                        })?;
+                        guard.set_brightness(hw_brightness).map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: set_brightness (reapply) failed: {e}"
+                            ))
+                        })?;
                     }
-                    let _ = guard.flush();
+                    guard.flush().map_err(|e| {
+                        zbus::fdo::Error::Failed(format!("keyboard {dev}: flush failed: {e}"))
+                    })?;
                 }
             }
         }
@@ -316,7 +340,7 @@ mod tests {
     use super::*;
     use tux_core::device::*;
     use tux_core::platform::Platform;
-    use tux_core::registers::{PlatformRegisters, UniwillRegisters};
+    use tux_core::registers::PlatformRegisters;
 
     fn make_test_device() -> DetectedDevice {
         let desc = Box::leak(Box::new(DeviceDescriptor {
@@ -337,9 +361,7 @@ mod tests {
             charging: ChargingCapability::Flexicharger,
             tdp: None,
             gpu_power: GpuPowerCapability::None,
-            registers: PlatformRegisters::Uniwill(UniwillRegisters {
-                sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-            }),
+            registers: PlatformRegisters::Uniwill,
         }));
         DetectedDevice {
             descriptor: desc,
@@ -357,8 +379,41 @@ mod tests {
 
     #[test]
     fn get_capabilities_reflects_device() {
+        use crate::hid::{KeyboardLed, Rgb};
+        use std::sync::{Arc, Mutex};
+        struct DummyKb;
+        impl KeyboardLed for DummyKb {
+            fn set_brightness(&mut self, _: u8) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn set_color(&mut self, _: u8, _: Rgb) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn set_mode(&mut self, _: &str) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn zone_count(&self) -> u8 {
+                1
+            }
+            fn turn_off(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn turn_on(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn device_type(&self) -> &str {
+                "dummy"
+            }
+            fn available_modes(&self) -> Vec<String> {
+                vec!["static".into()]
+            }
+        }
+        let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(DummyKb)));
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None);
+        let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None, true);
 
         let caps_toml = iface.get_capabilities().unwrap();
         let caps: CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
@@ -373,9 +428,21 @@ mod tests {
     }
 
     #[test]
+    fn get_capabilities_keyboard_unavailable_when_no_backends() {
+        let device = make_test_device();
+        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None, true);
+        let caps_toml = iface.get_capabilities().unwrap();
+        let caps: CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
+        assert!(
+            !caps.keyboard_backlight,
+            "keyboard_backlight must be false when no backends discovered"
+        );
+    }
+
+    #[test]
     fn get_global_settings_defaults() {
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None);
+        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None, true);
 
         let settings_toml = iface.get_global_settings().unwrap();
         let settings: GlobalSettings = toml::from_str(&settings_toml).unwrap();
@@ -387,7 +454,7 @@ mod tests {
     #[test]
     fn keyboard_state_roundtrip() {
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None);
+        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None, true);
 
         let input = "brightness = 75\ncolor = \"#ff0000\"\nmode = \"breathing\"";
         iface.set_keyboard_state(input).unwrap();
@@ -411,6 +478,8 @@ mod tests {
             color: Option<(u8, Rgb)>,
             mode: Option<String>,
             flushed: bool,
+            turn_on_count: usize,
+            turn_off_count: usize,
         }
 
         struct MockKb(Arc<Mutex<Calls>>);
@@ -431,9 +500,11 @@ mod tests {
                 1
             }
             fn turn_off(&mut self) -> std::io::Result<()> {
+                self.0.lock().unwrap().turn_off_count += 1;
                 Ok(())
             }
             fn turn_on(&mut self) -> std::io::Result<()> {
+                self.0.lock().unwrap().turn_on_count += 1;
                 Ok(())
             }
             fn flush(&mut self) -> std::io::Result<()> {
@@ -451,7 +522,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Calls::default()));
         let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(MockKb(calls.clone()))));
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None);
+        let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None, true);
 
         // Verify keyboard_modes comes from hardware.
         let caps_toml = iface.get_capabilities().unwrap();
@@ -470,7 +541,120 @@ mod tests {
         assert_eq!(color, Rgb::new(255, 128, 0));
         // Mode should be lowercased
         assert_eq!(c.mode.as_deref(), Some("static"));
+        assert_eq!(c.turn_on_count, 1);
+        assert_eq!(c.turn_off_count, 0);
         assert!(c.flushed);
+    }
+
+    #[test]
+    fn set_keyboard_state_zero_turns_off_hardware() {
+        use crate::hid::{KeyboardLed, Rgb};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Calls {
+            turn_on_count: usize,
+            turn_off_count: usize,
+            flushed: bool,
+        }
+
+        struct MockKb(Arc<Mutex<Calls>>);
+        impl KeyboardLed for MockKb {
+            fn set_brightness(&mut self, _b: u8) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn set_color(&mut self, _zone: u8, _color: Rgb) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn set_mode(&mut self, _mode: &str) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn zone_count(&self) -> u8 {
+                1
+            }
+            fn turn_off(&mut self) -> std::io::Result<()> {
+                self.0.lock().unwrap().turn_off_count += 1;
+                Ok(())
+            }
+            fn turn_on(&mut self) -> std::io::Result<()> {
+                self.0.lock().unwrap().turn_on_count += 1;
+                Ok(())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0.lock().unwrap().flushed = true;
+                Ok(())
+            }
+            fn device_type(&self) -> &str {
+                "mock"
+            }
+            fn available_modes(&self) -> Vec<String> {
+                vec!["static".into()]
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(MockKb(calls.clone()))));
+        let device = make_test_device();
+        let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None, true);
+
+        let input = "brightness = 0\ncolor = \"#ffffff\"\nmode = \"static\"";
+        iface.set_keyboard_state(input).unwrap();
+
+        let c = calls.lock().unwrap();
+        assert_eq!(c.turn_off_count, 1);
+        assert_eq!(c.turn_on_count, 0);
+        assert!(c.flushed);
+    }
+
+    #[test]
+    fn set_keyboard_state_propagates_hardware_errors() {
+        use crate::hid::{KeyboardLed, Rgb};
+        use std::sync::{Arc, Mutex};
+
+        struct FailingKb;
+        impl KeyboardLed for FailingKb {
+            fn set_brightness(&mut self, _b: u8) -> std::io::Result<()> {
+                Err(std::io::Error::other("ec write failed"))
+            }
+            fn set_color(&mut self, _zone: u8, _color: Rgb) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn set_mode(&mut self, _mode: &str) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn zone_count(&self) -> u8 {
+                1
+            }
+            fn turn_off(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn turn_on(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn device_type(&self) -> &str {
+                "failing"
+            }
+            fn available_modes(&self) -> Vec<String> {
+                vec!["static".into()]
+            }
+        }
+
+        let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(FailingKb)));
+        let device = make_test_device();
+        let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None, true);
+
+        let input = "brightness = 50\ncolor = \"#ffffff\"\nmode = \"static\"";
+        let err = iface
+            .set_keyboard_state(input)
+            .expect_err("must propagate hw failure");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("set_brightness failed"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
@@ -489,7 +673,7 @@ mod tests {
     #[test]
     fn power_settings_returns_defaults_without_governor() {
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None);
+        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None, true);
 
         let power_toml = iface.get_power_settings().unwrap();
         let settings: PowerSettings = toml::from_str(&power_toml).unwrap();
@@ -522,7 +706,7 @@ mod tests {
 
         let gov = Arc::new(CpuGovernor::with_path(base));
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], Some(gov), None);
+        let iface = SettingsInterface::new(&device, true, 2, vec![], Some(gov), None, true);
 
         let power_toml = iface.get_power_settings().unwrap();
         let settings: PowerSettings = toml::from_str(&power_toml).unwrap();

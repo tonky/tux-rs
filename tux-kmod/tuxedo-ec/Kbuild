@@ -1,2 +1,0 @@
-obj-m += tuxedo_ec.o
-

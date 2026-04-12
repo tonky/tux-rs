@@ -14,6 +14,19 @@ pub enum PowerState {
     Battery,
 }
 
+/// Inotify mask for the AC `online` file itself.
+fn power_file_watch_mask() -> inotify::WatchMask {
+    inotify::WatchMask::MODIFY | inotify::WatchMask::ATTRIB | inotify::WatchMask::CLOSE_WRITE
+}
+
+/// Inotify mask for the parent power-supply directory as fallback.
+fn power_dir_watch_mask() -> inotify::WatchMask {
+    inotify::WatchMask::MODIFY
+        | inotify::WatchMask::ATTRIB
+        | inotify::WatchMask::CREATE
+        | inotify::WatchMask::MOVED_TO
+}
+
 /// Find the sysfs `online` file for the AC power supply.
 fn find_ac_online_path() -> io::Result<PathBuf> {
     let base = Path::new("/sys/class/power_supply");
@@ -83,7 +96,7 @@ impl PowerStateMonitor {
     ///
     /// Debounces rapid transitions (500ms).
     pub async fn run(&self, mut shutdown: broadcast::Receiver<()>) {
-        use inotify::{Inotify, WatchMask};
+        use inotify::Inotify;
 
         let inotify = match Inotify::init() {
             Ok(i) => i,
@@ -93,19 +106,24 @@ impl PowerStateMonitor {
             }
         };
 
-        // Watch the parent directory for modifications to the online file.
+        // Watch the online file directly. Power supply state changes are often
+        // reported as ATTRIB updates rather than plain MODIFY writes.
+        let file_mask = power_file_watch_mask();
+        if let Err(e) = inotify.watches().add(&self.online_path, file_mask) {
+            warn!(
+                "failed to watch {}: {e}, power monitoring disabled",
+                self.online_path.display()
+            );
+            return;
+        }
+
+        // Also watch parent dir as a fallback for drivers that replace/recreate
+        // the online file and only emit directory-level notifications.
         let watch_path = self
             .online_path
             .parent()
             .unwrap_or(Path::new("/sys/class/power_supply"));
-
-        if let Err(e) = inotify.watches().add(watch_path, WatchMask::MODIFY) {
-            warn!(
-                "failed to watch {}: {e}, power monitoring disabled",
-                watch_path.display()
-            );
-            return;
-        }
+        let _ = inotify.watches().add(watch_path, power_dir_watch_mask());
 
         // The buffer must live as long as the event stream — both are in this scope.
         let mut buffer = [0u8; 1024];
@@ -222,5 +240,21 @@ mod tests {
 
         assert_eq!(ac, ac_back);
         assert_eq!(battery, battery_back);
+    }
+
+    #[test]
+    fn file_watch_mask_includes_attr_and_write_events() {
+        let mask = power_file_watch_mask();
+        assert!(mask.contains(inotify::WatchMask::ATTRIB));
+        assert!(mask.contains(inotify::WatchMask::MODIFY));
+        assert!(mask.contains(inotify::WatchMask::CLOSE_WRITE));
+    }
+
+    #[test]
+    fn dir_watch_mask_includes_recreate_events() {
+        let mask = power_dir_watch_mask();
+        assert!(mask.contains(inotify::WatchMask::CREATE));
+        assert!(mask.contains(inotify::WatchMask::MOVED_TO));
+        assert!(mask.contains(inotify::WatchMask::ATTRIB));
     }
 }

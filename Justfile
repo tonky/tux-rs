@@ -64,6 +64,27 @@ deploy-daemon:
     sudo cp target/release/tux-daemon /usr/bin/tux-daemon
     sudo systemctl start tux-daemon
 
+# Rebuild/reinstall daemon and print systemd status + recent journal logs
+deploy-daemon-debug:
+    cargo build --release -p tux-daemon
+    sudo systemctl stop tux-daemon 2>/dev/null || true
+    sudo cp target/release/tux-daemon /usr/bin/tux-daemon
+    sudo systemctl start tux-daemon
+    sudo systemctl --no-pager --full status tux-daemon || true
+    sudo journalctl -u tux-daemon -n 120 --no-pager -o short-iso
+
+# Persist Uniwill direct EC mode (workaround for WMI keyboard backlight failures)
+enable-uniwill-ec-direct:
+    echo 'options uniwill_wmi ec_direct_io=1' | sudo tee /etc/modprobe.d/99-tuxedo-uniwill-ec-direct.conf >/dev/null
+    sudo systemctl stop tux-daemon 2>/dev/null || true
+    sudo modprobe -r uniwill_wmi tuxedo_io tuxedo_uw_fan tuxedo_keyboard tuxedo_compatibility_check 2>/dev/null || true
+    sudo modprobe uniwill_wmi
+    sudo modprobe tuxedo_keyboard
+    sudo modprobe tuxedo_io
+    sudo modprobe tuxedo_uw_fan
+    sudo systemctl start tux-daemon
+    echo -n 'uniwill_wmi ec_direct_io=' && cat /sys/module/uniwill_wmi/parameters/ec_direct_io
+
 # Rebuild, reinstall and restart the daemon (dinit)
 deploy-dinit:
     cargo build --release -p tux-daemon --no-default-features --features tcc-compat
@@ -74,6 +95,9 @@ deploy-dinit:
 
 # Run live regression test against a running daemon (requires tux-daemon on system or session bus)
 live-test:
+    cargo test -p tux-daemon keyboard_state_roundtrip
+    cargo test -p tux-daemon set_keyboard_state_forwards_color_and_mode_to_hardware
+    cargo test -p tux-daemon apply_scales_profile_keyboard_brightness_to_hardware
     cargo test -p tux-tui --test live_regression -- --ignored --nocapture
 
 # Run all checks (fmt, clippy, test)
@@ -86,75 +110,3 @@ ci:
     cargo check -p tux-daemon --no-default-features --features tcc-compat
     cargo clippy -p tux-daemon --no-default-features --features tcc-compat -- -D warnings
     dbus-run-session -- cargo test --workspace
-
-# --- Kernel module recipes ---
-
-kmod_version := "0.1.0"
-kmod_src := "/usr/src/tux-kmod-" + kmod_version
-
-# Build all kernel modules
-kmod-build:
-    make -C tux-kmod
-
-# Build a single module (e.g. just kmod-build-one tuxedo-uniwill)
-kmod-build-one mod:
-    make -C /lib/modules/$(uname -r)/build M={{justfile_directory()}}/tux-kmod/{{mod}} modules
-
-# Clean kernel module build artifacts
-kmod-clean:
-    make -C tux-kmod clean
-
-# Copy sources to /usr/src for DKMS, then add + build + install
-kmod-install:
-    sudo rm -rf {{kmod_src}}
-    sudo cp -r tux-kmod {{kmod_src}}
-    sudo dkms remove tux-kmod/{{kmod_version}} --all 2>/dev/null || true
-    sudo dkms add tux-kmod/{{kmod_version}}
-    sudo dkms build tux-kmod/{{kmod_version}}
-    sudo dkms install tux-kmod/{{kmod_version}}
-
-# DKMS remove (requires sudo)
-kmod-remove:
-    sudo dkms remove tux-kmod/{{kmod_version}} --all
-    sudo rm -rf {{kmod_src}}
-
-# Load module via insmod from build dir (e.g. just kmod-load tuxedo-uniwill)
-kmod-load mod:
-    sudo insmod tux-kmod/{{mod}}/$(echo {{mod}} | tr '-' '_').ko
-
-# Unload a module (e.g. just kmod-unload tuxedo-uniwill)
-kmod-unload mod:
-    sudo rmmod $(echo {{mod}} | tr '-' '_')
-
-# Rebuild, reload a single module (e.g. just kmod-reload tuxedo-uniwill)
-kmod-reload mod: (kmod-build-one mod)
-    -sudo rmmod $(echo {{mod}} | tr '-' '_') 2>/dev/null
-    sudo insmod tux-kmod/{{mod}}/$(echo {{mod}} | tr '-' '_').ko
-    @echo "Loaded $(echo {{mod}} | tr '-' '_'), checking dmesg..."
-    sudo dmesg | tail -5
-
-# Unload vendor modules and load our tuxedo-uniwill (replaces tuxedo_keyboard + uniwill_wmi)
-kmod-swap:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    echo "Stopping vendor daemon if running..."
-    sudo systemctl stop tccd.service 2>/dev/null && echo "  stopped tccd.service" || true
-    # Kill any remaining tccd-daemon process holding /dev/tuxedo_io
-    if [ -e /dev/tuxedo_io ]; then
-        sudo fuser -k /dev/tuxedo_io 2>/dev/null && echo "  killed /dev/tuxedo_io users" || true
-    fi
-    sleep 0.5
-    echo "Unloading modules..."
-    # Order matters: tuxedo_io depends on tuxedo_keyboard, which depends on tuxedo_compatibility_check
-    # Also unload our own module if loaded (for rebuild-reload cycle)
-    for m in tuxedo_uniwill tuxedo_uw_fan tuxedo_io uniwill_wmi clevo_wmi tuxedo_keyboard tuxedo_compatibility_check; do
-        if lsmod | grep "^${m} " >/dev/null; then
-            sudo rmmod "$m" && echo "  removed $m" || echo "  WARN: $m busy (refcount>0)"
-        fi
-    done
-    echo "Building tuxedo-uniwill..."
-    make -C /lib/modules/$(uname -r)/build M={{justfile_directory()}}/tux-kmod/tuxedo-uniwill modules
-    echo "Loading tuxedo_uniwill..."
-    sudo insmod tux-kmod/tuxedo-uniwill/tuxedo_uniwill.ko
-    echo "Done. Checking dmesg..."
-    sudo dmesg | tail -10

@@ -2,7 +2,7 @@ use std::sync::RwLock;
 
 use crate::device::*;
 use crate::platform::Platform;
-use crate::registers::*;
+use crate::registers::PlatformRegisters;
 
 /// A dynamic list of devices loaded from custom overriding configuration.
 pub static CUSTOM_DEVICES: RwLock<Vec<&'static DeviceDescriptor>> = RwLock::new(Vec::new());
@@ -38,10 +38,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::None,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Nb05(Nb05Registers {
-            num_fans: 2,
-            fanctl_onereg: false,
-        }),
+        registers: PlatformRegisters::Nb05,
     },
     DeviceDescriptor {
         name: "TUXEDO Pulse 14 Gen4",
@@ -61,10 +58,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::None,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Nb05(Nb05Registers {
-            num_fans: 2,
-            fanctl_onereg: false,
-        }),
+        registers: PlatformRegisters::Nb05,
     },
     DeviceDescriptor {
         name: "TUXEDO Pulse 15 Gen2",
@@ -84,10 +78,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::None,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Nb05(Nb05Registers {
-            num_fans: 2,
-            fanctl_onereg: false,
-        }),
+        registers: PlatformRegisters::Nb05,
     },
     DeviceDescriptor {
         name: "TUXEDO InfinityFlex 14 Gen1",
@@ -107,10 +98,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::None,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Nb05(Nb05Registers {
-            num_fans: 1,
-            fanctl_onereg: true,
-        }),
+        registers: PlatformRegisters::Nb05,
     },
     // ─── Uniwill Platform ─────────────────────────────────────────
     // Stellaris Gen3
@@ -132,9 +120,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Stellaris 15 Gen3 AMD",
@@ -154,9 +140,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // Stellaris Gen4
     DeviceDescriptor {
@@ -177,9 +161,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Stellaris/Polaris Gen4 AMD",
@@ -199,9 +181,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // Stellaris Gen5
     DeviceDescriptor {
@@ -222,9 +202,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Stellaris 15 Gen5 AMD",
@@ -244,9 +222,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // Stellaris Gen6
     DeviceDescriptor {
@@ -267,9 +243,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Stellaris Slim 15 Gen6 Intel",
@@ -289,9 +263,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Stellaris Slim 15 Gen6 AMD",
@@ -311,9 +283,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // Stellaris Gen7
     DeviceDescriptor {
@@ -334,9 +304,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Stellaris 16 Gen7 Intel",
@@ -356,9 +324,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Stellaris 16 Gen7 AMD",
@@ -378,9 +344,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // Polaris
     DeviceDescriptor {
@@ -401,9 +365,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Polaris 15 Gen2 AMD",
@@ -423,9 +385,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Polaris 15 Gen3 Intel",
@@ -445,9 +405,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Polaris 15 Gen3 AMD",
@@ -467,9 +425,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO Polaris 15 Gen5 AMD",
@@ -489,9 +445,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // InfinityBook Pro (IBP) series
     DeviceDescriptor {
@@ -512,9 +466,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO InfinityBook Pro Gen7 MK2",
@@ -534,9 +486,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO InfinityBook Pro Gen8 MK1",
@@ -556,9 +506,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO InfinityBook Pro Gen8 MK2",
@@ -578,9 +526,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO InfinityBook Pro 14 Gen8 MK2",
@@ -600,9 +546,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO InfinityBook Pro 16 Gen8 MK2",
@@ -622,9 +566,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // OMNIA
     DeviceDescriptor {
@@ -645,9 +587,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // InfinityBook S series
     DeviceDescriptor {
@@ -668,9 +608,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO InfinityBook S 15 Gen8",
@@ -690,9 +628,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // InfinityBook Pro Gen6
     DeviceDescriptor {
@@ -713,9 +649,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     DeviceDescriptor {
         name: "TUXEDO InfinityBook Pro 15 Gen7",
@@ -735,9 +669,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Uniwill(UniwillRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-        }),
+        registers: PlatformRegisters::Uniwill,
     },
     // ─── Clevo Platform ───────────────────────────────────────────
     DeviceDescriptor {
@@ -758,10 +690,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::Flexicharger,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Clevo(ClevoRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-clevo",
-            max_fans: 2,
-        }),
+        registers: PlatformRegisters::Clevo,
     },
     DeviceDescriptor {
         name: "TUXEDO Aura 15 Gen3",
@@ -781,14 +710,14 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::Flexicharger,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Clevo(ClevoRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-clevo",
-            max_fans: 2,
-        }),
+        registers: PlatformRegisters::Clevo,
     },
+    // Aura 14 Gen4 / Aura 15 Gen4: hardware reports a combined SKU string.
+    // The individual "AURA14GEN4" / "AURA15GEN4" strings are never seen on
+    // real devices; only the combined form below is matched.
     DeviceDescriptor {
-        name: "TUXEDO Aura 14 Gen4",
-        product_sku: "AURA14GEN4",
+        name: "TUXEDO Aura 14/15 Gen4",
+        product_sku: "AURA14GEN4 / AURA15GEN4",
         platform: Platform::Clevo,
         fans: FanCapability {
             count: 2,
@@ -804,33 +733,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::Flexicharger,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Clevo(ClevoRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-clevo",
-            max_fans: 2,
-        }),
-    },
-    DeviceDescriptor {
-        name: "TUXEDO Aura 15 Gen4",
-        product_sku: "AURA15GEN4",
-        platform: Platform::Clevo,
-        fans: FanCapability {
-            count: 2,
-            control: FanControlType::Direct,
-            pwm_scale: 255,
-        },
-        keyboard: KeyboardType::Rgb3Zone,
-        sensors: SensorSet {
-            cpu_temp: true,
-            gpu_temp: false,
-            fan_rpm: &[true, true],
-        },
-        charging: ChargingCapability::Flexicharger,
-        tdp: None,
-        gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Clevo(ClevoRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-clevo",
-            max_fans: 2,
-        }),
+        registers: PlatformRegisters::Clevo,
     },
     // ─── NB04 Platform ────────────────────────────────────────────
     DeviceDescriptor {
@@ -851,9 +754,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::None,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Nb04(Nb04Registers {
-            sysfs_base: "/sys/devices/platform/tuxedo-nb04",
-        }),
+        registers: PlatformRegisters::Nb04,
     },
     DeviceDescriptor {
         name: "TUXEDO Sirius 16 Gen2",
@@ -873,9 +774,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::None,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Nb04(Nb04Registers {
-            sysfs_base: "/sys/devices/platform/tuxedo-nb04",
-        }),
+        registers: PlatformRegisters::Nb04,
     },
     // ─── Tuxi Platform ────────────────────────────────────────────
     DeviceDescriptor {
@@ -896,9 +795,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::None,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Tuxi(TuxiRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-tuxi",
-        }),
+        registers: PlatformRegisters::Tuxi,
     },
     DeviceDescriptor {
         name: "TUXEDO Aura 15 Gen2 (Tuxi)",
@@ -918,9 +815,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         charging: ChargingCapability::None,
         tdp: None,
         gpu_power: GpuPowerCapability::None,
-        registers: PlatformRegisters::Tuxi(TuxiRegisters {
-            sysfs_base: "/sys/devices/platform/tuxedo-tuxi",
-        }),
+        registers: PlatformRegisters::Tuxi,
     },
 ];
 
@@ -943,10 +838,7 @@ static FALLBACK_NB05: DeviceDescriptor = DeviceDescriptor {
     charging: ChargingCapability::None,
     tdp: None,
     gpu_power: GpuPowerCapability::None,
-    registers: PlatformRegisters::Nb05(Nb05Registers {
-        num_fans: 1,
-        fanctl_onereg: false,
-    }),
+    registers: PlatformRegisters::Nb05,
 };
 
 static FALLBACK_UNIWILL: DeviceDescriptor = DeviceDescriptor {
@@ -967,9 +859,7 @@ static FALLBACK_UNIWILL: DeviceDescriptor = DeviceDescriptor {
     charging: ChargingCapability::None,
     tdp: None,
     gpu_power: GpuPowerCapability::None,
-    registers: PlatformRegisters::Uniwill(UniwillRegisters {
-        sysfs_base: "/sys/devices/platform/tuxedo-uniwill",
-    }),
+    registers: PlatformRegisters::Uniwill,
 };
 
 static FALLBACK_CLEVO: DeviceDescriptor = DeviceDescriptor {
@@ -990,10 +880,7 @@ static FALLBACK_CLEVO: DeviceDescriptor = DeviceDescriptor {
     charging: ChargingCapability::None,
     tdp: None,
     gpu_power: GpuPowerCapability::None,
-    registers: PlatformRegisters::Clevo(ClevoRegisters {
-        sysfs_base: "/sys/devices/platform/tuxedo-clevo",
-        max_fans: 1,
-    }),
+    registers: PlatformRegisters::Clevo,
 };
 
 static FALLBACK_NB04: DeviceDescriptor = DeviceDescriptor {
@@ -1014,9 +901,7 @@ static FALLBACK_NB04: DeviceDescriptor = DeviceDescriptor {
     charging: ChargingCapability::None,
     tdp: None,
     gpu_power: GpuPowerCapability::None,
-    registers: PlatformRegisters::Nb04(Nb04Registers {
-        sysfs_base: "/sys/devices/platform/tuxedo-nb04",
-    }),
+    registers: PlatformRegisters::Nb04,
 };
 
 static FALLBACK_TUXI: DeviceDescriptor = DeviceDescriptor {
@@ -1037,9 +922,7 @@ static FALLBACK_TUXI: DeviceDescriptor = DeviceDescriptor {
     charging: ChargingCapability::None,
     tdp: None,
     gpu_power: GpuPowerCapability::None,
-    registers: PlatformRegisters::Tuxi(TuxiRegisters {
-        sysfs_base: "/sys/devices/platform/tuxedo-tuxi",
-    }),
+    registers: PlatformRegisters::Tuxi,
 };
 
 /// Find device by exact DMI product SKU match.
@@ -1168,8 +1051,8 @@ mod tests {
     #[test]
     fn table_has_minimum_entries() {
         assert!(
-            DEVICE_TABLE.len() >= 40,
-            "Device table has {} entries, expected >= 40",
+            DEVICE_TABLE.len() >= 38,
+            "Device table has {} entries, expected >= 38",
             DEVICE_TABLE.len()
         );
     }
@@ -1192,11 +1075,8 @@ mod tests {
     fn nb05_infinityflex_has_one_fan() {
         let device = lookup_by_sku("IFLX14I01").unwrap();
         assert_eq!(device.fans.count, 1);
-        if let PlatformRegisters::Nb05(regs) = &device.registers {
-            assert!(regs.fanctl_onereg);
-        } else {
-            panic!("Expected Nb05 registers");
-        }
+        assert_eq!(device.platform, Platform::Nb05);
+        assert_eq!(device.registers, PlatformRegisters::Nb05);
     }
 
     #[test]

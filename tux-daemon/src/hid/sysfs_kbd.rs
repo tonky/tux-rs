@@ -133,6 +133,17 @@ impl SysfsWhiteKeyboard {
 
 impl KeyboardLed for SysfsWhiteKeyboard {
     fn set_brightness(&mut self, brightness: u8) -> io::Result<()> {
+        if brightness == 0 {
+            return self.write_sysfs("brightness", "0");
+        }
+
+        // Two-step white keyboards (max=2): preserve distinct low/high stages.
+        // 1..127 -> 1 (dim), 128..255 -> 2 (bright).
+        if self.max_brightness == 2 {
+            let level = if brightness <= 127 { 1 } else { 2 };
+            return self.write_sysfs("brightness", &level.to_string());
+        }
+
         // Scale 0–255 input to 0–max_brightness with rounding.
         // Rounding is important for low max_brightness values (e.g. 2)
         // to avoid truncation eating levels.
@@ -347,25 +358,25 @@ mod tests {
         kb.set_brightness(255).unwrap();
         assert_eq!(fs::read_to_string(tmp.join("brightness")).unwrap(), "2");
 
-        // 128 → 1 (rounded: (128*2+127)/255 = 383/255 = 1)
+        // 128 -> 2 (upper stage)
         kb.set_brightness(128).unwrap();
         assert_eq!(
             fs::read_to_string(tmp.join("brightness")).unwrap().trim(),
-            "1"
+            "2"
         );
 
-        // 64 → 1 (rounded: (64*2+127)/255 = 255/255 = 1)
+        // 64 -> 1 (lower stage)
         kb.set_brightness(64).unwrap();
         assert_eq!(
             fs::read_to_string(tmp.join("brightness")).unwrap().trim(),
             "1"
         );
 
-        // 63 → 0 (rounded: (63*2+127)/255 = 253/255 = 0)
+        // 63 -> 1 (lower stage)
         kb.set_brightness(63).unwrap();
         assert_eq!(
             fs::read_to_string(tmp.join("brightness")).unwrap().trim(),
-            "0"
+            "1"
         );
 
         let _ = fs::remove_dir_all(&tmp);

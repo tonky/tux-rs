@@ -1,15 +1,20 @@
 //! Clevo flexicharger backend — start/end threshold control via sysfs.
 //!
-//! The tuxedo-clevo kernel shim exposes:
-//!   - `charge_start_threshold` (RW, 0–100)
-//!   - `charge_end_threshold`   (RW, 0–100)
+//! The `tuxedo_keyboard` platform device (from tuxedo-drivers) exposes:
+//!   - `charge_control_start_threshold` (RW, 0–100)
+//!   - `charge_control_end_threshold`   (RW, 0–100)
+//!   - `charge_control_start_available_thresholds` (RO)
+//!   - `charge_control_end_available_thresholds`   (RO)
+//!   - `charge_type` (RW)
+//!
+//! All attributes live directly under `/sys/devices/platform/tuxedo_keyboard`.
 
 use std::io;
 
 use super::ChargingBackend;
 use crate::platform::sysfs::SysfsReader;
 
-const SYSFS_BASE: &str = "/sys/devices/platform/tuxedo-clevo";
+const SYSFS_BASE: &str = "/sys/devices/platform/tuxedo_keyboard";
 
 /// Clevo ACPI flexicharger backend.
 ///
@@ -41,21 +46,21 @@ impl ClevoCharging {
 
 impl ChargingBackend for ClevoCharging {
     fn get_start_threshold(&self) -> io::Result<u8> {
-        self.sysfs.read_u8("charge_start_threshold")
+        self.sysfs.read_u8("charge_control_start_threshold")
     }
 
     fn set_start_threshold(&self, pct: u8) -> io::Result<()> {
         self.sysfs
-            .write_u8("charge_start_threshold", Self::clamp_pct(pct))
+            .write_u8("charge_control_start_threshold", Self::clamp_pct(pct))
     }
 
     fn get_end_threshold(&self) -> io::Result<u8> {
-        self.sysfs.read_u8("charge_end_threshold")
+        self.sysfs.read_u8("charge_control_end_threshold")
     }
 
     fn set_end_threshold(&self, pct: u8) -> io::Result<()> {
         self.sysfs
-            .write_u8("charge_end_threshold", Self::clamp_pct(pct))
+            .write_u8("charge_control_end_threshold", Self::clamp_pct(pct))
     }
 
     fn get_profile(&self) -> io::Result<Option<String>> {
@@ -86,9 +91,15 @@ mod tests {
 
     fn setup() -> (MockSysfs, ClevoCharging) {
         let mock = MockSysfs::new();
-        let base = mock.platform_dir("tuxedo-clevo");
-        mock.create_attr("devices/platform/tuxedo-clevo/charge_start_threshold", "40");
-        mock.create_attr("devices/platform/tuxedo-clevo/charge_end_threshold", "80");
+        let base = mock.platform_dir("tuxedo_keyboard");
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charge_control_start_threshold",
+            "40",
+        );
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charge_control_end_threshold",
+            "80",
+        );
         let backend = ClevoCharging::with_path(base);
         (mock, backend)
     }

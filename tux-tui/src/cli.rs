@@ -4,7 +4,7 @@
 //! TUI ↔ D-Bus communication without rendering a terminal.
 
 use tux_core::dbus_types::{
-    CapabilitiesResponse, DashboardSnapshot, ProfileList, SystemInfoResponse,
+    BatteryInfoResponse, CapabilitiesResponse, DashboardSnapshot, ProfileList, SystemInfoResponse,
 };
 use tux_core::fan_curve::FanConfig;
 use tux_tui::dbus_client::DaemonClient;
@@ -22,6 +22,8 @@ pub enum CliCommand {
     Capabilities,
     /// Dump system info as JSON.
     SystemInfo,
+    /// Dump battery info as JSON.
+    BatteryInfo,
     /// Dump the entire model state as JSON.
     Json,
 }
@@ -38,6 +40,7 @@ pub async fn run_cli(command: CliCommand, session_bus: bool) -> Result<String, S
         CliCommand::Profiles => dump_profiles(&client).await,
         CliCommand::Capabilities => dump_capabilities(&client).await,
         CliCommand::SystemInfo => dump_system_info(&client).await,
+        CliCommand::BatteryInfo => dump_battery_info(&client).await,
         CliCommand::Json => dump_all(&client).await,
     }
 }
@@ -100,6 +103,12 @@ async fn dump_system_info(client: &DaemonClient) -> Result<String, String> {
     serde_json::to_string_pretty(&info).map_err(|e| e.to_string())
 }
 
+async fn dump_battery_info(client: &DaemonClient) -> Result<String, String> {
+    let toml_str = client.get_battery_info().await.map_err(|e| e.to_string())?;
+    let info: BatteryInfoResponse = toml::from_str(&toml_str).map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&info).map_err(|e| e.to_string())
+}
+
 async fn dump_all(client: &DaemonClient) -> Result<String, String> {
     #[derive(serde::Serialize)]
     struct FullDump {
@@ -149,6 +158,7 @@ pub fn parse_cli_command(args: &[String]) -> Option<CliCommand> {
             "--dump-profiles" => return Some(CliCommand::Profiles),
             "--dump-Capabilities" | "--dump-capabilities" => return Some(CliCommand::Capabilities),
             "--dump-system-info" => return Some(CliCommand::SystemInfo),
+            "--dump-battery-info" => return Some(CliCommand::BatteryInfo),
             "--json" => return Some(CliCommand::Json),
             _ => {}
         }
@@ -197,6 +207,13 @@ mod tests {
         let args = vec!["tux-tui".to_string(), "--dump-system-info".to_string()];
         let cmd = parse_cli_command(&args);
         assert!(matches!(cmd, Some(CliCommand::SystemInfo)));
+    }
+
+    #[test]
+    fn parse_dump_battery_info() {
+        let args = vec!["tux-tui".to_string(), "--dump-battery-info".to_string()];
+        let cmd = parse_cli_command(&args);
+        assert!(matches!(cmd, Some(CliCommand::BatteryInfo)));
     }
 
     #[test]

@@ -24,6 +24,20 @@ pub trait FanBackend: Send + Sync {
     /// Number of fans on this platform.
     fn num_fans(&self) -> u8;
 
+    /// Whether the backend requires the engine to re-write manual PWM setpoints
+    /// on every idle tick.
+    ///
+    /// Some EC firmware (notably the Inwill universal fan table controller)
+    /// periodically restores its own stored fan table, overriding any one-shot
+    /// PWM write within seconds. Backends that experience this should return
+    /// `true` so the engine's Manual mode loop re-applies the user's setpoint
+    /// on every `idle_poll_ms` tick.
+    ///
+    /// All other backends (NB05, Tuxi, Clevo, …) should leave this as `false`.
+    fn requires_manual_reapply(&self) -> bool {
+        false
+    }
+
     /// Whether the backend supports programming a native EC fan table.
     ///
     /// When true, the fan engine can program the curve once and let the

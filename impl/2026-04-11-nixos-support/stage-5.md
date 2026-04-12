@@ -24,16 +24,15 @@ existing VM test.
 ## Proposed layout
 
 ```
-default.nix              # non-flake entry: { pkgs ? import <nixpkgs> {} }: { tux-daemon, tux-tui, tux-kmod, overlays, nixosModules }
+default.nix              # non-flake entry: { pkgs ? import <nixpkgs> {} }: { tux-daemon, tux-tui, overlay, nixosModule }
 nix/
   tux-daemon.nix         # { lib, rustPlatform, pkg-config, dbus }: rustPlatform.buildRustPackage { ... }
   tux-tui.nix            # { lib, rustPlatform, pkg-config, dbus }: ...
   tux-kmod.nix           # { lib, stdenv, kernel }: stdenv.mkDerivation { ... }
   overlay.nix            # final: prev: { tux-daemon = final.callPackage ./tux-daemon.nix {}; ... }
-nixos/
-  default.nix            # NixOS module — unchanged signature
+  nixos.nix              # NixOS module
 flake.nix                # thin wrapper; sources packages from ./nix via callPackage,
-                         # injects rust-overlay-pinned rustPlatform, exposes devShells + VM check
+                         # exposes devShells + VM check
 ```
 
 ## Design decisions
@@ -57,8 +56,8 @@ No code duplication between flake and non-flake paths — both use the same func
   normal/expected behaviour for downstream packagers and lets them pin the toolchain
   in their own nixpkgs overlay if they want to.
 - `flake.nix` inline overlay: continues to reference `self.packages.${system}.*`
-  so flake consumers get the rust-overlay-pinned binaries. Preserves the existing
-  behaviour of `imports = [ inputs.tux-rs.nixosModules.default ]`.
+  so flake consumers get matching binaries. Preserves the existing
+  behaviour of `imports = [ inputs.tux-rs.nixosModule ]`.
 
 Only the overlay wiring is duplicated — not the derivation code, which is the
 "avoid duplication" goal from balintbarna's feedback.
@@ -75,7 +74,7 @@ Tested via `builtins.filterSource` — nothing tricky, just relative-path bookke
 
 ### VM test
 
-`checks.vmTest` in `flake.nix` keeps using `self.nixosModules.default` and
+`checks.vmTest` in `flake.nix` keeps using `self.nixosModule` and
 `--mock`. No behavioural change.
 
 ## Files to touch
@@ -95,7 +94,7 @@ Tested via `builtins.filterSource` — nothing tricky, just relative-path bookke
 - `impl/2026-04-11-nixos-support/worklog.md` — append stage-5 diary entry
 
 ### Unchanged
-- `nixos/default.nix` — module signature is already clean
+- `nix/nixos.nix` — module signature is already clean
 
 ## Verification
 

@@ -131,12 +131,44 @@ pub fn is_ite_keyboard(info: &HidrawInfo) -> bool {
 /// Default sysfs LED class path.
 const SYSFS_LEDS_DIR: &str = "/sys/class/leds";
 
+/// Platform devices path — fallback when LED class symlinks are missing.
+const PLATFORM_DEVICES_DIR: &str = "/sys/devices/platform";
+
 /// Discover sysfs-based keyboard backlights (both RGB and white-only).
 ///
 /// Scans `leds_dir` for `rgb:kbd_backlight` entries (with `multi_intensity`)
 /// and `white:kbd_backlight` entries (brightness-only).
+///
+/// If nothing is found in `/sys/class/leds/` (e.g. after a partial module
+/// reload that left LED class symlinks stale), falls back to scanning
+/// `/sys/devices/platform/*/leds/` directly.
 pub fn discover_sysfs_keyboards() -> Vec<Box<dyn KeyboardLed>> {
-    discover_sysfs_keyboards_in(SYSFS_LEDS_DIR)
+    let mut keyboards = discover_sysfs_keyboards_in(SYSFS_LEDS_DIR);
+    if keyboards.is_empty() {
+        debug!("no keyboards in /sys/class/leds — scanning platform devices");
+        keyboards = discover_platform_leds(PLATFORM_DEVICES_DIR);
+    }
+    keyboards
+}
+
+/// Scan `/sys/devices/platform/*/leds/` for keyboard LED entries.
+/// Used as a fallback when `/sys/class/leds/` symlinks are missing.
+fn discover_platform_leds(platform_dir: &str) -> Vec<Box<dyn KeyboardLed>> {
+    let base = std::path::Path::new(platform_dir);
+    let entries = match std::fs::read_dir(base) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    for entry in entries.flatten() {
+        let leds_dir = entry.path().join("leds");
+        if leds_dir.is_dir() {
+            let found = discover_sysfs_keyboards_in(leds_dir.to_str().unwrap_or(""));
+            if !found.is_empty() {
+                return found;
+            }
+        }
+    }
+    Vec::new()
 }
 
 fn discover_sysfs_keyboards_in(leds_dir: &str) -> Vec<Box<dyn KeyboardLed>> {
@@ -347,6 +379,30 @@ mod tests {
         let types: Vec<&str> = kbs.iter().map(|k| k.device_type()).collect();
         assert!(types.contains(&"sysfs_rgb"));
         assert!(types.contains(&"sysfs_white"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn discover_platform_leds_finds_white_keyboard() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("tmp/test_platform_leds_discover_white");
+        let _ = std::fs::remove_dir_all(&base);
+
+        // Simulate /sys/devices/platform/tuxedo_keyboard/leds/white:kbd_backlight.
+        let led_dir = base
+            .join("tuxedo_keyboard")
+            .join("leds")
+            .join("white:kbd_backlight");
+        std::fs::create_dir_all(&led_dir).unwrap();
+        std::fs::write(led_dir.join("max_brightness"), "2\n").unwrap();
+        std::fs::write(led_dir.join("brightness"), "0\n").unwrap();
+
+        let kbs = discover_platform_leds(base.to_str().unwrap());
+        assert_eq!(kbs.len(), 1);
+        assert_eq!(kbs[0].device_type(), "sysfs_white");
 
         let _ = std::fs::remove_dir_all(&base);
     }

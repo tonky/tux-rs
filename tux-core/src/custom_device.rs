@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 use crate::device::*;
 use crate::platform::Platform;
-use crate::registers::*;
+use crate::registers::PlatformRegisters;
 
 /// A dynamic version of `DeviceDescriptor` that owns its strings.
 /// Deserialized from `custom_devices.toml`.
@@ -32,11 +32,11 @@ pub struct CustomSensorSet {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum CustomPlatformRegisters {
-    Nb05 { num_fans: u8, fanctl_onereg: bool },
-    Nb04 { sysfs_base: String },
-    Uniwill { sysfs_base: String },
-    Clevo { sysfs_base: String, max_fans: u8 },
-    Tuxi { sysfs_base: String },
+    Nb05,
+    Nb04,
+    Uniwill,
+    Clevo,
+    Tuxi,
 }
 
 impl CustomDeviceDescriptor {
@@ -52,35 +52,11 @@ impl CustomDeviceDescriptor {
         };
 
         let registers = match self.registers {
-            CustomPlatformRegisters::Nb05 {
-                num_fans,
-                fanctl_onereg,
-            } => PlatformRegisters::Nb05(Nb05Registers {
-                num_fans,
-                fanctl_onereg,
-            }),
-            CustomPlatformRegisters::Nb04 { sysfs_base } => {
-                PlatformRegisters::Nb04(Nb04Registers {
-                    sysfs_base: Box::leak(sysfs_base.into_boxed_str()),
-                })
-            }
-            CustomPlatformRegisters::Uniwill { sysfs_base } => {
-                PlatformRegisters::Uniwill(UniwillRegisters {
-                    sysfs_base: Box::leak(sysfs_base.into_boxed_str()),
-                })
-            }
-            CustomPlatformRegisters::Clevo {
-                sysfs_base,
-                max_fans,
-            } => PlatformRegisters::Clevo(ClevoRegisters {
-                sysfs_base: Box::leak(sysfs_base.into_boxed_str()),
-                max_fans,
-            }),
-            CustomPlatformRegisters::Tuxi { sysfs_base } => {
-                PlatformRegisters::Tuxi(TuxiRegisters {
-                    sysfs_base: Box::leak(sysfs_base.into_boxed_str()),
-                })
-            }
+            CustomPlatformRegisters::Nb05 => PlatformRegisters::Nb05,
+            CustomPlatformRegisters::Nb04 => PlatformRegisters::Nb04,
+            CustomPlatformRegisters::Uniwill => PlatformRegisters::Uniwill,
+            CustomPlatformRegisters::Clevo => PlatformRegisters::Clevo,
+            CustomPlatformRegisters::Tuxi => PlatformRegisters::Tuxi,
         };
 
         let desc = DeviceDescriptor {

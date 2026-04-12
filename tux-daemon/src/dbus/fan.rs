@@ -1,6 +1,7 @@
 //! D-Bus Fan interface: `com.tuxedocomputers.tccd.Fan`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tokio::sync::watch;
 use zbus::interface;
@@ -20,24 +21,35 @@ pub struct FanInterface {
     store: Arc<std::sync::RwLock<ProfileStore>>,
     assignments_rx: watch::Receiver<ProfileAssignments>,
     power_rx: watch::Receiver<PowerState>,
+    /// Shared counter of consecutive fan-engine temp-read failures.
+    failure_counter: Arc<AtomicU32>,
+    /// Sends per-fan manual PWM setpoints to the fan engine for re-application
+    /// on backends where the EC overrides one-shot writes (e.g. Inwill).
+    manual_pwms_tx: watch::Sender<Vec<u8>>,
+}
+
+pub struct FanInterfaceDeps {
+    pub backend: Arc<dyn FanBackend>,
+    pub config_tx: watch::Sender<FanConfig>,
+    pub config_rx: watch::Receiver<FanConfig>,
+    pub store: Arc<std::sync::RwLock<ProfileStore>>,
+    pub assignments_rx: watch::Receiver<ProfileAssignments>,
+    pub power_rx: watch::Receiver<PowerState>,
+    pub failure_counter: Arc<AtomicU32>,
+    pub manual_pwms_tx: watch::Sender<Vec<u8>>,
 }
 
 impl FanInterface {
-    pub fn new(
-        backend: Arc<dyn FanBackend>,
-        config_tx: watch::Sender<FanConfig>,
-        config_rx: watch::Receiver<FanConfig>,
-        store: Arc<std::sync::RwLock<ProfileStore>>,
-        assignments_rx: watch::Receiver<ProfileAssignments>,
-        power_rx: watch::Receiver<PowerState>,
-    ) -> Self {
+    pub fn new(deps: FanInterfaceDeps) -> Self {
         Self {
-            backend,
-            config_tx,
-            config_rx,
-            store,
-            assignments_rx,
-            power_rx,
+            backend: deps.backend,
+            config_tx: deps.config_tx,
+            config_rx: deps.config_rx,
+            store: deps.store,
+            assignments_rx: deps.assignments_rx,
+            power_rx: deps.power_rx,
+            failure_counter: deps.failure_counter,
+            manual_pwms_tx: deps.manual_pwms_tx,
         }
     }
 
@@ -76,6 +88,15 @@ impl FanInterface {
         let idx = Self::check_fan_index(fan_index)?;
         self.config_tx
             .send_modify(|config| config.mode = FanMode::Manual);
+        // Record the per-fan setpoint so the engine can re-apply it on backends
+        // that require tick-level re-application (e.g. Inwill EC override workaround).
+        self.manual_pwms_tx.send_modify(|pwms| {
+            let needed = idx as usize + 1;
+            if pwms.len() < needed {
+                pwms.resize(needed, 128);
+            }
+            pwms[idx as usize] = pwm;
+        });
         self.backend
             .write_pwm(idx, pwm)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -93,10 +114,11 @@ impl FanInterface {
     /// PWM percentage (scaled to max_rpm range) for platforms without RPM sensors.
     fn get_fan_speed(&self, fan_index: u32) -> zbus::fdo::Result<u32> {
         let idx = Self::check_fan_index(fan_index)?;
-        let rpm = self
-            .backend
-            .read_fan_rpm(idx)
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let rpm = match self.backend.read_fan_rpm(idx) {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => 0,
+            Err(e) => return Err(zbus::fdo::Error::Failed(e.to_string())),
+        };
         if rpm > 0 {
             return Ok(rpm as u32);
         }
@@ -170,6 +192,54 @@ impl FanInterface {
         toml::to_string_pretty(&config).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
+    /// Get full telemetry for a single fan as a TOML-encoded `FanData`.
+    ///
+    /// Returns `duty_percent` (PWM, 0–255) and `rpm_available` so the TUI can
+    /// use duty as the authoritative speed indicator on platforms without RPM
+    /// sensors (where `read_fan_rpm` always returns 0).
+    fn get_fan_data(&self, fan_index: u32) -> zbus::fdo::Result<String> {
+        let idx = Self::check_fan_index(fan_index)?;
+        let rpm = match self.backend.read_fan_rpm(idx) {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => 0,
+            Err(e) => return Err(zbus::fdo::Error::Failed(e.to_string())),
+        };
+        let duty = self
+            .backend
+            .read_pwm(idx)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let temp = self.backend.read_temp().map(|t| t as f32).unwrap_or(0.0);
+        let data = tux_core::dbus_types::FanData {
+            rpm: rpm as u32,
+            temp_celsius: temp,
+            duty_percent: duty,
+            rpm_available: rpm > 0,
+        };
+        toml::to_string_pretty(&data).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
+    /// Fan engine health: status string and consecutive failure count.
+    ///
+    /// Returns a TOML-encoded `FanHealthResponse`:
+    /// - `status = "ok"` when `consecutive_failures < 5`
+    /// - `status = "degraded"` when `consecutive_failures` is 5–29
+    /// - `status = "failed"` when `consecutive_failures >= 30`
+    fn get_fan_health(&self) -> zbus::fdo::Result<String> {
+        let failures = self.failure_counter.load(Ordering::Relaxed);
+        let status = if failures >= 30 {
+            "failed"
+        } else if failures >= 5 {
+            "degraded"
+        } else {
+            "ok"
+        };
+        let health = tux_core::dbus_types::FanHealthResponse {
+            status: status.to_string(),
+            consecutive_failures: failures,
+        };
+        toml::to_string_pretty(&health).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
     /// Number of fans on this platform.
     #[zbus(property)]
     fn fan_count(&self) -> u32 {
@@ -191,14 +261,18 @@ mod tests {
         ));
         let (_atx, arx) = watch::channel(ProfileAssignments::default());
         let (_ptx, prx) = watch::channel(PowerState::Ac);
-        let iface = FanInterface::new(
-            backend.clone() as Arc<dyn FanBackend>,
+        let failure_counter = Arc::new(AtomicU32::new(0));
+        let (manual_pwms_tx, _manual_pwms_rx) = watch::channel(Vec::<u8>::new());
+        let iface = FanInterface::new(FanInterfaceDeps {
+            backend: backend.clone() as Arc<dyn FanBackend>,
             config_tx,
             config_rx,
             store,
-            arx,
-            prx,
-        );
+            assignments_rx: arx,
+            power_rx: prx,
+            failure_counter,
+            manual_pwms_tx,
+        });
         (backend, iface)
     }
 
@@ -301,6 +375,81 @@ mod tests {
     fn get_temperature_invalid_sensor() {
         let (_backend, iface) = make_fan_iface(1);
         assert!(iface.get_temperature(1).is_err());
+    }
+
+    #[test]
+    fn get_fan_data_returns_duty_and_rpm_available() {
+        let (backend, iface) = make_fan_iface(1);
+        backend.set_rpm(0, 2400);
+        backend.write_pwm(0, 128).unwrap();
+        backend.set_temp(65);
+        let toml_str = iface.get_fan_data(0).unwrap();
+        let data: tux_core::dbus_types::FanData = toml::from_str(&toml_str).unwrap();
+        assert_eq!(data.rpm, 2400);
+        assert_eq!(data.duty_percent, 128);
+        assert!(
+            data.rpm_available,
+            "rpm_available should be true when rpm > 0"
+        );
+    }
+
+    #[test]
+    fn get_fan_data_rpm_not_available_when_zero() {
+        let (backend, iface) = make_fan_iface(1);
+        // RPM stays 0, duty set.
+        backend.write_pwm(0, 100).unwrap();
+        let toml_str = iface.get_fan_data(0).unwrap();
+        let data: tux_core::dbus_types::FanData = toml::from_str(&toml_str).unwrap();
+        assert_eq!(data.rpm, 0);
+        assert_eq!(data.duty_percent, 100);
+        assert!(
+            !data.rpm_available,
+            "rpm_available should be false when rpm == 0"
+        );
+    }
+
+    #[test]
+    fn get_fan_data_succeeds_when_rpm_unsupported() {
+        // Regression: TdUwFanBackend returns Unsupported for read_fan_rpm.
+        // get_fan_data must not propagate that as a D-Bus error.
+        let (backend, iface) = make_fan_iface(1);
+        backend.set_rpm_unsupported(true);
+        backend.write_pwm(0, 180).unwrap();
+        let toml_str = iface.get_fan_data(0).unwrap();
+        let data: tux_core::dbus_types::FanData = toml::from_str(&toml_str).unwrap();
+        assert_eq!(data.rpm, 0, "rpm should be 0 when unsupported");
+        assert_eq!(data.duty_percent, 180, "duty must still be reported");
+        assert!(
+            !data.rpm_available,
+            "rpm_available must be false when unsupported"
+        );
+    }
+
+    #[test]
+    fn get_fan_health_ok_when_no_failures() {
+        let (_backend, iface) = make_fan_iface(1);
+        let toml_str = iface.get_fan_health().unwrap();
+        let health: tux_core::dbus_types::FanHealthResponse = toml::from_str(&toml_str).unwrap();
+        assert_eq!(health.status, "ok");
+        assert_eq!(health.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn get_fan_health_degraded_at_five_failures() {
+        let (_backend, iface) = make_fan_iface(1);
+        iface.failure_counter.store(5, Ordering::Relaxed);
+        let toml_str = iface.get_fan_health().unwrap();
+        let health: tux_core::dbus_types::FanHealthResponse = toml::from_str(&toml_str).unwrap();
+        assert_eq!(health.status, "degraded");
+    }
+
+    #[test]
+    fn get_fan_health_failed_at_thirty_failures() {
+        let (_backend, iface) = make_fan_iface(1);
+        iface.failure_counter.store(30, Ordering::Relaxed);
+        let toml_str = iface.get_fan_health().unwrap();
+        let health: tux_core::dbus_types::FanHealthResponse = toml::from_str(&toml_str).unwrap();
+        assert_eq!(health.status, "failed");
     }
 
     #[test]

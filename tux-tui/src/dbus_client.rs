@@ -42,6 +42,19 @@ impl DaemonClient {
         self.call_method(FAN_IFACE, "GetFanSpeed", &(fan,)).await
     }
 
+    /// Get full fan telemetry (rpm, duty_percent, rpm_available) as TOML string.
+    pub async fn get_fan_data(&self, fan: u32) -> Result<String, zbus::Error> {
+        self.call_method(FAN_IFACE, "GetFanData", &(fan,)).await
+    }
+
+    /// Get fan engine health status as TOML string.
+    ///
+    /// Returns a `FanHealthResponse` with `status` ("ok"/"degraded"/"failed")
+    /// and `consecutive_failures` counter.
+    pub async fn get_fan_health(&self) -> Result<String, zbus::Error> {
+        self.call_method(FAN_IFACE, "GetFanHealth", &()).await
+    }
+
     /// Get fan hardware info: (max_rpm, min_rpm, multi_fan, num_fans).
     pub async fn get_fan_info(&self) -> Result<(u32, u32, bool, u8), zbus::Error> {
         self.call_method(FAN_IFACE, "GetFanInfo", &()).await

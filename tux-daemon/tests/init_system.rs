@@ -92,9 +92,7 @@ fn systemd_service_execstart_points_to_daemon() {
     let content = fs::read_to_string(&path).unwrap();
     let unit = parse_systemd_unit(&content);
 
-    let exec = unit["Service"]
-        .get("ExecStart")
-        .expect("missing ExecStart");
+    let exec = unit["Service"].get("ExecStart").expect("missing ExecStart");
     assert!(
         exec.contains("tux-daemon"),
         "ExecStart should reference tux-daemon binary, got: {exec}"

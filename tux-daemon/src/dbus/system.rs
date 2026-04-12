@@ -152,8 +152,8 @@ impl SystemInterface {
     }
 }
 
-/// Sysfs path for Fn Lock attribute (from tuxedo-uniwill driver).
-const FN_LOCK_PATH: &str = "/sys/devices/platform/tuxedo-uniwill/fn_lock";
+/// Sysfs path for Fn Lock attribute (from tuxedo_keyboard driver).
+const FN_LOCK_PATH: &str = "/sys/devices/platform/tuxedo_keyboard/fn_lock";
 
 /// Check if the fn_lock sysfs attribute exists.
 fn fn_lock_supported(path: &str) -> bool {
@@ -302,14 +302,20 @@ fn read_battery_info(base: &Path) -> BatteryInfoResponse {
         capacity_percent: read_u32("capacity"),
         status,
         cycle_count: {
-            let mut raw =
-                std::fs::read_to_string("/sys/devices/platform/tuxedo-uniwill/raw_cycle_count")
-                    .map(|s| s.trim().parse::<u32>().unwrap_or(0))
-                    .unwrap_or(0);
+            // Prefer BAT*/raw_cycle_count, but normalize known unstable encodings
+            // observed on some firmware (e.g. 12836/13348 carrying 36 in low byte).
+            // Then try tuxedo_keyboard platform raw counter, then legacy cycle_count.
+            let raw = {
+                let bat_raw = read_battery_raw_cycle_count(&bat);
+                if bat_raw > 0 {
+                    bat_raw
+                } else {
+                    std::fs::read_to_string("/sys/devices/platform/tuxedo_keyboard/raw_cycle_count")
+                        .map(|s| s.trim().parse::<u32>().unwrap_or(0))
+                        .unwrap_or(0)
+                }
+            };
 
-            if raw == 0 {
-                raw = read_u32("raw_cycle_count");
-            }
             if raw > 0 {
                 raw
             } else {
@@ -327,6 +333,42 @@ fn read_battery_info(base: &Path) -> BatteryInfoResponse {
         model_name: read_str("model_name"),
         health_percent,
     }
+}
+
+/// Normalize flaky raw cycle counters seen on some Uniwill firmware.
+///
+/// Some systems occasionally return a 16-bit packed value where the real
+/// cycle count is in the low byte (e.g. 12836 -> 36, 13348 -> 36).
+fn normalize_raw_cycle_count(raw: u32) -> u32 {
+    if raw == 0 {
+        return 0;
+    }
+    if raw > u8::MAX as u32 {
+        let low = raw & 0xFF;
+        if low > 0 {
+            return low;
+        }
+    }
+    raw
+}
+
+/// Read BAT*/raw_cycle_count multiple times and return a stable candidate.
+///
+/// We take the minimum non-zero normalized value from a short burst to reject
+/// transient high spikes while keeping monotonically increasing real counts.
+fn read_battery_raw_cycle_count(bat_path: &Path) -> u32 {
+    let mut best: Option<u32> = None;
+    for _ in 0..5 {
+        let sample = std::fs::read_to_string(bat_path.join("raw_cycle_count"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .map(normalize_raw_cycle_count)
+            .unwrap_or(0);
+        if sample > 0 {
+            best = Some(best.map_or(sample, |cur| cur.min(sample)));
+        }
+    }
+    best.unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -510,9 +552,9 @@ mod tests {
 
         fs::write(bat.join("capacity"), "85\n").unwrap();
         fs::write(bat.join("status"), "Discharging\n").unwrap();
-        fs::write(bat.join("cycle_count"), "0\n").unwrap();
-        // raw_cycle_count from tuxedo driver (EC direct read) should be preferred
-        fs::write(bat.join("raw_cycle_count"), "35\n").unwrap();
+        fs::write(bat.join("cycle_count"), "35\n").unwrap();
+        // raw_cycle_count would be at /sys/devices/platform/tuxedo_keyboard/ on real hardware;
+        // in tests the platform path is absent so cycle_count is the fallback.
         // Values in µAh / µA / µV as per sysfs convention
         fs::write(bat.join("charge_now"), "4200000\n").unwrap();
         fs::write(bat.join("charge_full"), "5000000\n").unwrap();
@@ -528,7 +570,7 @@ mod tests {
         assert!(info.present);
         assert_eq!(info.capacity_percent, 85);
         assert_eq!(info.status, "Discharging");
-        assert_eq!(info.cycle_count, 35); // Uses raw_cycle_count, not ACPI's 0
+        assert_eq!(info.cycle_count, 35); // Falls back to cycle_count in test (no platform device)
         assert_eq!(info.charge_now_mah, 4200);
         assert_eq!(info.charge_full_mah, 5000);
         assert_eq!(info.charge_full_design_mah, 5300);
@@ -575,7 +617,8 @@ mod tests {
 
     #[test]
     fn battery_info_cycle_count_fallback() {
-        // When raw_cycle_count is absent, falls back to cycle_count
+        // raw_cycle_count is at /sys/devices/platform/tuxedo_keyboard/ on real hardware;
+        // in tests that path is absent, so cycle_count is the fallback.
         let tmp = tempfile::tempdir().unwrap();
         let bat = tmp.path().join("BAT0");
         fs::create_dir_all(&bat).unwrap();
@@ -583,7 +626,6 @@ mod tests {
         fs::write(bat.join("capacity"), "90\n").unwrap();
         fs::write(bat.join("status"), "Full\n").unwrap();
         fs::write(bat.join("cycle_count"), "42\n").unwrap();
-        // No raw_cycle_count — non-Tuxedo hardware or different driver
         fs::write(bat.join("charge_now"), "5000000\n").unwrap();
         fs::write(bat.join("charge_full"), "5000000\n").unwrap();
         fs::write(bat.join("charge_full_design"), "5000000\n").unwrap();
@@ -596,5 +638,53 @@ mod tests {
 
         let info = read_battery_info(tmp.path());
         assert_eq!(info.cycle_count, 42); // Falls back to ACPI cycle_count
+    }
+
+    #[test]
+    fn battery_info_prefers_bat_raw_cycle_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bat = tmp.path().join("BAT0");
+        fs::create_dir_all(&bat).unwrap();
+
+        fs::write(bat.join("capacity"), "90\n").unwrap();
+        fs::write(bat.join("status"), "Full\n").unwrap();
+        fs::write(bat.join("raw_cycle_count"), "36\n").unwrap();
+        fs::write(bat.join("cycle_count"), "0\n").unwrap();
+        fs::write(bat.join("charge_now"), "5000000\n").unwrap();
+        fs::write(bat.join("charge_full"), "5000000\n").unwrap();
+        fs::write(bat.join("charge_full_design"), "5000000\n").unwrap();
+        fs::write(bat.join("current_now"), "0\n").unwrap();
+        fs::write(bat.join("voltage_now"), "16000000\n").unwrap();
+        fs::write(bat.join("voltage_min_design"), "15000000\n").unwrap();
+        fs::write(bat.join("technology"), "Li-ion\n").unwrap();
+        fs::write(bat.join("manufacturer"), "OEM\n").unwrap();
+        fs::write(bat.join("model_name"), "standard\n").unwrap();
+
+        let info = read_battery_info(tmp.path());
+        assert_eq!(info.cycle_count, 36);
+    }
+
+    #[test]
+    fn battery_info_normalizes_large_bat_raw_cycle_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bat = tmp.path().join("BAT0");
+        fs::create_dir_all(&bat).unwrap();
+
+        fs::write(bat.join("capacity"), "90\n").unwrap();
+        fs::write(bat.join("status"), "Full\n").unwrap();
+        fs::write(bat.join("raw_cycle_count"), "12836\n").unwrap();
+        fs::write(bat.join("cycle_count"), "0\n").unwrap();
+        fs::write(bat.join("charge_now"), "5000000\n").unwrap();
+        fs::write(bat.join("charge_full"), "5000000\n").unwrap();
+        fs::write(bat.join("charge_full_design"), "5000000\n").unwrap();
+        fs::write(bat.join("current_now"), "0\n").unwrap();
+        fs::write(bat.join("voltage_now"), "16000000\n").unwrap();
+        fs::write(bat.join("voltage_min_design"), "15000000\n").unwrap();
+        fs::write(bat.join("technology"), "Li-ion\n").unwrap();
+        fs::write(bat.join("manufacturer"), "OEM\n").unwrap();
+        fs::write(bat.join("model_name"), "standard\n").unwrap();
+
+        let info = read_battery_info(tmp.path());
+        assert_eq!(info.cycle_count, 36);
     }
 }

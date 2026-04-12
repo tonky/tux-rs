@@ -113,6 +113,8 @@ pub struct DashboardState {
     pub cpu_load_overall: Option<f32>,
     pub cpu_load_per_core: Vec<f32>,
     pub cpu_freq_per_core: Vec<u32>,
+    /// Fan engine health: "ok", "degraded", or "failed".
+    pub fan_health: Option<String>,
 }
 
 /// Per-fan live data.
@@ -120,6 +122,10 @@ pub struct DashboardState {
 pub struct FanData {
     pub rpm: u32,
     pub speed_percent: u8,
+    /// PWM duty cycle (0–255); authoritative speed indicator.
+    pub duty_percent: u8,
+    /// `true` when RPM comes from a real hardware tachometer.
+    pub rpm_available: bool,
 }
 
 /// Info tab: static system information.
@@ -547,7 +553,7 @@ pub fn charging_form() -> FormTabState {
             label: "Charging Priority".into(),
             key: Some("priority".into()),
             field_type: FieldType::Select {
-                options: vec!["charge".into(), "performance".into()],
+                options: vec!["charge_battery".into(), "performance".into()],
                 selected: 0,
             },
             enabled: true,
@@ -995,6 +1001,7 @@ impl DashboardState {
             cpu_load_overall: None,
             cpu_load_per_core: Vec::new(),
             cpu_freq_per_core: Vec::new(),
+            fan_health: None,
         }
     }
 

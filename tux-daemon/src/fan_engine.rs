@@ -1,6 +1,7 @@
 //! Fan curve engine: temperature polling, curve interpolation, and PWM control.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, info, warn};
@@ -12,11 +13,47 @@ use tux_core::fan_curve::{FanConfig, FanMode, interpolate, percent_to_pwm};
 pub struct FanCurveEngine {
     backend: Arc<dyn FanBackend>,
     config_rx: watch::Receiver<FanConfig>,
+    /// Per-fan manual PWM setpoints. Updated by D-Bus `set_fan_speed` calls.
+    /// Only used when `backend.requires_manual_reapply()` is true.
+    manual_pwms_rx: watch::Receiver<Vec<u8>>,
+    /// Shared counter of consecutive temperature-read failures (reset on success).
+    consecutive_failures: Arc<AtomicU32>,
 }
 
 impl FanCurveEngine {
     pub fn new(backend: Arc<dyn FanBackend>, config_rx: watch::Receiver<FanConfig>) -> Self {
-        Self { backend, config_rx }
+        let (_, manual_pwms_rx) = watch::channel(Vec::new());
+        Self {
+            backend,
+            config_rx,
+            manual_pwms_rx,
+            consecutive_failures: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Create an engine wired to a manual-PWM watch channel.
+    ///
+    /// Used by `main.rs` to wire the D-Bus `set_fan_speed` handler to the
+    /// engine so Inwill's EC-override workaround can re-apply setpoints each tick.
+    pub fn new_with_manual_pwms(
+        backend: Arc<dyn FanBackend>,
+        config_rx: watch::Receiver<FanConfig>,
+        manual_pwms_rx: watch::Receiver<Vec<u8>>,
+    ) -> Self {
+        Self {
+            backend,
+            config_rx,
+            manual_pwms_rx,
+            consecutive_failures: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Return an `Arc` handle to the consecutive-failure counter.
+    ///
+    /// Callers (e.g. the D-Bus layer) clone this to observe engine health
+    /// without needing a direct reference to the engine itself.
+    pub fn failure_counter(&self) -> Arc<AtomicU32> {
+        self.consecutive_failures.clone()
     }
 
     /// Run the engine until a shutdown signal is received.
@@ -44,7 +81,9 @@ impl FanCurveEngine {
                 info!("fan mode changed: {:?} → {:?}", current_mode, config.mode);
                 match config.mode {
                     FanMode::Auto => self.set_all_auto(),
-                    FanMode::Manual => { /* no-op — user controls PWM directly */ }
+                    FanMode::Manual => {
+                        // Setpoints will be read from manual_pwms_rx; no local state to clear.
+                    }
                     FanMode::CustomCurve => {
                         last_temp = None;
                         last_pwm = None;
@@ -54,7 +93,23 @@ impl FanCurveEngine {
             }
 
             let poll_ms = match current_mode {
-                FanMode::Auto | FanMode::Manual => config.idle_poll_ms,
+                FanMode::Auto => config.idle_poll_ms,
+                FanMode::Manual => {
+                    // On backends where the EC periodically restores its own fan
+                    // table (e.g. Inwill tuxedo_uw_fan), re-apply the user's
+                    // setpoints on every idle tick. Other backends are single-write.
+                    if self.backend.requires_manual_reapply() {
+                        let pwms = self.manual_pwms_rx.borrow();
+                        if !pwms.is_empty() {
+                            for (i, &pwm) in pwms.iter().enumerate() {
+                                if let Err(e) = self.backend.write_pwm(i as u8, pwm) {
+                                    warn!("failed to re-apply manual PWM to fan {i}: {e}");
+                                }
+                            }
+                        }
+                    }
+                    config.idle_poll_ms
+                }
                 FanMode::CustomCurve => {
                     self.tick_custom_curve(&config, &mut last_temp, &mut last_pwm)
                 }
@@ -90,9 +145,15 @@ impl FanCurveEngine {
         last_pwm: &mut Option<u8>,
     ) -> u64 {
         let temp = match self.backend.read_temp() {
-            Ok(t) => t,
+            Ok(t) => {
+                self.consecutive_failures.store(0, Ordering::Relaxed);
+                t
+            }
             Err(e) => {
-                warn!("failed to read temperature: {e}, setting 100% safety");
+                let n = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                warn!(
+                    "failed to read temperature: {e}, setting 100% safety (consecutive failure {n})"
+                );
                 self.set_all_percent(100);
                 return config.active_poll_ms;
             }
@@ -418,8 +479,73 @@ mod tests {
         assert_eq!(pwm, 255, "temp read failure should set 100% safety speed");
     }
 
-    /// Regression: config change must reset hysteresis so the new curve
-    /// is applied even when temperature hasn't changed (the last_temp = None fix).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failure_counter_increments_on_read_failure() {
+        let backend = Arc::new(MockFanBackend::new(1));
+        backend.set_temp(70);
+
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let engine_backend = backend.clone();
+        let mut engine = FanCurveEngine::new(engine_backend, config_rx);
+        let counter = engine.failure_counter();
+
+        let handle = tokio::spawn(async move {
+            engine.run(shutdown_rx).await;
+        });
+
+        // Normal operation: counter should be 0.
+        settle().await;
+        assert_eq!(counter.load(Ordering::Relaxed), 0, "no failures yet");
+
+        // Inject failures.
+        backend.set_fail_temp(true);
+        settle().await;
+        let after_failure = counter.load(Ordering::Relaxed);
+        assert!(
+            after_failure >= 1,
+            "counter should increment on failure, got {after_failure}"
+        );
+
+        drop(shutdown_tx);
+        handle.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failure_counter_resets_on_success() {
+        let backend = Arc::new(MockFanBackend::new(1));
+        backend.set_temp(70);
+
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let engine_backend = backend.clone();
+        let mut engine = FanCurveEngine::new(engine_backend, config_rx);
+        let counter = engine.failure_counter();
+
+        let handle = tokio::spawn(async move {
+            engine.run(shutdown_rx).await;
+        });
+
+        // Inject failures so counter goes above zero.
+        backend.set_fail_temp(true);
+        settle().await;
+        assert!(counter.load(Ordering::Relaxed) >= 1, "should have failures");
+
+        // Recover: stop failing, counter should reset on next successful read.
+        backend.set_fail_temp(false);
+        settle().await;
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            0,
+            "counter should reset to 0 after successful temp read"
+        );
+
+        drop(shutdown_tx);
+        handle.await.unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn config_change_bypasses_hysteresis() {
         let backend = Arc::new(MockFanBackend::new(1));

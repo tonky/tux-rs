@@ -1,5 +1,6 @@
 //! D-Bus server setup and lifecycle.
 
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::watch;
@@ -37,6 +38,7 @@ pub use charging::ChargingInterface;
 pub use cpu::CpuInterface;
 pub use device::DeviceInterface;
 pub use fan::FanInterface;
+pub use fan::FanInterfaceDeps;
 pub use gpu_power::GpuPowerInterface;
 pub use keyboard::KeyboardInterface;
 pub use profile::ProfileInterface;
@@ -74,6 +76,11 @@ pub struct DbusConfig<'a> {
     pub applier: Arc<ProfileApplier>,
     pub power_rx: watch::Receiver<PowerState>,
     pub daemon_config: Arc<RwLock<crate::config::DaemonConfig>>,
+    /// Consecutive temp-read failure counter shared with the fan curve engine.
+    pub fan_failure_counter: Arc<AtomicU32>,
+    /// Sender for manual PWM setpoints, shared with the fan curve engine for
+    /// EC-override re-application (Inwill tuxedo_uw_fan workaround).
+    pub manual_pwms_tx: tokio::sync::watch::Sender<Vec<u8>>,
 }
 
 /// Build and start the D-Bus connection on the specified bus.
@@ -100,6 +107,8 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         applier,
         power_rx,
         daemon_config,
+        fan_failure_counter,
+        manual_pwms_tx,
     } = config;
 
     // Clone resources needed by the TCC compat interface before they're consumed.
@@ -147,6 +156,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         keyboards.clone(),
         cpu_governor.clone(),
         display,
+        charging.is_some(),
     );
 
     // Clone before SystemInterface consumes them by value
@@ -168,14 +178,16 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         .serve_at(OBJECT_PATH, system_iface)?;
 
     if let Some(backend) = backend {
-        let fan_iface = FanInterface::new(
+        let fan_iface = FanInterface::new(FanInterfaceDeps {
             backend,
             config_tx,
             config_rx,
-            fan_store,
-            fan_assignments_rx,
-            fan_power_rx,
-        );
+            store: fan_store,
+            assignments_rx: fan_assignments_rx,
+            power_rx: fan_power_rx,
+            failure_counter: fan_failure_counter,
+            manual_pwms_tx,
+        });
         builder = builder.serve_at(OBJECT_PATH, fan_iface)?;
     }
 

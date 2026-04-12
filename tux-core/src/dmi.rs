@@ -12,6 +12,12 @@ use crate::platform::Platform;
 /// NB04 WMI GUID used for platform detection.
 const NB04_WMI_GUID: &str = "80C9BAA6-AC48-4538-9234-9F81A55E7C85";
 
+/// Clevo WMI event GUID — unique to Clevo hardware (tuxedo-drivers: clevo_wmi.ko).
+const CLEVO_WMI_EVENT_GUID: &str = "ABBC0F6B-8EA1-11D1-00A0-C90629100000";
+
+/// Uniwill WMI event GUID 2 — unique to Uniwill hardware (tuxedo-drivers: uniwill_wmi.ko).
+const UNIWILL_WMI_EVENT_GUID_2: &str = "ABBC0F72-8EA1-11D1-00A0-C90629100000";
+
 /// Abstraction over DMI/sysfs access for testability.
 pub trait DmiSource {
     /// Read a DMI field (e.g. "board_vendor") from sysfs.
@@ -104,18 +110,18 @@ fn detect_platform(source: &dyn DmiSource, dmi: &DmiInfo) -> Option<Platform> {
         return Some(Platform::Nb04);
     }
 
-    // Uniwill: platform driver loaded
-    if source.sysfs_path_exists("/sys/devices/platform/tuxedo-uniwill/") {
+    // Uniwill: tuxedo-drivers exposes WMI event GUID 2 unique to Uniwill hardware.
+    if source.wmi_guid_exists(UNIWILL_WMI_EVENT_GUID_2) {
         return Some(Platform::Uniwill);
     }
 
-    // Clevo: platform driver loaded
-    if source.sysfs_path_exists("/sys/devices/platform/tuxedo-clevo/") {
+    // Clevo: tuxedo-drivers exposes WMI event GUID unique to Clevo hardware.
+    if source.wmi_guid_exists(CLEVO_WMI_EVENT_GUID) {
         return Some(Platform::Clevo);
     }
 
-    // Tuxi: platform driver loaded
-    if source.sysfs_path_exists("/sys/devices/platform/tuxedo-tuxi/") {
+    // Tuxi: tuxedo-drivers registers a tuxedo_fan_control platform device.
+    if source.sysfs_path_exists("/sys/devices/platform/tuxedo_fan_control/") {
         return Some(Platform::Tuxi);
     }
 
@@ -149,10 +155,12 @@ pub fn detect_device(source: &dyn DmiSource) -> Result<DetectedDevice, Detection
     };
 
     // Step 2.5: For platforms detected via non-sysfs signals (NB04 via WMI),
-    // verify the kernel shim is actually loaded.
+    // verify the tuxedo-drivers kernel module is actually loaded.
     // NB05 is detected by board_vendor and has no sysfs platform path to verify.
-    // Uniwill/Clevo/Tuxi are detected BY sysfs, so shim is inherently present.
-    if platform == Platform::Nb04 && !source.sysfs_path_exists("/sys/devices/platform/tuxedo-nb04/")
+    // Uniwill/Clevo/Tuxi are detected BY sysfs/WMI, so driver is inherently present.
+    // NB04: verify tuxedo_nb04_sensors is loaded (tuxedo-drivers platform device).
+    if platform == Platform::Nb04
+        && !source.sysfs_path_exists("/sys/devices/platform/tuxedo_nb04_sensors/")
     {
         return Err(DetectionError::NoKernelShim { platform });
     }
@@ -195,7 +203,7 @@ mod tests {
         let source = MockDmiSource::new()
             .tuxedo_base("UNKNOWN_NB04_SKU")
             .with_wmi_guid(NB04_WMI_GUID)
-            .with_sysfs_path("/sys/devices/platform/tuxedo-nb04/");
+            .with_sysfs_path("/sys/devices/platform/tuxedo_nb04_sensors/");
         let result = detect_device(&source).unwrap();
         assert!(!result.exact_match);
         assert_eq!(result.descriptor.platform, Platform::Nb04);
@@ -203,7 +211,7 @@ mod tests {
 
     #[test]
     fn nb04_wmi_without_shim_returns_no_kernel_shim() {
-        // WMI GUID present (BIOS advertises NB04) but kernel shim not loaded
+        // WMI GUID present (BIOS advertises NB04) but tuxedo_nb04_sensors not loaded
         let source = MockDmiSource::new()
             .tuxedo_base("UNKNOWN_NB04_SKU")
             .with_wmi_guid(NB04_WMI_GUID);
@@ -223,7 +231,7 @@ mod tests {
     fn uniwill_sysfs_fallback() {
         let source = MockDmiSource::new()
             .tuxedo_base("UNKNOWN_UW_SKU")
-            .with_sysfs_path("/sys/devices/platform/tuxedo-uniwill/");
+            .with_wmi_guid(UNIWILL_WMI_EVENT_GUID_2);
         let result = detect_device(&source).unwrap();
         assert!(!result.exact_match);
         assert_eq!(result.descriptor.platform, Platform::Uniwill);
@@ -233,7 +241,7 @@ mod tests {
     fn clevo_sysfs_fallback() {
         let source = MockDmiSource::new()
             .tuxedo_base("UNKNOWN_CLEVO_SKU")
-            .with_sysfs_path("/sys/devices/platform/tuxedo-clevo/");
+            .with_wmi_guid(CLEVO_WMI_EVENT_GUID);
         let result = detect_device(&source).unwrap();
         assert!(!result.exact_match);
         assert_eq!(result.descriptor.platform, Platform::Clevo);
@@ -243,7 +251,7 @@ mod tests {
     fn tuxi_sysfs_fallback() {
         let source = MockDmiSource::new()
             .tuxedo_base("UNKNOWN_TUXI_SKU")
-            .with_sysfs_path("/sys/devices/platform/tuxedo-tuxi/");
+            .with_sysfs_path("/sys/devices/platform/tuxedo_fan_control/");
         let result = detect_device(&source).unwrap();
         assert!(!result.exact_match);
         assert_eq!(result.descriptor.platform, Platform::Tuxi);
@@ -300,6 +308,103 @@ mod tests {
         let err = detect_device(&source).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("cannot access DMI data"));
+    }
+
+    #[test]
+    fn exact_sku_match_ibp16_gen8() {
+        // InfinityBook Pro 16 Gen 8 (Uniwill platform) — priority regression test.
+        // Must always exact-match by SKU so the correct Uniwill backend is selected.
+        let source = MockDmiSource::new().tuxedo_base("IBP16I08MK2");
+        let result = detect_device(&source).unwrap();
+        assert!(
+            result.exact_match,
+            "IBP16I08MK2 must match by SKU, not platform fallback"
+        );
+        assert_eq!(result.descriptor.product_sku, "IBP16I08MK2");
+        assert_eq!(result.descriptor.platform, Platform::Uniwill);
+    }
+
+    #[test]
+    fn exact_sku_match_aura_gen4_combined() {
+        // The actual hardware SKU string reported by Aura 14 Gen4 / Aura 15 Gen4
+        let source = MockDmiSource::new().tuxedo_base("AURA14GEN4 / AURA15GEN4");
+        let result = detect_device(&source).unwrap();
+        assert!(result.exact_match);
+        assert_eq!(result.descriptor.product_sku, "AURA14GEN4 / AURA15GEN4");
+        assert_eq!(result.descriptor.platform, Platform::Clevo);
+    }
+
+    // ── tuxedo-drivers detection paths ──────────────────────────────────────
+
+    #[test]
+    fn nb04_tuxedo_drivers_shim_path() {
+        // WMI GUID present + tuxedo_nb04_sensors (tuxedo-drivers) loaded
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_NB04_SKU")
+            .with_wmi_guid(NB04_WMI_GUID)
+            .with_sysfs_path("/sys/devices/platform/tuxedo_nb04_sensors/");
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Nb04);
+    }
+
+    #[test]
+    fn nb04_wmi_without_either_shim_returns_no_kernel_shim() {
+        // WMI GUID present (BIOS advertises NB04) but neither tux-kmod nor tuxedo-drivers loaded
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_NB04_SKU")
+            .with_wmi_guid(NB04_WMI_GUID);
+        let err = detect_device(&source).unwrap_err();
+        assert!(matches!(
+            err,
+            DetectionError::NoKernelShim {
+                platform: Platform::Nb04
+            }
+        ));
+    }
+
+    #[test]
+    fn clevo_wmi_guid_detection_tuxedo_drivers() {
+        // tuxedo-drivers: no tuxedo-clevo sysfs path, but WMI event GUID present
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_CLEVO_SKU")
+            .with_wmi_guid(CLEVO_WMI_EVENT_GUID);
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Clevo);
+    }
+
+    #[test]
+    fn uniwill_wmi_guid_detection_tuxedo_drivers() {
+        // tuxedo-drivers: no tuxedo-uniwill sysfs path, but WMI event GUID 2 present
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_UW_SKU")
+            .with_wmi_guid(UNIWILL_WMI_EVENT_GUID_2);
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Uniwill);
+    }
+
+    #[test]
+    fn tuxi_tuxedo_drivers_platform_path() {
+        // tuxedo-drivers: tuxedo_fan_control platform device instead of tuxedo-tuxi
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_TUXI_SKU")
+            .with_sysfs_path("/sys/devices/platform/tuxedo_fan_control/");
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Tuxi);
+    }
+
+    #[test]
+    fn uwiwill_wmi_guid_detected_before_clevo() {
+        // If both Uniwill and Clevo WMI GUIDs are somehow present, Uniwill wins
+        let source = MockDmiSource::new()
+            .tuxedo_base("AMBIGUOUS_SKU")
+            .with_wmi_guid(UNIWILL_WMI_EVENT_GUID_2)
+            .with_wmi_guid(CLEVO_WMI_EVENT_GUID);
+        let result = detect_device(&source).unwrap();
+        assert_eq!(result.descriptor.platform, Platform::Uniwill);
     }
 
     #[test]

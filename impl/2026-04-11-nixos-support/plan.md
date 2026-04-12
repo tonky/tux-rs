@@ -7,23 +7,23 @@ Provide a seamless NixOS integration for `tux-rs` with automated local testing (
 
 ## Key Files & Context
 - `flake.nix`: Root entry point for Nix, exposing packages, the NixOS module, and VM tests.
-- `nixos/default.nix`: The NixOS module definition.
+- `nix/nixos.nix`: The NixOS module definition.
 - `impl/2026-04-11-nixos-support/`: Directory for tracking implementation progress.
 
 ## Proposed Solution
 
 ### 1. `flake.nix`
 Create a `flake.nix` that:
-- Uses `nixpkgs` and `rust-overlay`.
+- Uses `nixpkgs`.
 - Provides `packages`:
     - `tux-daemon`: The Rust daemon.
     - `tux-tui`: The terminal UI.
     - `tux-kmod`: Derivation building all kernel modules.
-- Provides a `nixosModules.default` (or `tux-daemon`) that exports the NixOS module.
+- Provides a `nixosModule` that exports the NixOS module.
 - Provides a `devShell` for developers.
 - Supports being run directly via `nix run github:tuxedocomputers/tux-rs#tux-tui`.
 
-### 2. NixOS Module (`nixos/default.nix`)
+### 2. NixOS Module (`nix/nixos.nix`)
 A module with options to:
 - Enable `tux-daemon` service.
 - Configure kernel module loading.
@@ -60,7 +60,7 @@ Create the following files in `impl/2026-04-11-nixos-support/`:
 - Verify build against a default kernel version.
 
 ### Stage 3: NixOS Module and D-Bus
-- Create `nixos/default.nix`.
+- Create `nix/nixos.nix`.
 - Integrate D-Bus policy from `dist/com.tuxedocomputers.tccd.conf`.
 - Define systemd service.
 

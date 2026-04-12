@@ -74,7 +74,7 @@ Two sub-agents reviewed all implemented changes for conformance and code quality
 - Removed all `kmod-*` recipes from `Justfile` (kmod-build, kmod-build-one, kmod-clean, kmod-install, kmod-remove, kmod-load, kmod-unload, kmod-reload, kmod-swap, plus `kmod_version`/`kmod_src` variables).
 - Updated `default.nix`: removed `tux-kmod = pkgsWithRust.callPackage ./nix/tux-kmod.nix {...}`.
 - Updated `nix/overlay.nix`: removed `tux-kmod` entry.
-- Updated `flake.nix`: removed `tux-kmod` from `inherit (tux-rs)` packages and from `overlays.default`.
+- Updated `flake.nix`: removed `tux-kmod` from `inherit (tux-rs)` packages and from the flake overlay export.
 - Updated `nixos/default.nix`:
   - `kernelModules.package` default changed from `pkgs.tux-kmod` → `pkgs.linuxPackages.tuxedo-drivers`.
   - `boot.kernelModules` list changed from tux-kmod module names (tuxedo_ec, tuxedo_clevo, etc.) to tuxedo-drivers names (tuxedo_io, tuxedo_nb05_fan_control, tuxedo_nb05_sensors, tuxedo_nb04_sensors, tuxedo_nb04_power_profiles, tuxedo_fan_control).
@@ -276,3 +276,34 @@ All 4 phases from external review implemented. 629 tests passing (up from 608), 
 - Validation:
   - `cargo test -p tux-daemon battery_info_prefers_bat_raw_cycle_count` passed.
   - `cargo test -p tux-daemon battery_info_normalizes_large_bat_raw_cycle_count` passed.
+
+## Stage 7 follow-up — Nix packaging polish from external feedback (2026-04-12)
+- Reviewer feedback was relevant and actionable for packaging/docs ergonomics.
+- `flake.nix`:
+  - removed unused `rust-overlay` input.
+  - switched to singular public exports `overlay` and `nixosModule`.
+  - retained compatibility aliases `overlays.default` and `nixosModules.default`.
+  - updated VM test import to `self.nixosModule`.
+  - dev shell now uses `pkgs.rustc` + `pkgs.cargo` directly.
+- NixOS module path cleanup:
+  - moved module source from top-level `nixos/default.nix` to `nix/nixos.nix`.
+  - removed now-empty top-level `nixos/` directory.
+- `default.nix`:
+  - simplified non-flake interface by dropping `rust-overlay` argument and related branching.
+  - exports now match flake naming (`overlay`, `nixosModule`) with compatibility aliases.
+  - imports module from `./nix/nixos.nix`.
+- `README.md` Nix docs cleanup:
+  - switched examples to `inputs.tux-rs.nixosModule` / `tux-rs.nixosModule`.
+  - removed npins/rust-overlay/per-package-override sections that were incorrect or unnecessary for current setup.
+  - clarified that NixOS integration builds/loads `tuxedo-drivers` for the configured kernel package.
+- Validation:
+  - `nix --extra-experimental-features 'nix-command flakes' flake show --no-write-lock-file` succeeds and exposes both new singular attrs and compatibility aliases.
+
+## Stage 7 follow-up — Nix naming sync in docs + full test run (2026-04-12)
+- Updated remaining implementation notes under `impl/2026-04-11-nixos-support/` to align with current naming and layout:
+  - singular exports: `nixosModule` / `overlay`
+  - module path: `nix/nixos.nix`
+- Updated one historical wording line in this worklog to avoid stale `overlays.default` reference in Stage 5 summary.
+- Validation:
+  - `just test` passed across the full workspace.
+  - Aggregate results: 657 passed, 0 failed, 2 ignored.

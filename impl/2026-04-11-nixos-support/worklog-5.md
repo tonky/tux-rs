@@ -11,18 +11,18 @@ Issue #3 review from `balintbarna`:
 ## Changes
 
 ### New files
-- `default.nix` — non-flake entry point. Returns `{ tux-daemon, tux-tui, tux-kmod, overlays, nixosModules }`. Works with `nix-build -A tux-daemon`.
+- `default.nix` — non-flake entry point. Returns `{ tux-daemon, tux-tui, overlay, nixosModule }`. Works with `nix-build -A tux-daemon`.
 - `nix/tux-daemon.nix`, `nix/tux-tui.nix`, `nix/tux-kmod.nix` — function-based derivations usable via `pkgs.callPackage`. Consumers can override `rustPlatform`, `dbus`, `kernel`, etc.
 - `nix/overlay.nix` — generic overlay for non-flake consumers; uses `final.callPackage` with ambient `rustPlatform`.
 - `impl/2026-04-11-nixos-support/stage-5.md` — design + plan.
 
 ### Modified
-- `flake.nix` — now a thin wrapper. `pkgs.callPackage ./nix/tux-daemon.nix { inherit rustPlatform; }` injects the rust-overlay-pinned toolchain. The flake-side `overlays.default` still references `self.packages.${system}.*` so flake consumers of `nixosModules.default` get pinned binaries unchanged.
+- `flake.nix` — now a thin wrapper over `default.nix`. The flake-side `overlay` still references `self.packages.${system}.*` so flake consumers of `nixosModule` get matching binaries unchanged.
 - `README.md` — URL corrections (two places) plus a new "NixOS (classic Nix)" section showing non-flake usage.
 
 ### Unchanged
-- `nixos/default.nix` — module signature was already clean; no changes needed.
-- VM test derivation — still `self.nixosModules.default` + `--mock`.
+- `nix/nixos.nix` — module signature was already clean; no changes needed.
+- VM test derivation — still `self.nixosModule` + `--mock`.
 
 ## Design notes
 
@@ -34,7 +34,7 @@ Both point at the same underlying derivation files, so only the overlay wiring i
 duplicated (3 lines × 2). Trying to collapse this into a single overlay would
 require either globally overriding `rustPlatform` (affects every package in the
 tree — nasty side effects) or making the overlay take parameters (awkward since
-`overlays.default` is system-independent but `rustPlatform` is per-system).
+`overlay` is system-independent but `rustPlatform` is per-system).
 
 ### Relative source paths
 `nix/*.nix` lives one directory below the repo root:
@@ -93,9 +93,9 @@ Semantics:
 application happens. This removes ~15 lines of duplicated `callPackage`
 wiring from the flake.
 
-The flake-side `overlays.default` still references `self.packages.${system}.*`
+The flake-side `overlay` still references `self.packages.${system}.*`
 (rather than `./nix/overlay.nix`) so flake consumers keep getting pinned
-binaries through `inputs.tux-rs.nixosModules.default` without having to pass
+binaries through `inputs.tux-rs.nixosModule` without having to pass
 `rust-overlay` through themselves.
 
 ### Updated README

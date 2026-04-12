@@ -4,31 +4,18 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   # The flake is a thin wrapper around ./default.nix so classic (non-flake)
-  # Nix consumers share the exact same packaging code. The flake's job is to
-  # pin a rust toolchain via rust-overlay, expose devShells, and run the VM
-  # check.
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, ... }:
+  # Nix consumers share the exact same packaging code.
+  outputs = { self, nixpkgs, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [ (import rust-overlay) ];
-        };
+        pkgs = import nixpkgs { inherit system; };
 
         # Delegate all package building to ./default.nix so there's a single
-        # source of truth. rust-overlay is already applied to `pkgs`, so
-        # default.nix's rust-bin detection picks it up without needing to
-        # appendOverlays again.
+        # source of truth.
         tux-rs = import ./. { inherit pkgs; };
-
-        rustToolchain = pkgs.rust-bin.stable.latest.default;
 
         testing = import (nixpkgs + "/nixos/lib/testing-python.nix") {
           inherit system pkgs;
@@ -42,7 +29,8 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = [
-            rustToolchain
+            pkgs.rustc
+            pkgs.cargo
             pkgs.pkg-config
             pkgs.dbus
             pkgs.just
@@ -53,7 +41,7 @@
           vmTest = testing.makeTest {
             name = "tux-daemon-test";
             nodes.machine = { pkgs, ... }: {
-              imports = [ self.nixosModules.default ];
+              imports = [ self.nixosModule ];
               services.tux-daemon.enable = true;
               services.tux-daemon.kernelModules.enable = false;
 
@@ -84,20 +72,18 @@
       }
     ) // {
       # System-independent outputs.
-      #
-      # The flake's overlay references `self.packages.${system}.*` (not
-      # `final.callPackage ./nix/*.nix`) so flake consumers importing
-      # `inputs.tux-rs.nixosModules.default` get rust-overlay-pinned binaries
-      # without needing to pass `rust-overlay` through themselves. Non-flake
-      # consumers get the generic `nix/overlay.nix` via `./default.nix`.
-      overlays.default = final: prev: {
+      overlay = final: prev: {
         tux-daemon = self.packages.${final.system}.tux-daemon;
         tux-tui = self.packages.${final.system}.tux-tui;
       };
 
-      nixosModules.default = { pkgs, ... }: {
-        nixpkgs.overlays = [ self.overlays.default ];
-        imports = [ ./nixos/default.nix ];
+      nixosModule = { pkgs, ... }: {
+        nixpkgs.overlays = [ self.overlay ];
+        imports = [ ./nix/nixos.nix ];
       };
+
+      # Compatibility aliases for older configs.
+      overlays.default = self.overlay;
+      nixosModules.default = self.nixosModule;
     };
 }

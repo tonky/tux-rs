@@ -1,0 +1,13 @@
+[[task]]
+description = "Verify on real Uniwill hardware that `just deploy-daemon` no longer produces a sustained 100% fan spike"
+status = "done"
+priority = "high"
+context = "Behavior is hardware/EC dependent and should be confirmed outside unit tests"
+reasoning = "The removed override directly targeted Uniwill AC profile behavior during restart"
+
+[[task]]
+description = "Investigate intermittent `tuxedo-uw-fan/fan_mode` I/O errors during PWM writes on Uniwill"
+status = "done"
+priority = "high"
+context = "Root cause traced: EC resets fan_mode every 1-2s; removed sysfs backend entirely, switched to tuxedo_io ioctl; added missing W_UW_MODE_ENABLE calls"
+reasoning = "Fixed by removing TdUwFanBackend and correctly implementing the tuxedo_io fan control protocol"

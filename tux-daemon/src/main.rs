@@ -14,7 +14,6 @@ use tux_daemon::fan_engine;
 use tux_daemon::gpu;
 use tux_daemon::hid;
 use tux_daemon::platform;
-use tux_daemon::platform::tuxedo_io::{TuxedoIo, TuxedoIoDevice, W_UW_PERF_PROF};
 use tux_daemon::power_monitor::{PowerState, PowerStateMonitor};
 use tux_daemon::profile_apply::ProfileApplier;
 use tux_daemon::profile_store::ProfileStore;
@@ -346,11 +345,6 @@ async fn main() -> anyhow::Result<()> {
         display_backlight.clone(),
     ));
 
-    let force_uniwill_ac_performance = matches!(
-        device.descriptor.platform,
-        tux_core::platform::Platform::Uniwill
-    );
-
     // 6c. Start power state monitor and auto-switch task.
     //     We detect the initial state inside the monitor to avoid a race.
     //     If power monitoring isn't available, use a static Ac state for D-Bus.
@@ -370,11 +364,6 @@ async fn main() -> anyhow::Result<()> {
                     if let Err(e) = applier.apply(profile) {
                         error!("failed to apply initial profile '{initial_profile_id}': {e}");
                     } else {
-                        if initial_state == PowerState::Ac {
-                            force_ac_performance_profile_if_configured(
-                                force_uniwill_ac_performance,
-                            );
-                        }
                         info!(
                             "applied initial profile '{}' (power: {:?})",
                             profile.name, initial_state
@@ -406,7 +395,6 @@ async fn main() -> anyhow::Result<()> {
                     switch_assignments_rx,
                     &store,
                     &applier_for_switch,
-                    force_uniwill_ac_performance,
                     switch_shutdown,
                 )
                 .await;
@@ -558,7 +546,6 @@ async fn auto_switch_loop(
     mut assignments_rx: watch::Receiver<config::ProfileAssignments>,
     store: &Arc<RwLock<ProfileStore>>,
     applier: &ProfileApplier,
-    force_uniwill_ac_performance: bool,
     mut shutdown: broadcast::Receiver<()>,
 ) {
     let mut apply_count: u64 = 0;
@@ -577,8 +564,6 @@ async fn auto_switch_loop(
                     applier,
                     &profile_id,
                     &format!("power state → {state:?} (apply #{apply_count})"),
-                    force_uniwill_ac_performance,
-                    state,
                 );
             }
             result = assignments_rx.changed() => {
@@ -594,8 +579,6 @@ async fn auto_switch_loop(
                     applier,
                     &profile_id,
                     &format!("assignment change (apply #{apply_count})"),
-                    force_uniwill_ac_performance,
-                    state,
                 );
             }
             _ = shutdown.recv() => {
@@ -621,8 +604,6 @@ fn apply_profile_by_id(
     applier: &ProfileApplier,
     profile_id: &str,
     reason: &str,
-    force_uniwill_ac_performance: bool,
-    state: PowerState,
 ) {
     let Ok(store) = store.read() else {
         error!("profile store lock poisoned, cannot apply profile");
@@ -633,9 +614,6 @@ fn apply_profile_by_id(
             if let Err(e) = applier.apply(profile) {
                 error!("failed to apply profile '{profile_id}' on {reason}: {e}");
             } else {
-                if state == PowerState::Ac {
-                    force_ac_performance_profile_if_configured(force_uniwill_ac_performance);
-                }
                 info!("{reason}: applied profile '{}'", profile.name);
             }
         }
@@ -644,25 +622,6 @@ fn apply_profile_by_id(
                 "profile '{profile_id}' not found on {reason}, keeping current settings"
             );
         }
-    }
-}
-
-fn force_ac_performance_profile_if_configured(enabled: bool) {
-    if !enabled {
-        return;
-    }
-
-    const PROFILE_ENTHUSIAST: i32 = 2;
-    if let Some(io) = TuxedoIoDevice::open() {
-        if let Err(e) = io.write_i32(W_UW_PERF_PROF, PROFILE_ENTHUSIAST) {
-            tracing::warn!("failed to force Uniwill performance profile on AC: {e}");
-        } else {
-            tracing::info!("forced Uniwill performance profile on AC (ioctl W_UW_PERF_PROF=2)");
-        }
-    } else {
-        tracing::warn!(
-            "cannot force Uniwill performance profile on AC: /dev/tuxedo_io unavailable"
-        );
     }
 }
 
@@ -703,7 +662,6 @@ mod tests {
                 assignments_rx2,
                 &store2,
                 &applier2,
-                false,
                 shutdown_rx,
             )
             .await;
@@ -755,7 +713,6 @@ mod tests {
                 assignments_rx2,
                 &store2,
                 &applier2,
-                false,
                 shutdown_rx,
             )
             .await;
@@ -803,7 +760,6 @@ mod tests {
                 assignments_rx2,
                 &store2,
                 &applier2,
-                false,
                 shutdown_rx,
             )
             .await;
@@ -854,7 +810,6 @@ mod tests {
                 assignments_rx2,
                 &store2,
                 &applier2,
-                false,
                 shutdown_rx,
             )
             .await;

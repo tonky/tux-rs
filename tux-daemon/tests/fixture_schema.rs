@@ -256,25 +256,98 @@ fn fixture_schema_and_constraints_are_valid() {
             }
         }
 
+        let raw_fan0 = fixture
+            .raw
+            .dbus
+            .get("fan_data_0")
+            .filter(|s| !s.trim().is_empty())
+            .map(|raw| {
+                toml::from_str::<FanData>(raw).unwrap_or_else(|e| {
+                    panic!("raw.dbus.fan_data_0 invalid in {}: {e}", path.display())
+                })
+            });
+
         if let Some(fan0) = fixture.normalized.fans.iter().find(|f| f.index == 0) {
-            let expected = (fan1_pwm * 100 / 200) as u8;
-            assert_eq!(
-                fan0.duty_percent,
-                expected,
-                "fan0 duty_percent must match fan1_pwm scaling in {}",
-                path.display()
-            );
+            if let Some(raw0) = &raw_fan0 {
+                assert_eq!(
+                    fan0.duty_percent,
+                    raw0.duty_percent,
+                    "fan0 duty_percent must match raw.dbus.fan_data_0 in {}",
+                    path.display()
+                );
+                assert_eq!(
+                    fan0.rpm,
+                    raw0.rpm,
+                    "fan0 rpm must match raw.dbus.fan_data_0 in {}",
+                    path.display()
+                );
+                assert_eq!(
+                    fan0.rpm_available,
+                    raw0.rpm_available,
+                    "fan0 rpm_available must match raw.dbus.fan_data_0 in {}",
+                    path.display()
+                );
+                assert!(
+                    (fan0.temp_celsius - raw0.temp_celsius).abs() < 0.001,
+                    "fan0 temp_celsius must match raw.dbus.fan_data_0 in {}",
+                    path.display()
+                );
+            } else {
+                let expected = (fan1_pwm * 100 / 200) as u8;
+                assert_eq!(
+                    fan0.duty_percent,
+                    expected,
+                    "fan0 duty_percent must match fan1_pwm scaling when raw.dbus.fan_data_0 is absent in {}",
+                    path.display()
+                );
+            }
         }
-        if let Some(raw_pwm) = fan2_pwm
-            && let Some(fan1) = fixture.normalized.fans.iter().find(|f| f.index == 1)
-        {
-            let expected = (raw_pwm * 100 / 200) as u8;
-            assert_eq!(
-                fan1.duty_percent,
-                expected,
-                "fan1 duty_percent must match fan2_pwm scaling in {}",
-                path.display()
-            );
+
+        let raw_fan1 = fixture
+            .raw
+            .dbus
+            .get("fan_data_1")
+            .filter(|s| !s.trim().is_empty())
+            .map(|raw| {
+                toml::from_str::<FanData>(raw).unwrap_or_else(|e| {
+                    panic!("raw.dbus.fan_data_1 invalid in {}: {e}", path.display())
+                })
+            });
+
+        if let Some(fan1) = fixture.normalized.fans.iter().find(|f| f.index == 1) {
+            if let Some(raw1) = &raw_fan1 {
+                assert_eq!(
+                    fan1.duty_percent,
+                    raw1.duty_percent,
+                    "fan1 duty_percent must match raw.dbus.fan_data_1 in {}",
+                    path.display()
+                );
+                assert_eq!(
+                    fan1.rpm,
+                    raw1.rpm,
+                    "fan1 rpm must match raw.dbus.fan_data_1 in {}",
+                    path.display()
+                );
+                assert_eq!(
+                    fan1.rpm_available,
+                    raw1.rpm_available,
+                    "fan1 rpm_available must match raw.dbus.fan_data_1 in {}",
+                    path.display()
+                );
+                assert!(
+                    (fan1.temp_celsius - raw1.temp_celsius).abs() < 0.001,
+                    "fan1 temp_celsius must match raw.dbus.fan_data_1 in {}",
+                    path.display()
+                );
+            } else if let Some(raw_pwm) = fan2_pwm {
+                let expected = (raw_pwm * 100 / 200) as u8;
+                assert_eq!(
+                    fan1.duty_percent,
+                    expected,
+                    "fan1 duty_percent must match fan2_pwm scaling when raw.dbus.fan_data_1 is absent in {}",
+                    path.display()
+                );
+            }
         }
 
         if let Some(ch) = &fixture.normalized.charging {

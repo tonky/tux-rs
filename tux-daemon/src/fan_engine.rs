@@ -1,13 +1,179 @@
 //! Fan curve engine: temperature polling, curve interpolation, and PWM control.
 
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, info, warn};
 
+use crate::cpu::sampler::CpuSampler;
 use tux_core::backend::fan::FanBackend;
 use tux_core::fan_curve::{FanConfig, FanMode, interpolate, percent_to_pwm};
+
+/// Number of consecutive temperature-read failures tolerated before forcing
+/// a reduced safety PWM when the engine already has a previously computed setpoint.
+const SAFETY_FAILURE_THRESHOLD: u32 = 5;
+
+/// On backends where manual PWM control is continuously re-applied (e.g. Uniwill
+/// `tuxedo-uw-fan`), repeated control-loop read failures can cause persistent
+/// safety-throttle churn. After this many consecutive failures, the engine
+/// suspends CustomCurve and falls back to firmware Auto mode until config/mode changes.
+const CUSTOM_CURVE_SUSPEND_FAILURE_THRESHOLD: u32 = 5;
+
+/// Safety fallback duty used after persistent temperature-read failures.
+const SAFETY_FAILURE_PERCENT: u8 = 60;
+
+/// Temperatures at or above this value are considered implausible for policy checks.
+const IMPLAUSIBLE_TEMP_C: u8 = 110;
+/// Number of consecutive implausible readings required before acting on them.
+const IMPLAUSIBLE_TEMP_THRESHOLD: u32 = 5;
+/// If CPU load is below this percentage, ignore implausible temperatures.
+const IMPLAUSIBLE_TEMP_CPU_LOAD_MIN_PERCENT: f32 = 30.0;
+
+/// Preferred hwmon driver names for CPU temperature control input.
+const CPU_HWMON_PREFERRED_NAMES: &[&str] = &["coretemp", "k10temp", "zenpower", "cpu_thermal"];
+
+trait CpuLoadSource: Send {
+    fn sample_overall(&mut self) -> io::Result<f32>;
+}
+
+trait CpuTempSource: Send {
+    fn read_temp_celsius(&mut self) -> io::Result<u8>;
+}
+
+struct SamplerCpuLoadSource {
+    sampler: CpuSampler,
+}
+
+impl SamplerCpuLoadSource {
+    fn system() -> Self {
+        Self {
+            sampler: CpuSampler::system(),
+        }
+    }
+}
+
+impl CpuLoadSource for SamplerCpuLoadSource {
+    fn sample_overall(&mut self) -> io::Result<f32> {
+        self.sampler.sample().map(|s| s.overall)
+    }
+}
+
+struct HwmonCpuTempSource {
+    hwmon_base: PathBuf,
+    selected_input: Option<PathBuf>,
+}
+
+impl HwmonCpuTempSource {
+    #[cfg(not(test))]
+    fn system() -> Self {
+        Self::new(Path::new("/sys/class/hwmon"))
+    }
+
+    #[cfg(test)]
+    fn system() -> Self {
+        // Keep tests deterministic: default to no hwmon sensor so tests use
+        // backend/mocked paths unless they explicitly construct a temp source.
+        Self::new(Path::new("/nonexistent"))
+    }
+
+    fn new(hwmon_base: &Path) -> Self {
+        Self {
+            hwmon_base: hwmon_base.to_path_buf(),
+            selected_input: None,
+        }
+    }
+
+    fn discover_input(&self) -> io::Result<PathBuf> {
+        let mut candidates: Vec<(usize, PathBuf)> = Vec::new();
+        for entry in std::fs::read_dir(&self.hwmon_base)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name_path = path.join("name");
+            let Ok(name_raw) = std::fs::read_to_string(&name_path) else {
+                continue;
+            };
+            let name = name_raw.trim();
+            let Some(priority) = CPU_HWMON_PREFERRED_NAMES.iter().position(|n| *n == name) else {
+                continue;
+            };
+            if let Some(input) = Self::pick_temp_input(&path) {
+                candidates.push((priority, input));
+            }
+        }
+        candidates.sort_by_key(|(priority, _)| *priority);
+        candidates
+            .into_iter()
+            .map(|(_, input)| input)
+            .next()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "no preferred CPU hwmon sensor found",
+                )
+            })
+    }
+
+    fn pick_temp_input(hwmon_dir: &Path) -> Option<PathBuf> {
+        // Prefer package/tdie style labels if present.
+        let mut fallback: Option<PathBuf> = None;
+        let entries = std::fs::read_dir(hwmon_dir).ok()?;
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let Some(file_name) = p.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !file_name.starts_with("temp") || !file_name.ends_with("_input") {
+                continue;
+            }
+            if fallback.is_none() {
+                fallback = Some(p.clone());
+            }
+            let base = file_name.trim_end_matches("_input");
+            let label_path = hwmon_dir.join(format!("{base}_label"));
+            let Ok(label_raw) = std::fs::read_to_string(label_path) else {
+                continue;
+            };
+            let label = label_raw.trim().to_ascii_lowercase();
+            if label.contains("package") || label.contains("tdie") || label.contains("tctl") {
+                return Some(p);
+            }
+        }
+        fallback
+    }
+}
+
+impl CpuTempSource for HwmonCpuTempSource {
+    fn read_temp_celsius(&mut self) -> io::Result<u8> {
+        if self.selected_input.is_none() {
+            self.selected_input = Some(self.discover_input()?);
+        }
+
+        let read_path = self
+            .selected_input
+            .clone()
+            .expect("selected_input set above");
+        let raw = match std::fs::read_to_string(&read_path) {
+            Ok(v) => v,
+            Err(e) => {
+                // Re-discover once in case hwmon indices changed after resume/reload.
+                self.selected_input = None;
+                let refreshed = self.discover_input()?;
+                self.selected_input = Some(refreshed.clone());
+                std::fs::read_to_string(refreshed).map_err(|_| e)?
+            }
+        };
+
+        let milli: i32 = raw
+            .trim()
+            .parse()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok((milli / 1000).clamp(0, u8::MAX as i32) as u8)
+    }
+}
 
 /// Core fan control loop: polls temperature, interpolates curve, writes PWM.
 pub struct FanCurveEngine {
@@ -18,17 +184,20 @@ pub struct FanCurveEngine {
     manual_pwms_rx: watch::Receiver<Vec<u8>>,
     /// Shared counter of consecutive temperature-read failures (reset on success).
     consecutive_failures: Arc<AtomicU32>,
+    cpu_load_source: Mutex<Box<dyn CpuLoadSource>>,
+    cpu_temp_source: Mutex<Box<dyn CpuTempSource>>,
 }
 
 impl FanCurveEngine {
     pub fn new(backend: Arc<dyn FanBackend>, config_rx: watch::Receiver<FanConfig>) -> Self {
         let (_, manual_pwms_rx) = watch::channel(Vec::new());
-        Self {
+        Self::new_with_manual_pwms_and_cpu_load_source(
             backend,
             config_rx,
             manual_pwms_rx,
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-        }
+            Box::new(SamplerCpuLoadSource::system()),
+            Box::new(HwmonCpuTempSource::system()),
+        )
     }
 
     /// Create an engine wired to a manual-PWM watch channel.
@@ -40,11 +209,29 @@ impl FanCurveEngine {
         config_rx: watch::Receiver<FanConfig>,
         manual_pwms_rx: watch::Receiver<Vec<u8>>,
     ) -> Self {
+        Self::new_with_manual_pwms_and_cpu_load_source(
+            backend,
+            config_rx,
+            manual_pwms_rx,
+            Box::new(SamplerCpuLoadSource::system()),
+            Box::new(HwmonCpuTempSource::system()),
+        )
+    }
+
+    fn new_with_manual_pwms_and_cpu_load_source(
+        backend: Arc<dyn FanBackend>,
+        config_rx: watch::Receiver<FanConfig>,
+        manual_pwms_rx: watch::Receiver<Vec<u8>>,
+        cpu_load_source: Box<dyn CpuLoadSource>,
+        cpu_temp_source: Box<dyn CpuTempSource>,
+    ) -> Self {
         Self {
             backend,
             config_rx,
             manual_pwms_rx,
             consecutive_failures: Arc::new(AtomicU32::new(0)),
+            cpu_load_source: Mutex::new(cpu_load_source),
+            cpu_temp_source: Mutex::new(cpu_temp_source),
         }
     }
 
@@ -60,8 +247,11 @@ impl FanCurveEngine {
     pub async fn run(&mut self, mut shutdown: broadcast::Receiver<()>) {
         let mut last_temp: Option<u8> = None;
         let mut last_pwm: Option<u8> = None;
+        let mut consecutive_implausible_temps: u32 = 0;
+        let mut consecutive_write_failures: u32 = 0;
         let mut current_mode = FanMode::Auto;
         let mut last_config: Option<FanConfig> = None;
+        let mut custom_curve_suspended = false;
 
         loop {
             let config = self.config_rx.borrow_and_update().clone();
@@ -73,6 +263,9 @@ impl FanCurveEngine {
                 debug!("config change detected (value diff), resetting hysteresis");
                 last_temp = None;
                 last_pwm = None;
+                consecutive_implausible_temps = 0;
+                consecutive_write_failures = 0;
+                custom_curve_suspended = false;
                 last_config = Some(config.clone());
             }
 
@@ -83,10 +276,14 @@ impl FanCurveEngine {
                     FanMode::Auto => self.set_all_auto(),
                     FanMode::Manual => {
                         // Setpoints will be read from manual_pwms_rx; no local state to clear.
+                        consecutive_write_failures = 0;
                     }
                     FanMode::CustomCurve => {
                         last_temp = None;
                         last_pwm = None;
+                        consecutive_implausible_temps = 0;
+                        consecutive_write_failures = 0;
+                        custom_curve_suspended = false;
                     }
                 }
                 current_mode = config.mode;
@@ -111,7 +308,18 @@ impl FanCurveEngine {
                     config.idle_poll_ms
                 }
                 FanMode::CustomCurve => {
-                    self.tick_custom_curve(&config, &mut last_temp, &mut last_pwm)
+                    if custom_curve_suspended {
+                        config.idle_poll_ms
+                    } else {
+                        self.tick_custom_curve(
+                            &config,
+                            &mut last_temp,
+                            &mut last_pwm,
+                            &mut consecutive_implausible_temps,
+                            &mut consecutive_write_failures,
+                            &mut custom_curve_suspended,
+                        )
+                    }
                 }
             };
 
@@ -121,6 +329,7 @@ impl FanCurveEngine {
                     debug!("config change detected, re-evaluating");
                     last_temp = None;
                     last_pwm = None;
+                    consecutive_implausible_temps = 0;
                     continue;
                 }
                 _ = shutdown.recv() => {
@@ -143,21 +352,77 @@ impl FanCurveEngine {
         config: &FanConfig,
         last_temp: &mut Option<u8>,
         last_pwm: &mut Option<u8>,
+        consecutive_implausible_temps: &mut u32,
+        consecutive_write_failures: &mut u32,
+        custom_curve_suspended: &mut bool,
     ) -> u64 {
-        let temp = match self.backend.read_temp() {
+        let temp = match self.read_control_temp() {
             Ok(t) => {
                 self.consecutive_failures.store(0, Ordering::Relaxed);
                 t
             }
             Err(e) => {
                 let n = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                if self.backend.requires_manual_reapply()
+                    && n >= CUSTOM_CURVE_SUSPEND_FAILURE_THRESHOLD
+                {
+                    warn!(
+                        "failed to read temperature repeatedly ({e}); suspending CustomCurve and falling back to Auto after {n} consecutive failures"
+                    );
+                    self.set_all_auto();
+                    *custom_curve_suspended = true;
+                    return config.idle_poll_ms;
+                }
+                if n < SAFETY_FAILURE_THRESHOLD
+                    && let Some(pwm) = *last_pwm
+                {
+                    warn!(
+                        "failed to read temperature: {e}, keeping previous PWM {pwm} on transient failure {n}/{SAFETY_FAILURE_THRESHOLD}"
+                    );
+                    self.set_all_pwm(pwm);
+                    return config.active_poll_ms;
+                }
                 warn!(
-                    "failed to read temperature: {e}, setting 100% safety (consecutive failure {n})"
+                    "failed to read temperature: {e}, setting {SAFETY_FAILURE_PERCENT}% safety after consecutive failure {n}"
                 );
-                self.set_all_percent(100);
+                self.set_all_percent(SAFETY_FAILURE_PERCENT);
                 return config.active_poll_ms;
             }
         };
+
+        if temp >= IMPLAUSIBLE_TEMP_C {
+            *consecutive_implausible_temps += 1;
+            let n = *consecutive_implausible_temps;
+            let cpu_load = self.sample_cpu_load_percent().unwrap_or(100.0);
+            if cpu_load < IMPLAUSIBLE_TEMP_CPU_LOAD_MIN_PERCENT {
+                if let Some(pwm) = *last_pwm {
+                    warn!(
+                        "implausible temperature {temp}°C with low CPU load {cpu_load:.1}%: keeping previous PWM {pwm}"
+                    );
+                    self.set_all_pwm(pwm);
+                    return config.active_poll_ms;
+                }
+                warn!(
+                    "implausible temperature {temp}°C with low CPU load {cpu_load:.1}% but no previous PWM available"
+                );
+            }
+
+            if n < IMPLAUSIBLE_TEMP_THRESHOLD {
+                if let Some(pwm) = *last_pwm {
+                    warn!(
+                        "implausible temperature {temp}°C observed {n}/{IMPLAUSIBLE_TEMP_THRESHOLD}: keeping previous PWM {pwm}"
+                    );
+                    self.set_all_pwm(pwm);
+                    return config.active_poll_ms;
+                }
+            } else {
+                warn!(
+                    "implausible temperature {temp}°C persisted for {n} samples (CPU load {cpu_load:.1}%), acting on value"
+                );
+            }
+        } else {
+            *consecutive_implausible_temps = 0;
+        }
 
         // Hysteresis check — only recalculate speed when temp changed enough.
         let poll_ms;
@@ -195,13 +460,68 @@ impl FanCurveEngine {
 
         // Always write PWM — the EC may override stale values.
         let num_fans = self.backend.num_fans();
+        let mut write_errors = 0u32;
         for i in 0..num_fans {
             if let Err(e) = self.backend.write_pwm(i, pwm) {
+                write_errors += 1;
                 warn!("failed to write PWM to fan {i}: {e}");
             }
         }
 
+        if write_errors == 0 {
+            *consecutive_write_failures = 0;
+        } else {
+            *consecutive_write_failures += 1;
+            if self.backend.requires_manual_reapply()
+                && *consecutive_write_failures >= CUSTOM_CURVE_SUSPEND_FAILURE_THRESHOLD
+            {
+                warn!(
+                    "failed to write PWM repeatedly ({} consecutive ticks); suspending CustomCurve and falling back to Auto",
+                    *consecutive_write_failures
+                );
+                self.set_all_auto();
+                *custom_curve_suspended = true;
+                return config.idle_poll_ms;
+            }
+        }
+
         poll_ms
+    }
+
+    fn sample_cpu_load_percent(&self) -> io::Result<f32> {
+        let mut source = self
+            .cpu_load_source
+            .lock()
+            .map_err(|_| io::Error::other("cpu load source lock poisoned"))?;
+        source.sample_overall()
+    }
+
+    fn read_control_temp(&self) -> io::Result<u8> {
+        let hwmon_temp = {
+            let mut source = self
+                .cpu_temp_source
+                .lock()
+                .map_err(|_| io::Error::other("cpu temp source lock poisoned"))?;
+            source.read_temp_celsius()
+        };
+
+        match hwmon_temp {
+            Ok(t) => Ok(t),
+            Err(hwmon_err) => match self.backend.read_temp() {
+                Ok(t) => {
+                    warn!(
+                        "CPU hwmon temp read failed ({hwmon_err}), falling back to backend temperature"
+                    );
+                    Ok(t)
+                }
+                Err(backend_err) => Err(io::Error::new(
+                    backend_err.kind(),
+                    format!(
+                        "hwmon temp read failed ({hwmon_err}); backend temp read failed ({backend_err})"
+                    ),
+                )),
+            },
+        }
     }
 
     fn set_all_auto(&self) {
@@ -215,10 +535,14 @@ impl FanCurveEngine {
 
     fn set_all_percent(&self, percent: u8) {
         let pwm = percent_to_pwm(percent);
+        self.set_all_pwm(pwm);
+    }
+
+    fn set_all_pwm(&self, pwm: u8) {
         let num_fans = self.backend.num_fans();
         for i in 0..num_fans {
             if let Err(e) = self.backend.write_pwm(i, pwm) {
-                warn!("failed to write safety PWM to fan {i}: {e}");
+                warn!("failed to write PWM to fan {i}: {e}");
             }
         }
     }
@@ -227,8 +551,190 @@ impl FanCurveEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::fs;
     use tux_core::fan_curve::FanCurvePoint;
     use tux_core::mock::fan::MockFanBackend;
+
+    struct MockCpuLoadSource {
+        loads: VecDeque<f32>,
+    }
+
+    struct MockCpuTempSource {
+        temps: VecDeque<io::Result<u8>>,
+    }
+
+    struct ManualReapplyMockBackend {
+        inner: MockFanBackend,
+    }
+
+    struct ManualReapplyWriteFailBackend {
+        inner: MockFanBackend,
+    }
+
+    impl ManualReapplyMockBackend {
+        fn new(num_fans: u8) -> Self {
+            Self {
+                inner: MockFanBackend::new(num_fans),
+            }
+        }
+
+        fn set_fail_temp(&self, fail: bool) {
+            self.inner.set_fail_temp(fail);
+        }
+
+        fn write_pwm(&self, fan_index: u8, pwm: u8) -> io::Result<()> {
+            self.inner.write_pwm(fan_index, pwm)
+        }
+
+        fn read_pwm(&self, fan_index: u8) -> io::Result<u8> {
+            self.inner.read_pwm(fan_index)
+        }
+
+        fn is_auto(&self, fan_index: u8) -> bool {
+            self.inner.is_auto(fan_index)
+        }
+    }
+
+    impl FanBackend for ManualReapplyMockBackend {
+        fn read_temp(&self) -> io::Result<u8> {
+            self.inner.read_temp()
+        }
+
+        fn write_pwm(&self, fan_index: u8, pwm: u8) -> io::Result<()> {
+            self.inner.write_pwm(fan_index, pwm)
+        }
+
+        fn read_pwm(&self, fan_index: u8) -> io::Result<u8> {
+            self.inner.read_pwm(fan_index)
+        }
+
+        fn set_auto(&self, fan_index: u8) -> io::Result<()> {
+            self.inner.set_auto(fan_index)
+        }
+
+        fn read_fan_rpm(&self, fan_index: u8) -> io::Result<u16> {
+            self.inner.read_fan_rpm(fan_index)
+        }
+
+        fn num_fans(&self) -> u8 {
+            self.inner.num_fans()
+        }
+
+        fn requires_manual_reapply(&self) -> bool {
+            true
+        }
+    }
+
+    impl ManualReapplyWriteFailBackend {
+        fn new(num_fans: u8) -> Self {
+            Self {
+                inner: MockFanBackend::new(num_fans),
+            }
+        }
+
+        fn read_pwm(&self, fan_index: u8) -> io::Result<u8> {
+            self.inner.read_pwm(fan_index)
+        }
+
+        fn is_auto(&self, fan_index: u8) -> bool {
+            self.inner.is_auto(fan_index)
+        }
+    }
+
+    impl FanBackend for ManualReapplyWriteFailBackend {
+        fn read_temp(&self) -> io::Result<u8> {
+            self.inner.read_temp()
+        }
+
+        fn write_pwm(&self, _fan_index: u8, _pwm: u8) -> io::Result<()> {
+            Err(io::Error::other("simulated pwm write failure"))
+        }
+
+        fn read_pwm(&self, fan_index: u8) -> io::Result<u8> {
+            self.inner.read_pwm(fan_index)
+        }
+
+        fn set_auto(&self, fan_index: u8) -> io::Result<()> {
+            self.inner.set_auto(fan_index)
+        }
+
+        fn read_fan_rpm(&self, fan_index: u8) -> io::Result<u16> {
+            self.inner.read_fan_rpm(fan_index)
+        }
+
+        fn num_fans(&self) -> u8 {
+            self.inner.num_fans()
+        }
+
+        fn requires_manual_reapply(&self) -> bool {
+            true
+        }
+    }
+
+    impl MockCpuLoadSource {
+        fn with_loads(loads: &[f32]) -> Self {
+            Self {
+                loads: loads.iter().copied().collect(),
+            }
+        }
+    }
+
+    impl MockCpuTempSource {
+        fn with_temps(temps: Vec<io::Result<u8>>) -> Self {
+            Self {
+                temps: temps.into(),
+            }
+        }
+    }
+
+    impl CpuLoadSource for MockCpuLoadSource {
+        fn sample_overall(&mut self) -> io::Result<f32> {
+            Ok(self.loads.pop_front().unwrap_or(100.0))
+        }
+    }
+
+    impl CpuTempSource for MockCpuTempSource {
+        fn read_temp_celsius(&mut self) -> io::Result<u8> {
+            self.temps.pop_front().unwrap_or_else(|| {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "no mocked cpu temp",
+                ))
+            })
+        }
+    }
+
+    fn engine_with_loads(
+        backend: Arc<MockFanBackend>,
+        config_rx: watch::Receiver<FanConfig>,
+        loads: &[f32],
+    ) -> FanCurveEngine {
+        let (_, manual_pwms_rx) = watch::channel(Vec::new());
+        FanCurveEngine::new_with_manual_pwms_and_cpu_load_source(
+            backend,
+            config_rx,
+            manual_pwms_rx,
+            Box::new(MockCpuLoadSource::with_loads(loads)),
+            Box::new(MockCpuTempSource::with_temps(vec![])),
+        )
+    }
+
+    fn engine_with_sources(
+        backend: Arc<MockFanBackend>,
+        config_rx: watch::Receiver<FanConfig>,
+        loads: &[f32],
+        temps: Vec<io::Result<u8>>,
+    ) -> FanCurveEngine {
+        let (_, manual_pwms_rx) = watch::channel(Vec::new());
+        FanCurveEngine::new_with_manual_pwms_and_cpu_load_source(
+            backend,
+            config_rx,
+            manual_pwms_rx,
+            Box::new(MockCpuLoadSource::with_loads(loads)),
+            Box::new(MockCpuTempSource::with_temps(temps)),
+        )
+    }
 
     fn test_config() -> FanConfig {
         FanConfig {
@@ -450,33 +956,249 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn temp_read_failure_sets_full_speed() {
+    async fn transient_temp_read_failure_keeps_last_pwm() {
         let backend = Arc::new(MockFanBackend::new(1));
         backend.set_temp(50);
 
         let (_config_tx, config_rx) = watch::channel(test_config());
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let engine = FanCurveEngine::new(backend.clone(), config_rx);
+        let config = test_config();
+        let mut last_temp = Some(50);
+        let mut last_pwm = Some(77);
+        let mut consecutive_implausible_temps = 0;
+        let mut consecutive_write_failures = 0;
+        let mut custom_curve_suspended = false;
 
-        let engine_backend = backend.clone();
-        let handle = tokio::spawn(async move {
-            let mut engine = FanCurveEngine::new(engine_backend, config_rx);
-            engine.run(shutdown_rx).await;
-        });
-
-        // Let normal operation establish a PWM value.
-        settle().await;
-
-        // Inject temp read failure.
+        backend.write_pwm(0, 77).unwrap();
         backend.set_fail_temp(true);
-        settle().await;
+        let poll_ms = engine.tick_custom_curve(
+            &config,
+            &mut last_temp,
+            &mut last_pwm,
+            &mut consecutive_implausible_temps,
+            &mut consecutive_write_failures,
+            &mut custom_curve_suspended,
+        );
 
-        // Should have set 100% safety PWM = 255.
-        let pwm = backend.read_pwm(0).unwrap();
+        assert_eq!(poll_ms, config.active_poll_ms);
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+        assert_eq!(engine.failure_counter().load(Ordering::Relaxed), 1);
+    }
 
-        drop(shutdown_tx);
-        handle.await.unwrap();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_temp_read_failure_sets_reduced_safety_speed() {
+        let backend = Arc::new(MockFanBackend::new(1));
+        backend.set_temp(50);
 
-        assert_eq!(pwm, 255, "temp read failure should set 100% safety speed");
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let engine = FanCurveEngine::new(backend.clone(), config_rx);
+        let config = test_config();
+        let mut last_temp = Some(50);
+        let mut last_pwm = Some(77);
+        let mut consecutive_implausible_temps = 0;
+        let mut consecutive_write_failures = 0;
+        let mut custom_curve_suspended = false;
+
+        backend.write_pwm(0, 77).unwrap();
+        backend.set_fail_temp(true);
+
+        engine.tick_custom_curve(
+            &config,
+            &mut last_temp,
+            &mut last_pwm,
+            &mut consecutive_implausible_temps,
+            &mut consecutive_write_failures,
+            &mut custom_curve_suspended,
+        );
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+
+        engine.tick_custom_curve(
+            &config,
+            &mut last_temp,
+            &mut last_pwm,
+            &mut consecutive_implausible_temps,
+            &mut consecutive_write_failures,
+            &mut custom_curve_suspended,
+        );
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+
+        engine.tick_custom_curve(
+            &config,
+            &mut last_temp,
+            &mut last_pwm,
+            &mut consecutive_implausible_temps,
+            &mut consecutive_write_failures,
+            &mut custom_curve_suspended,
+        );
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+
+        engine.tick_custom_curve(
+            &config,
+            &mut last_temp,
+            &mut last_pwm,
+            &mut consecutive_implausible_temps,
+            &mut consecutive_write_failures,
+            &mut custom_curve_suspended,
+        );
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+
+        engine.tick_custom_curve(
+            &config,
+            &mut last_temp,
+            &mut last_pwm,
+            &mut consecutive_implausible_temps,
+            &mut consecutive_write_failures,
+            &mut custom_curve_suspended,
+        );
+        assert_eq!(backend.read_pwm(0).unwrap(), 153);
+        assert_eq!(engine.failure_counter().load(Ordering::Relaxed), 5);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn implausible_temp_with_low_cpu_load_keeps_previous_pwm() {
+        let backend = Arc::new(MockFanBackend::new(1));
+        backend.set_temp(120);
+
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let engine = engine_with_loads(backend.clone(), config_rx, &[10.0]);
+        let config = test_config();
+        let mut last_temp = Some(50);
+        let mut last_pwm = Some(77);
+        let mut consecutive_implausible_temps = 0;
+        let mut consecutive_write_failures = 0;
+        let mut custom_curve_suspended = false;
+
+        backend.write_pwm(0, 77).unwrap();
+        let _ = engine.tick_custom_curve(
+            &config,
+            &mut last_temp,
+            &mut last_pwm,
+            &mut consecutive_implausible_temps,
+            &mut consecutive_write_failures,
+            &mut custom_curve_suspended,
+        );
+
+        assert_eq!(backend.read_pwm(0).unwrap(), 77);
+        assert_eq!(consecutive_implausible_temps, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn implausible_temp_requires_five_consecutive_with_high_cpu_load() {
+        let backend = Arc::new(MockFanBackend::new(1));
+        backend.set_temp(120);
+
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let engine = engine_with_loads(backend.clone(), config_rx, &[90.0, 90.0, 90.0, 90.0, 90.0]);
+        let config = test_config();
+        let mut last_temp = Some(50);
+        let mut last_pwm = Some(77);
+        let mut consecutive_implausible_temps = 0;
+        let mut consecutive_write_failures = 0;
+        let mut custom_curve_suspended = false;
+
+        backend.write_pwm(0, 77).unwrap();
+
+        for _ in 0..4 {
+            let _ = engine.tick_custom_curve(
+                &config,
+                &mut last_temp,
+                &mut last_pwm,
+                &mut consecutive_implausible_temps,
+                &mut consecutive_write_failures,
+                &mut custom_curve_suspended,
+            );
+            assert_eq!(backend.read_pwm(0).unwrap(), 77);
+        }
+
+        let _ = engine.tick_custom_curve(
+            &config,
+            &mut last_temp,
+            &mut last_pwm,
+            &mut consecutive_implausible_temps,
+            &mut consecutive_write_failures,
+            &mut custom_curve_suspended,
+        );
+
+        assert!(backend.read_pwm(0).unwrap() > 200);
+        assert_eq!(consecutive_implausible_temps, 5);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_temp_failure_on_manual_reapply_backend_suspends_custom_curve() {
+        let backend = Arc::new(ManualReapplyMockBackend::new(1));
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let engine = FanCurveEngine::new(backend.clone(), config_rx);
+        let config = test_config();
+
+        backend.write_pwm(0, 77).unwrap();
+        backend.set_fail_temp(true);
+
+        let mut last_temp = Some(50);
+        let mut last_pwm = Some(77);
+        let mut consecutive_implausible_temps = 0;
+        let mut consecutive_write_failures = 0;
+        let mut custom_curve_suspended = false;
+
+        for _ in 0..CUSTOM_CURVE_SUSPEND_FAILURE_THRESHOLD {
+            let _ = engine.tick_custom_curve(
+                &config,
+                &mut last_temp,
+                &mut last_pwm,
+                &mut consecutive_implausible_temps,
+                &mut consecutive_write_failures,
+                &mut custom_curve_suspended,
+            );
+        }
+
+        assert!(
+            custom_curve_suspended,
+            "custom curve should be suspended after repeated failures"
+        );
+        assert!(
+            backend.is_auto(0),
+            "backend should be forced into auto mode"
+        );
+        assert_eq!(backend.read_pwm(0).unwrap(), 0);
+        assert_eq!(
+            engine.failure_counter().load(Ordering::Relaxed),
+            CUSTOM_CURVE_SUSPEND_FAILURE_THRESHOLD
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_pwm_write_failure_on_manual_reapply_backend_suspends_custom_curve() {
+        let backend = Arc::new(ManualReapplyWriteFailBackend::new(1));
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let engine = FanCurveEngine::new(backend.clone(), config_rx);
+        let config = test_config();
+
+        let mut last_temp = None;
+        let mut last_pwm = None;
+        let mut consecutive_implausible_temps = 0;
+        let mut consecutive_write_failures = 0;
+        let mut custom_curve_suspended = false;
+
+        for _ in 0..CUSTOM_CURVE_SUSPEND_FAILURE_THRESHOLD {
+            let _ = engine.tick_custom_curve(
+                &config,
+                &mut last_temp,
+                &mut last_pwm,
+                &mut consecutive_implausible_temps,
+                &mut consecutive_write_failures,
+                &mut custom_curve_suspended,
+            );
+        }
+
+        assert!(
+            custom_curve_suspended,
+            "custom curve should be suspended after repeated write failures"
+        );
+        assert!(
+            backend.is_auto(0),
+            "backend should be forced into auto mode"
+        );
+        assert_eq!(backend.read_pwm(0).unwrap(), 0);
+        assert_eq!(engine.failure_counter().load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -590,5 +1312,48 @@ mod tests {
 
         drop(shutdown_tx);
         handle.await.unwrap();
+    }
+
+    #[test]
+    fn read_control_temp_prefers_hwmon_source() {
+        let backend = Arc::new(MockFanBackend::new(1));
+        backend.set_temp(48);
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let engine = engine_with_sources(backend, config_rx, &[90.0], vec![Ok(61)]);
+
+        let temp = engine.read_control_temp().unwrap();
+        assert_eq!(temp, 61);
+    }
+
+    #[test]
+    fn read_control_temp_falls_back_to_backend() {
+        let backend = Arc::new(MockFanBackend::new(1));
+        backend.set_temp(52);
+        let (_config_tx, config_rx) = watch::channel(test_config());
+        let engine = engine_with_sources(
+            backend,
+            config_rx,
+            &[90.0],
+            vec![Err(io::Error::new(io::ErrorKind::NotFound, "no hwmon"))],
+        );
+
+        let temp = engine.read_control_temp().unwrap();
+        assert_eq!(temp, 52);
+    }
+
+    #[test]
+    fn hwmon_cpu_temp_source_prefers_package_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let hwmon = dir.path().join("hwmon0");
+        fs::create_dir_all(&hwmon).unwrap();
+        fs::write(hwmon.join("name"), "coretemp\n").unwrap();
+        fs::write(hwmon.join("temp1_input"), "48000\n").unwrap();
+        fs::write(hwmon.join("temp1_label"), "Core 0\n").unwrap();
+        fs::write(hwmon.join("temp2_input"), "53000\n").unwrap();
+        fs::write(hwmon.join("temp2_label"), "Package id 0\n").unwrap();
+
+        let mut source = HwmonCpuTempSource::new(dir.path());
+        let temp = source.read_temp_celsius().unwrap();
+        assert_eq!(temp, 53);
     }
 }

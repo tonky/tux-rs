@@ -38,6 +38,44 @@
 	- hardened capture helper with warning accounting, warning logs, and strict failure mode.
 - Executed full Stage 4 verification (`just fmt`, `just clippy`, `just reliability-test`,
 	`just ci`) in flox environment and validated manual capture+compare flow.
+- Continued real-hardware validation of fixture capture on Uniwill host.
+- Found and fixed capture-helper mismatches discovered on hardware:
+	- auto-detect D-Bus scope (system vs session) for `com.tuxedocomputers.tccd`,
+	- read `Device.DaemonVersion` via D-Bus properties instead of method call,
+	- support both `/sys/devices/platform/tuxedo_uw_fan` and `/sys/devices/platform/tuxedo-uw-fan`,
+	- normalize fan temperature/duty from parsed D-Bus payloads with sysfs fallback.
+- Re-validated with strict capture: `CAPTURE_STRICT=1 just fixture-capture-uniwill` now succeeds with zero warnings.
+- Re-ran reliability fixture gate: `just fixture-contract-test` passing after helper hardening.
+- Captured and promoted a real-hardware fixture for current host SKU (`IBP1XI08MK1`) into
+	`tux-daemon/tests/fixtures/driver_contract/uniwill/ibp1xi08mk1-hardware-v1.toml`.
+- Updated fixture schema constraints to validate normalized fan values against raw D-Bus payloads
+	(first) and retain PWM-scaling checks as fallback when raw D-Bus fan payloads are absent.
+- Ran full reliability and CI gates after promotion and schema update:
+	- `just reliability-test` passing,
+	- `just ci` passing.
+- Live hardware runtime triage after `deploy-daemon-debug`:
+	- diagnosed concurrent `tccd.service` + `tux-daemon.service` ownership conflict on `com.tuxedocomputers.tccd`,
+	- observed fan-control EIO cascade under conflicting control and custom-curve mode,
+	- mitigated by stopping `tccd.service`, restarting `tux-daemon`, and forcing `SetFanMode("auto")` for recovery.
+- Hardened Just recipes to prevent recurrence by stopping `tccd` before debug/deploy daemon flows
+	(`daemon-debug`, `deploy-daemon`, `deploy-daemon-debug`).
+- Added fan-engine runtime hardening for manual-reapply backends (`tuxedo-uw-fan` path):
+	- suspend CustomCurve and fall back to Auto after repeated control-loop read failures,
+	- suspend CustomCurve and fall back to Auto after repeated PWM write failures.
+- Added regression coverage in `fan_engine` tests for both read-failure and write-failure
+	CustomCurve suspension paths.
+- Live validation after deploy:
+	- forcing `SetFanMode("custom")` reproduces transient EIO writes,
+	- daemon now emits suspension warning and automatically falls back to Auto,
+	- post-suspension error loop stops and TUI dashboard returns stable AC telemetry.
+- Fixed stale AC/Battery reporting under missed inotify transitions:
+	- rewrote power monitor to discover all AC-like sysfs sources (`type=Mains`, `AC*`, `ADP*`),
+	- changed aggregate detection to `AC if any source online, Battery if all offline`,
+	- added 2s periodic resync fallback so state updates even when inotify events are missed,
+	- expanded unit tests with multi-source detection coverage.
+- Live hardware validation after redeploy:
+	- unplugged state now initializes and reports correctly as `Battery`,
+	- D-Bus `System.GetPowerState` matches sysfs (`AC0 online=0`, `BAT0 Discharging`).
 - Postponed bonus Stage 5 and Stage 6 TUI work by user decision.
 
 ## Notes

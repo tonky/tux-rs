@@ -46,6 +46,7 @@ run-daemon:
 # Run daemon in debug mode (stops systemd service first, runs release build with --debug)
 daemon-debug:
     cargo build --release -p tux-daemon
+    sudo systemctl stop tccd 2>/dev/null || true
     sudo systemctl stop tux-daemon || true
     sudo ./target/release/tux-daemon --debug
 
@@ -76,6 +77,7 @@ install-tui:
 # Rebuild, reinstall and restart the daemon (systemd)
 deploy-daemon:
     cargo build --release -p tux-daemon
+    sudo systemctl stop tccd 2>/dev/null || true
     sudo systemctl stop tux-daemon 2>/dev/null || true
     sudo cp target/release/tux-daemon /usr/bin/tux-daemon
     sudo systemctl start tux-daemon
@@ -83,6 +85,7 @@ deploy-daemon:
 # Rebuild/reinstall daemon and print systemd status + recent journal logs
 deploy-daemon-debug:
     cargo build --release -p tux-daemon
+    sudo systemctl stop tccd 2>/dev/null || true
     sudo systemctl stop tux-daemon 2>/dev/null || true
     sudo cp target/release/tux-daemon /usr/bin/tux-daemon
     sudo systemctl start tux-daemon

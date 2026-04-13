@@ -16,10 +16,20 @@
 - Performed two independent review passes and applied Stage 1 hardening fixes on script/test robustness.
 - Validation completed: fmt, clippy, and full test suite all passing.
 - Remaining Stage 1 closeout step: real hardware capture run and fixture review.
+- Implemented Stage 2 deterministic replay baseline:
+	- added `tux-daemon/tests/contract_replay.rs` with fixture consistency and D-Bus replay assertions,
+	- aligned sample Uniwill fixture temperature values with deterministic mock behavior,
+	- validated with targeted tests plus full `just clippy && just test` pass.
+- Hardened Stage 2 replay tests:
+	- added schema-version checks during fixture load,
+	- switched to fixture-metadata-driven replay device resolution with fan-count guards,
+	- iterated replay tests over all fixture files in the Uniwill contract directory,
+	- improved panic diagnostics for D-Bus/TOML failure paths.
+- Ran two independent review passes for Stage 2 and folded low-risk improvements into the implementation.
 
 ## Notes
 
 - Core delivery is Stages 1-4 (reliability suite).
 - Bonus delivery is Stages 5+ (TUI enhancements).
 - New hardware-control subsystems are excluded from this feature.
-- Next action requires user confirmation before Stage 1 implementation.
+- Next action requires user confirmation before Stage 3 implementation.

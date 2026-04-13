@@ -44,3 +44,12 @@ priority = "low"
 description = "Schedule bonus TUI stages only after core reliability stages are complete and accepted."
 context = "User clarified TUI features are secondary to test-suite reliability."
 reasoning = "Maintains delivery focus and avoids scope creep."
+
+[[task]]
+id = "f006"
+title = "Add edge and optional fixture variants"
+status = "open"
+priority = "high"
+description = "Add at least one malformed/missing-optional fixture and one boundary-value fixture for replay/schema coverage."
+context = "Stage 2 replay baseline is correct but still based on a single happy-path fixture."
+reasoning = "Improves confidence before Stage 3 fault-matrix and resilience expansion."

@@ -13,12 +13,12 @@ reliably without hardware.
 
 ## Target Files
 
-- tux-core/src/mock/sysfs.rs
-- tux-core/src/dbus_types.rs
-- tux-daemon/src/platform/td_uw_fan.rs
-- tux-daemon/src/charging/uniwill.rs
-- tux-daemon/tests/integration.rs
-- tux-daemon/tests/e2e.rs
+- tux-daemon/tests/contract_replay.rs
+- tux-daemon/tests/fixture_schema.rs
+- tux-daemon/tests/common/mod.rs
+- tux-daemon/tests/fixtures/driver_contract/uniwill/sample-ibp16g8-v1.toml
+- impl/2026-04-13-driver-daemon-reliable-test-suite/review-2.md
+- impl/2026-04-13-driver-daemon-reliable-test-suite/worklog-2.md
 
 ## Tasks
 

@@ -25,7 +25,7 @@ fn_lock = "0"
 
 [raw.dbus]
 fan_data_0 = "rpm = 0\ntemp_celsius = 45.0\nduty_percent = 57\nrpm_available = false\n"
-fan_data_1 = "rpm = 0\ntemp_celsius = 44.0\nduty_percent = 49\nrpm_available = false\n"
+fan_data_1 = "rpm = 0\ntemp_celsius = 45.0\nduty_percent = 49\nrpm_available = false\n"
 fan_health = "status = \"ok\"\nconsecutive_failures = 0\n"
 charging_settings = "profile = \"balanced\"\npriority = \"charge_battery\"\n"
 
@@ -38,7 +38,7 @@ rpm_available = false
 
 [[normalized.fans]]
 index = 1
-temp_celsius = 44.0
+temp_celsius = 45.0
 duty_percent = 49
 rpm = 0
 rpm_available = false

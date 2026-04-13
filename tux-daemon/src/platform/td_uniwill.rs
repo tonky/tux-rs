@@ -5,7 +5,7 @@ use tux_core::backend::fan::FanBackend;
 
 use super::tuxedo_io::{
     R_UW_FAN_TEMP, R_UW_FANSPEED, R_UW_FANSPEED2, TuxedoIo, W_UW_FANAUTO, W_UW_FANSPEED,
-    W_UW_FANSPEED2,
+    W_UW_FANSPEED2, W_UW_MODE_ENABLE,
 };
 
 /// Number of fans on Uniwill platforms.
@@ -71,6 +71,10 @@ impl FanBackend for TdUniwillFanBackend {
 
     fn write_pwm(&self, fan_index: u8, pwm: u8) -> io::Result<()> {
         Self::check_fan_index(fan_index)?;
+        // Tell the EC that the driver owns fan control before writing speed.
+        // Without this the EC's own thermal loop overrides W_UW_FANSPEED
+        // within ~1 second. Calling it on every write is safe and idempotent.
+        self.io.write_i32(W_UW_MODE_ENABLE, 1)?;
         let ec = Self::pwm_to_ec(pwm);
         let cmd = if fan_index == 0 {
             W_UW_FANSPEED
@@ -92,8 +96,10 @@ impl FanBackend for TdUniwillFanBackend {
     }
 
     fn set_auto(&self, _fan_index: u8) -> io::Result<()> {
-        // W_UW_FANAUTO restores auto for both fans simultaneously.
-        self.io.ioctl_noarg(W_UW_FANAUTO)
+        // W_UW_FANAUTO restores auto for both fans simultaneously,
+        // then release mode-enable so the EC resumes autonomous control.
+        self.io.ioctl_noarg(W_UW_FANAUTO)?;
+        self.io.write_i32(W_UW_MODE_ENABLE, 0)
     }
 
     fn read_fan_rpm(&self, _fan_index: u8) -> io::Result<u16> {
@@ -149,8 +155,11 @@ mod tests {
         // PWM 0 → EC 0
         backend.write_pwm(1, 0).unwrap();
         let writes = arc.writes.lock().unwrap();
-        assert_eq!(writes[0], (W_UW_FANSPEED, 200));
-        assert_eq!(writes[1], (W_UW_FANSPEED2, 0));
+        // Each write_pwm emits W_UW_MODE_ENABLE(1) first, then the fan speed.
+        assert_eq!(writes[0], (W_UW_MODE_ENABLE, 1));
+        assert_eq!(writes[1], (W_UW_FANSPEED, 200));
+        assert_eq!(writes[2], (W_UW_MODE_ENABLE, 1));
+        assert_eq!(writes[3], (W_UW_FANSPEED2, 0));
     }
 
     #[test]
@@ -158,17 +167,22 @@ mod tests {
         let (arc, backend) = setup_mock();
         backend.write_pwm(0, 128).unwrap();
         let writes = arc.writes.lock().unwrap();
-        let ec = writes[0].1;
+        // First write is W_UW_MODE_ENABLE(1), second is the actual fan speed.
+        assert_eq!(writes[0], (W_UW_MODE_ENABLE, 1));
+        let ec = writes[1].1;
         // EC ≈ 128 * 200 / 255 = 100 (rounded)
         assert!((99..=101).contains(&ec), "expected ~100, got {ec}");
     }
 
     #[test]
-    fn set_auto_sends_noarg_ioctl() {
+    fn set_auto_sends_fanauto_then_disables_mode_enable() {
         let (arc, backend) = setup_mock();
         backend.set_auto(0).unwrap();
         let calls = arc.noarg_calls.lock().unwrap();
         assert_eq!(calls[0], W_UW_FANAUTO);
+        drop(calls);
+        let writes = arc.writes.lock().unwrap();
+        assert_eq!(writes[0], (W_UW_MODE_ENABLE, 0));
     }
 
     #[test]

@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn get_fan_data_succeeds_when_rpm_unsupported() {
-        // Regression: TdUwFanBackend returns Unsupported for read_fan_rpm.
+        // Regression: backends may return Unsupported for read_fan_rpm.
         // get_fan_data must not propagate that as a D-Bus error.
         let (backend, iface) = make_fan_iface(1);
         backend.set_rpm_unsupported(true);

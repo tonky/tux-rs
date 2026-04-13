@@ -47,6 +47,13 @@ pub const R_UW_FAN_TEMP: u64 = 0x8008_EF12;
 pub const W_UW_FANSPEED: u64 = 0x4008_F010;
 /// `_IOW(0xF0, 0x11, int32_t*)` — Uniwill set fan 2 speed.
 pub const W_UW_FANSPEED2: u64 = 0x4008_F011;
+/// `_IOW(0xF0, 0x13, int32_t*)` — Uniwill enable/disable manual fan control mode.
+///
+/// Write `1` to tell the EC that the driver is managing fan speeds via
+/// `W_UW_FANSPEED`/`W_UW_FANSPEED2`.  Write `0` to release EC control.
+/// Must be called before the first `W_UW_FANSPEED` write; without it the
+/// EC's firmware thermal loop overrides manual speeds within ~1 second.
+pub const W_UW_MODE_ENABLE: u64 = 0x4008_F013;
 /// `_IO(0xF0, 0x14)` — Uniwill restore fan auto mode (no data argument).
 pub const W_UW_FANAUTO: u64 = 0x0000_F014;
 

@@ -3,6 +3,7 @@
 pub mod charging;
 pub mod dashboard;
 pub mod display;
+pub mod event_log;
 pub mod fan_curve;
 pub mod info;
 pub mod keyboard;

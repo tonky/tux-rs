@@ -60,9 +60,9 @@ impl Default for FanConfig {
                     speed: 100,
                 },
             ],
-            active_poll_ms: 2000,
-            idle_poll_ms: 1000,
-            hysteresis_degrees: 3,
+            active_poll_ms: 1000,
+            idle_poll_ms: 2000,
+            hysteresis_degrees: 10,
         }
     }
 }
@@ -311,7 +311,13 @@ mod tests {
 
     #[test]
     fn default_config_is_valid() {
-        assert!(FanConfig::default().validate().is_ok());
+        let cfg = FanConfig::default();
+        assert!(cfg.validate().is_ok());
+        assert!(
+            cfg.active_poll_ms < cfg.idle_poll_ms,
+            "changing temperatures should poll faster than stable ones"
+        );
+        assert_eq!(cfg.hysteresis_degrees, 10);
     }
 
     #[test]

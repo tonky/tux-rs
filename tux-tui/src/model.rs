@@ -1,6 +1,7 @@
 //! Application state for the TUI.
 
 use std::collections::VecDeque;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tux_core::fan_curve::FanCurvePoint;
 use tux_core::profile::TuxProfile;
@@ -18,11 +19,12 @@ pub enum Tab {
     Display,
     Webcam,
     Info,
+    EventLog,
 }
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 11] = [
         Tab::Dashboard,
         Tab::Profiles,
         Tab::FanCurve,
@@ -33,6 +35,7 @@ impl Tab {
         Tab::Display,
         Tab::Webcam,
         Tab::Info,
+        Tab::EventLog,
     ];
 
     /// Display label for the tab bar.
@@ -48,6 +51,7 @@ impl Tab {
             Tab::Display => "8:Display",
             Tab::Webcam => "9:Webcam",
             Tab::Info => "0:Info",
+            Tab::EventLog => "L:Event Log",
         }
     }
 
@@ -95,6 +99,92 @@ pub struct Model {
     pub power: PowerState,
     pub display: FormTabState,
     pub webcam: WebcamState,
+    pub event_log: EventLogState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventSource {
+    User,
+    Daemon,
+    System,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventLogEntry {
+    pub ts_unix_ms: u128,
+    pub source: EventSource,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub debug: bool,
+}
+
+pub struct EventLogState {
+    pub entries: VecDeque<EventLogEntry>,
+    pub show_debug_events: bool,
+    max_entries: usize,
+}
+
+impl EventLogState {
+    const DEFAULT_MAX_ENTRIES: usize = 400;
+
+    pub fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            show_debug_events: false,
+            max_entries: Self::DEFAULT_MAX_ENTRIES,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_max_entries(max_entries: usize) -> Self {
+        let mut s = Self::new();
+        s.max_entries = max_entries.max(1);
+        s
+    }
+
+    pub fn push(
+        &mut self,
+        source: EventSource,
+        summary: impl Into<String>,
+        detail: Option<String>,
+    ) {
+        self.push_with_level(source, summary, detail, false);
+    }
+
+    pub fn push_debug(
+        &mut self,
+        source: EventSource,
+        summary: impl Into<String>,
+        detail: Option<String>,
+    ) {
+        self.push_with_level(source, summary, detail, true);
+    }
+
+    fn push_with_level(
+        &mut self,
+        source: EventSource,
+        summary: impl Into<String>,
+        detail: Option<String>,
+        debug: bool,
+    ) {
+        if self.entries.len() >= self.max_entries {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(EventLogEntry {
+            ts_unix_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            source,
+            summary: summary.into(),
+            detail,
+            debug,
+        });
+    }
+
+    pub fn toggle_debug_filter(&mut self) {
+        self.show_debug_events = !self.show_debug_events;
+    }
 }
 
 /// Dashboard tab: real-time telemetry.
@@ -1032,7 +1122,7 @@ impl DashboardState {
 
 impl Model {
     pub fn new() -> Self {
-        Self {
+        let mut model = Self {
             current_tab: Tab::Dashboard,
             should_quit: false,
             show_help: false,
@@ -1049,7 +1139,32 @@ impl Model {
             power: PowerState::new(),
             display: display_form(),
             webcam: WebcamState::new(),
-        }
+            event_log: EventLogState::new(),
+        };
+        model.log_event(
+            EventSource::System,
+            "tux-tui started",
+            Some("event log initialized".to_string()),
+        );
+        model
+    }
+
+    pub fn log_event(
+        &mut self,
+        source: EventSource,
+        summary: impl Into<String>,
+        detail: Option<String>,
+    ) {
+        self.event_log.push(source, summary, detail);
+    }
+
+    pub fn log_debug_event(
+        &mut self,
+        source: EventSource,
+        summary: impl Into<String>,
+        detail: Option<String>,
+    ) {
+        self.event_log.push_debug(source, summary, detail);
     }
 }
 
@@ -1059,13 +1174,15 @@ mod tests {
 
     #[test]
     fn tab_next_wraps() {
-        assert_eq!(Tab::Info.next(), Tab::Dashboard);
+        assert_eq!(Tab::Info.next(), Tab::EventLog);
+        assert_eq!(Tab::EventLog.next(), Tab::Dashboard);
         assert_eq!(Tab::Dashboard.next(), Tab::Profiles);
     }
 
     #[test]
     fn tab_prev_wraps() {
-        assert_eq!(Tab::Dashboard.prev(), Tab::Info);
+        assert_eq!(Tab::Dashboard.prev(), Tab::EventLog);
+        assert_eq!(Tab::EventLog.prev(), Tab::Info);
         assert_eq!(Tab::Profiles.prev(), Tab::Dashboard);
     }
 
@@ -1083,6 +1200,24 @@ mod tests {
         assert!(!m.should_quit);
         assert!(!m.show_help);
         assert_eq!(m.connection_status, ConnectionStatus::Connecting);
+        assert!(!m.event_log.entries.is_empty());
+        assert!(!m.event_log.show_debug_events);
+    }
+
+    #[test]
+    fn event_log_retention_is_bounded() {
+        let mut state = EventLogState::with_max_entries(3);
+        state.push(EventSource::System, "e1", None);
+        state.push(EventSource::System, "e2", None);
+        state.push(EventSource::System, "e3", None);
+        state.push(EventSource::System, "e4", None);
+
+        assert_eq!(state.entries.len(), 3);
+        assert_eq!(
+            state.entries.front().map(|e| e.summary.as_str()),
+            Some("e2")
+        );
+        assert_eq!(state.entries.back().map(|e| e.summary.as_str()), Some("e4"));
     }
 
     #[test]

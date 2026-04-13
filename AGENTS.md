@@ -37,3 +37,5 @@ Don't use /tmp, it would require permissions to write outside of the repo - use 
 Keep adding regression tests for unplanned or ad-hoc work and fixes.
 
 Use 'justfile' commands for common operations during developments process. Develop ones that are needed. Make sure to use them and user could use them later to repeat steps in dev process.
+
+Remember to run 'clippy' and 'fmt' before committing.

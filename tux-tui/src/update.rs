@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::command::Command;
 use crate::event::DbusUpdate;
-use crate::model::{FormTabState, Model, ProfilesMode, ProfilesState, Tab};
+use crate::model::{EventSource, FormTabState, Model, ProfilesMode, ProfilesState, Tab};
 
 /// Handle a key event, returning commands to execute.
 pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
@@ -13,10 +13,21 @@ pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     match key.code {
         KeyCode::Char('q') => {
             model.should_quit = true;
-            return vec![Command::Quit];
+            let cmds = vec![Command::Quit];
+            log_commands(model, &cmds);
+            return cmds;
         }
         KeyCode::Char('?') => {
             model.show_help = !model.show_help;
+            model.log_event(
+                EventSource::User,
+                if model.show_help {
+                    "help opened"
+                } else {
+                    "help closed"
+                },
+                None,
+            );
             return vec![];
         }
         // Number keys switch tabs.
@@ -60,6 +71,25 @@ pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
             model.current_tab = Tab::Info;
             return vec![];
         }
+        KeyCode::Char('l') => {
+            model.current_tab = Tab::EventLog;
+            model.log_event(EventSource::User, "opened event log tab", None);
+            return vec![];
+        }
+        KeyCode::Char('D') => {
+            model.event_log.toggle_debug_filter();
+            let state = if model.event_log.show_debug_events {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            model.log_event(
+                EventSource::User,
+                format!("debug event filter {state}"),
+                Some("D toggles full-detail debug events".to_string()),
+            );
+            return vec![];
+        }
         KeyCode::Tab => {
             model.current_tab = model.current_tab.next();
             return vec![];
@@ -74,11 +104,13 @@ pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     // Ctrl+C also quits.
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         model.should_quit = true;
-        return vec![Command::Quit];
+        let cmds = vec![Command::Quit];
+        log_commands(model, &cmds);
+        return cmds;
     }
 
     // Tab-specific key handling.
-    match model.current_tab {
+    let cmds = match model.current_tab {
         Tab::FanCurve => handle_fan_curve_key(model, key),
         Tab::Profiles => handle_profiles_key(model, key),
         Tab::Settings => handle_form_tab_key(&mut model.settings, key, Command::SaveSettings),
@@ -88,7 +120,269 @@ pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         Tab::Display => handle_form_tab_key(&mut model.display, key, Command::SaveDisplay),
         Tab::Webcam => handle_webcam_key(model, key),
         _ => vec![],
+    };
+    log_commands(model, &cmds);
+    cmds
+}
+
+fn log_commands(model: &mut Model, cmds: &[Command]) {
+    for cmd in cmds {
+        let (summary, detail) = match cmd {
+            Command::Quit => ("command: quit".to_string(), None),
+            Command::SaveFanCurve(points) => {
+                let selected = model
+                    .fan_curve
+                    .selected_index
+                    .min(points.len().saturating_sub(1));
+                let selected_point = points.get(selected).cloned();
+                let summary = if let Some(p) = selected_point {
+                    format!("save fan curve: selected point {}C -> {}%", p.temp, p.speed)
+                } else {
+                    "save fan curve".to_string()
+                };
+                let detail = if points.is_empty() {
+                    None
+                } else {
+                    Some(format_fan_curve_points(points))
+                };
+                (summary, detail)
+            }
+            Command::FetchFanCurve => ("command: fetch fan curve".to_string(), None),
+            Command::FetchProfiles => ("command: fetch profiles".to_string(), None),
+            Command::CopyProfile(id) => (format!("command: copy profile {id}"), None),
+            Command::CreateProfile(toml_str) => (
+                "command: create profile".to_string(),
+                extract_profile_debug_details(toml_str),
+            ),
+            Command::DeleteProfile(id) => (format!("command: delete profile {id}"), None),
+            Command::SaveProfile { id, toml } => (
+                format!("command: save profile {id}"),
+                extract_profile_debug_details(toml),
+            ),
+            Command::SetActiveProfile { id, state } => {
+                (format!("set active profile '{id}' for {state}"), None)
+            }
+            Command::SaveSettings(toml_str) => (
+                "save settings".to_string(),
+                extract_settings_debug_details(toml_str),
+            ),
+            Command::SaveKeyboard(toml_str) => (
+                "save keyboard settings".to_string(),
+                extract_keyboard_debug_details(toml_str),
+            ),
+            Command::SaveCharging(toml_str) => (
+                "save charging settings".to_string(),
+                extract_charging_debug_details(toml_str),
+            ),
+            Command::SavePower(toml_str) => (
+                "save power settings".to_string(),
+                extract_power_debug_details(toml_str),
+            ),
+            Command::SaveDisplay(toml_str) => (
+                "save display settings".to_string(),
+                extract_display_debug_details(toml_str),
+            ),
+            Command::SaveWebcam { device, toml } => (
+                format!("save webcam settings for {device}"),
+                Some(toml.trim().replace('\n', "; ")),
+            ),
+            Command::None => ("command: none".to_string(), None),
+        };
+        model.log_event(EventSource::User, summary, None);
+        if let Some(detail) = detail {
+            model.log_debug_event(EventSource::User, "command detail", Some(detail));
+        }
     }
+}
+
+fn toml_table(toml_str: &str) -> Option<toml::Table> {
+    toml_str.parse::<toml::Table>().ok()
+}
+
+fn toml_string(table: &toml::Table, key: &str) -> Option<String> {
+    table
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+}
+
+fn toml_int(table: &toml::Table, key: &str) -> Option<i64> {
+    table.get(key).and_then(|v| v.as_integer())
+}
+
+fn extract_keyboard_debug_details(toml_str: &str) -> Option<String> {
+    let table = toml_table(toml_str)?;
+    let brightness = toml_int(&table, "brightness").unwrap_or(0);
+    let mode = toml_string(&table, "mode").unwrap_or_else(|| "unknown".to_string());
+    let color = toml_string(&table, "color").unwrap_or_else(|| "unknown".to_string());
+    Some(format!(
+        "keyboard -> brightness {}%, mode '{}', color {}",
+        brightness, mode, color
+    ))
+}
+
+fn extract_display_debug_details(toml_str: &str) -> Option<String> {
+    let table = toml_table(toml_str)?;
+    let brightness = toml_int(&table, "brightness")?;
+    Some(format!("display -> brightness {}%", brightness))
+}
+
+fn extract_power_debug_details(toml_str: &str) -> Option<String> {
+    let table = toml_table(toml_str)?;
+    let tgp_offset = toml_int(&table, "tgp_offset")?;
+    Some(format!("power -> tgp_offset {}", tgp_offset))
+}
+
+fn extract_settings_debug_details(toml_str: &str) -> Option<String> {
+    let table = toml_table(toml_str)?;
+    let unit = toml_string(&table, "temperature_unit").unwrap_or_else(|| "unknown".to_string());
+    let fan = table
+        .get("fan_control_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let cpu = table
+        .get("cpu_settings_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    Some(format!(
+        "settings -> temp_unit '{}', fan_control {}, cpu_settings {}",
+        unit, fan, cpu
+    ))
+}
+
+fn extract_charging_debug_details(toml_str: &str) -> Option<String> {
+    let table = toml_table(toml_str)?;
+    let profile = toml_string(&table, "profile").unwrap_or_else(|| "unknown".to_string());
+    let priority = toml_string(&table, "priority").unwrap_or_else(|| "unknown".to_string());
+    let start = toml_int(&table, "start_threshold").unwrap_or(-1);
+    let end = toml_int(&table, "end_threshold").unwrap_or(-1);
+    Some(format!(
+        "charging -> profile '{}', priority '{}', start {}%, end {}%",
+        profile, priority, start, end
+    ))
+}
+
+fn extract_profile_debug_details(toml_str: &str) -> Option<String> {
+    let table = toml_table(toml_str)?;
+    let id = toml_string(&table, "id").unwrap_or_else(|| "unknown".to_string());
+    let name = toml_string(&table, "name").unwrap_or_else(|| "unknown".to_string());
+    let fan_enabled = table
+        .get("fan")
+        .and_then(|fan| fan.as_table())
+        .and_then(|fan| fan.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    Some(format!(
+        "profile '{}' ('{}'), fan_enabled {}",
+        id, name, fan_enabled
+    ))
+}
+
+fn format_fan_curve_points(points: &[tux_core::fan_curve::FanCurvePoint]) -> String {
+    points
+        .iter()
+        .map(|p| format!("{}C->{}%", p.temp, p.speed))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn form_string(form: &crate::model::Form, key: &str) -> Option<String> {
+    use crate::model::FieldType;
+    let field = form.fields.iter().find(|f| f.key.as_deref() == Some(key))?;
+    match &field.field_type {
+        FieldType::Text(v) => Some(v.clone()),
+        FieldType::Select { options, selected } => options.get(*selected).cloned(),
+        _ => None,
+    }
+}
+
+fn form_int(form: &crate::model::Form, key: &str) -> Option<i64> {
+    use crate::model::FieldType;
+    let field = form.fields.iter().find(|f| f.key.as_deref() == Some(key))?;
+    match &field.field_type {
+        FieldType::Number { value, .. } => Some(*value),
+        _ => None,
+    }
+}
+
+fn summarize_keyboard_form(form: &crate::model::Form) -> Option<String> {
+    use crate::model::FieldType;
+    let brightness = form
+        .fields
+        .iter()
+        .find(|f| f.label == "Brightness")
+        .and_then(|f| match &f.field_type {
+            FieldType::Number { value, .. } => Some(*value),
+            _ => None,
+        })?;
+    let mode = form
+        .fields
+        .iter()
+        .find(|f| f.label == "Mode")
+        .and_then(|f| match &f.field_type {
+            FieldType::Select { options, selected } => options.get(*selected).cloned(),
+            _ => None,
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    Some(format!(
+        "keyboard set to {}% brightness, mode '{}'",
+        brightness, mode
+    ))
+}
+
+fn summarize_charging_form(form: &crate::model::Form) -> Option<String> {
+    let profile = form_string(form, "profile")?;
+    let priority = form_string(form, "priority")?;
+    let start = form_int(form, "start_threshold").unwrap_or(-1);
+    let end = form_int(form, "end_threshold").unwrap_or(-1);
+    Some(format!(
+        "charging profile '{}' (priority '{}', {}%-{}%)",
+        profile, priority, start, end
+    ))
+}
+
+fn summarize_display_form(form: &crate::model::Form) -> Option<String> {
+    let brightness = form_int(form, "brightness")?;
+    Some(format!("display brightness set to {}%", brightness))
+}
+
+fn summarize_power_form(form: &crate::model::Form) -> Option<String> {
+    use crate::model::FieldType;
+    let offset = form
+        .fields
+        .iter()
+        .find(|f| f.label == "TGP Offset")
+        .and_then(|f| match &f.field_type {
+            FieldType::Number { value, .. } => Some(*value),
+            _ => None,
+        })?;
+    Some(format!("power limit offset set to {}", offset))
+}
+
+fn summarize_settings_form(form: &crate::model::Form) -> Option<String> {
+    use crate::model::FieldType;
+    let unit = form
+        .fields
+        .iter()
+        .find(|f| f.label == "Temperature Unit")
+        .and_then(|f| match &f.field_type {
+            FieldType::Select { options, selected } => options.get(*selected).cloned(),
+            _ => None,
+        })?;
+    let fan_enabled = form
+        .fields
+        .iter()
+        .find(|f| f.label == "Fan Control Enabled")
+        .and_then(|f| match &f.field_type {
+            FieldType::Bool(v) => Some(*v),
+            _ => None,
+        })
+        .unwrap_or(true);
+    Some(format!(
+        "settings updated: temp unit '{}', fan control {}",
+        unit,
+        if fan_enabled { "on" } else { "off" }
+    ))
 }
 
 /// Fan curve tab key handling.
@@ -441,6 +735,13 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
     model.needs_render = true;
     match update {
         DbusUpdate::ConnectionStatus(status) => {
+            if model.connection_status != status {
+                model.log_event(
+                    EventSource::Daemon,
+                    format!("connection status: {:?}", status),
+                    None,
+                );
+            }
             model.connection_status = status;
         }
         DbusUpdate::DashboardTelemetry {
@@ -455,6 +756,10 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             cpu_load_per_core,
             cpu_freq_per_core,
         } => {
+            let prev_temp = model.dashboard.cpu_temp;
+            let prev_profile = model.dashboard.active_profile.clone();
+            let prev_power = model.dashboard.power_state.clone();
+            let prev_fan_data = model.dashboard.fan_data.clone();
             if let Some(temp) = cpu_temp {
                 model.dashboard.cpu_temp = Some(temp);
                 model.dashboard.push_temp(temp);
@@ -525,8 +830,81 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             if let Some(freqs) = cpu_freq_per_core {
                 model.dashboard.cpu_freq_per_core = freqs;
             }
+
+            if let (Some(prev), Some(now)) = (prev_temp, model.dashboard.cpu_temp)
+                && (now - prev).abs() >= 5.0
+            {
+                model.log_event(
+                    EventSource::Daemon,
+                    format!("CPU temp changed: {prev:.1}C -> {now:.1}C"),
+                    None,
+                );
+            }
+            if prev_profile != model.dashboard.active_profile {
+                model.log_event(
+                    EventSource::Daemon,
+                    format!(
+                        "active profile: {}",
+                        model
+                            .dashboard
+                            .active_profile
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ),
+                    None,
+                );
+            }
+            if prev_power != model.dashboard.power_state {
+                model.log_event(
+                    EventSource::Daemon,
+                    format!("power state: {}", model.dashboard.power_state),
+                    None,
+                );
+            }
+
+            let current_fan_data = model.dashboard.fan_data.clone();
+            let cpu_temp_now = model.dashboard.cpu_temp;
+            for (i, fan) in current_fan_data.iter().enumerate() {
+                let prev = prev_fan_data.get(i);
+                let changed = prev
+                    .map(|p| p.duty_percent != fan.duty_percent || p.rpm != fan.rpm)
+                    .unwrap_or(true);
+                if changed {
+                    let temp_note = cpu_temp_now
+                        .map(|t| format!("cpu temp {:.1}C", t))
+                        .unwrap_or_else(|| "cpu temp n/a".to_string());
+                    model.log_event(
+                        EventSource::Daemon,
+                        format!(
+                            "fan {} changed: {}% (pwm {}/{})",
+                            i + 1,
+                            fan.speed_percent,
+                            fan.duty_percent,
+                            255
+                        ),
+                        Some(format!("rpm {}, {}", fan.rpm, temp_note)),
+                    );
+                }
+                model.log_debug_event(
+                    EventSource::Daemon,
+                    format!(
+                        "fan {} telemetry: {}% @ {} rpm",
+                        i + 1,
+                        fan.speed_percent,
+                        fan.rpm
+                    ),
+                    Some(format!(
+                        "duty {}/{}, rpm_available {}, cpu_temp {:.1}C",
+                        fan.duty_percent,
+                        255,
+                        fan.rpm_available,
+                        cpu_temp_now.unwrap_or(0.0)
+                    )),
+                );
+            }
         }
         DbusUpdate::FanHealth(toml_str) => {
+            let prev = model.dashboard.fan_health.clone();
             if let Ok(health) = toml::from_str::<tux_core::dbus_types::FanHealthResponse>(&toml_str)
             {
                 model.dashboard.fan_health = if health.status == "ok" {
@@ -534,6 +912,20 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                 } else {
                     Some(health.status)
                 };
+            }
+            if model.dashboard.fan_health != prev {
+                model.log_event(
+                    EventSource::Daemon,
+                    format!(
+                        "fan health: {}",
+                        model
+                            .dashboard
+                            .fan_health
+                            .clone()
+                            .unwrap_or_else(|| "ok".to_string())
+                    ),
+                    None,
+                );
             }
         }
         DbusUpdate::FanInfo { num_fans, max_rpm } => {
@@ -655,6 +1047,11 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
         }
         DbusUpdate::ProfileOperationDone(msg) => {
             model.profiles.status_message = Some(msg);
+            model.log_event(
+                EventSource::Daemon,
+                "profile operation succeeded",
+                model.profiles.status_message.clone(),
+            );
             // After successful operations, return to list and the caller will refetch.
             if let ProfilesMode::Editor { form, .. } = &mut model.profiles.mode {
                 form.mark_saved();
@@ -662,6 +1059,11 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
         }
         DbusUpdate::ProfileOperationError(msg) => {
             model.profiles.status_message = Some(format!("Error: {msg}"));
+            model.log_event(
+                EventSource::Daemon,
+                "profile operation failed",
+                model.profiles.status_message.clone(),
+            );
         }
         DbusUpdate::SettingsData(toml_str) => {
             load_form_from_toml(&mut model.settings.form, &toml_str);
@@ -724,26 +1126,64 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             "settings" => {
                 model.settings.form.mark_saved();
                 model.settings.status_message = Some("Settings saved".into());
+                let detail = summarize_settings_form(&model.settings.form);
+                model.log_event(EventSource::Daemon, "settings saved", detail.clone());
+                if let Some(d) = detail {
+                    model.log_debug_event(EventSource::Daemon, "settings detail", Some(d));
+                }
             }
             "keyboard" => {
                 model.keyboard.form.mark_saved();
                 model.keyboard.status_message = Some("Keyboard settings saved".into());
+                let detail = summarize_keyboard_form(&model.keyboard.form);
+                model.log_event(
+                    EventSource::Daemon,
+                    "keyboard settings saved",
+                    detail.clone(),
+                );
+                if let Some(d) = detail {
+                    model.log_debug_event(EventSource::Daemon, "keyboard detail", Some(d));
+                }
             }
             "charging" => {
                 model.charging.form.mark_saved();
                 model.charging.status_message = Some("Charging settings saved".into());
+                let detail = summarize_charging_form(&model.charging.form);
+                model.log_event(
+                    EventSource::Daemon,
+                    "charging settings saved",
+                    detail.clone(),
+                );
+                if let Some(d) = detail {
+                    model.log_debug_event(EventSource::Daemon, "charging detail", Some(d));
+                }
             }
             "power" => {
                 model.power.form_tab.form.mark_saved();
                 model.power.form_tab.status_message = Some("Power settings saved".into());
+                let detail = summarize_power_form(&model.power.form_tab.form);
+                model.log_event(EventSource::Daemon, "power settings saved", detail.clone());
+                if let Some(d) = detail {
+                    model.log_debug_event(EventSource::Daemon, "power detail", Some(d));
+                }
             }
             "display" => {
                 model.display.form.mark_saved();
                 model.display.status_message = Some("Display settings saved".into());
+                let detail = summarize_display_form(&model.display.form);
+                model.log_event(
+                    EventSource::Daemon,
+                    "display settings saved",
+                    detail.clone(),
+                );
+                if let Some(d) = detail {
+                    model.log_debug_event(EventSource::Daemon, "display detail", Some(d));
+                }
             }
             "webcam" => {
                 model.webcam.form_tab.form.mark_saved();
                 model.webcam.form_tab.status_message = Some("Webcam settings saved".into());
+                model.log_event(EventSource::Daemon, "webcam settings saved", None);
             }
             _ => {}
         },
@@ -759,6 +1199,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                 Tab::Webcam => model.webcam.form_tab.status_message = status,
                 _ => {}
             }
+            model.log_event(EventSource::Daemon, "form save failed", Some(msg));
         }
     }
 }
@@ -879,7 +1320,32 @@ mod tests {
         assert_eq!(model.current_tab, Tab::Dashboard);
 
         handle_key(&mut model, key(KeyCode::BackTab));
-        assert_eq!(model.current_tab, Tab::Info);
+        assert_eq!(model.current_tab, Tab::EventLog);
+    }
+
+    #[test]
+    fn l_opens_event_log_tab() {
+        let mut model = Model::new();
+        let before = model.event_log.entries.len();
+        handle_key(&mut model, key(KeyCode::Char('l')));
+        assert_eq!(model.current_tab, Tab::EventLog);
+        assert_eq!(model.event_log.entries.len(), before + 1);
+        assert_eq!(
+            model.event_log.entries.back().map(|e| e.summary.as_str()),
+            Some("opened event log tab")
+        );
+    }
+
+    #[test]
+    fn d_toggles_debug_event_filter() {
+        let mut model = Model::new();
+        assert!(!model.event_log.show_debug_events);
+
+        handle_key(&mut model, key(KeyCode::Char('D')));
+        assert!(model.event_log.show_debug_events);
+
+        handle_key(&mut model, key(KeyCode::Char('D')));
+        assert!(!model.event_log.show_debug_events);
     }
 
     #[test]
@@ -899,6 +1365,7 @@ mod tests {
     #[test]
     fn connection_status_update() {
         let mut model = Model::new();
+        let before = model.event_log.entries.len();
         handle_data(
             &mut model,
             DbusUpdate::ConnectionStatus(crate::model::ConnectionStatus::Connected),
@@ -907,11 +1374,21 @@ mod tests {
             model.connection_status,
             crate::model::ConnectionStatus::Connected
         );
+        assert_eq!(model.event_log.entries.len(), before + 1);
+        assert!(
+            model
+                .event_log
+                .entries
+                .back()
+                .map(|e| e.summary.contains("connection status"))
+                .unwrap_or(false)
+        );
     }
 
     #[test]
     fn dashboard_telemetry_updates_model() {
         let mut model = Model::new();
+        let before = model.event_log.entries.len();
         handle_data(
             &mut model,
             DbusUpdate::DashboardTelemetry {
@@ -935,6 +1412,44 @@ mod tests {
         assert_eq!(model.dashboard.speed_history.len(), 1);
         assert_eq!(model.dashboard.cpu_freq_mhz, Some(3200));
         assert_eq!(model.dashboard.active_profile.as_deref(), Some("Office"));
+        assert!(model.event_log.entries.len() > before);
+        assert!(model.event_log.entries.iter().any(|e| {
+            e.summary.contains("fan 1 changed")
+                && e.detail.as_deref().unwrap_or("").contains("cpu temp")
+        }));
+    }
+
+    #[test]
+    fn debug_fan_telemetry_is_recorded_with_filter_off() {
+        let mut model = Model::new();
+        assert!(!model.event_log.show_debug_events);
+        let debug_before = model.event_log.entries.iter().filter(|e| e.debug).count();
+
+        handle_data(
+            &mut model,
+            DbusUpdate::DashboardTelemetry {
+                cpu_temp: Some(60.0),
+                fan_speeds: vec![2100],
+                fan_duties: vec![84],
+                fan_rpm_available: vec![true],
+                power_state: Some("battery".to_string()),
+                cpu_freq_mhz: Some(2800),
+                active_profile: Some("Quiet".to_string()),
+                cpu_load_overall: Some(22.0),
+                cpu_load_per_core: Some(vec![20.0, 24.0]),
+                cpu_freq_per_core: Some(vec![2800, 2750]),
+            },
+        );
+
+        let debug_after = model.event_log.entries.iter().filter(|e| e.debug).count();
+        assert!(debug_after > debug_before);
+        assert!(
+            model
+                .event_log
+                .entries
+                .iter()
+                .any(|e| e.debug && e.summary.contains("fan 1 telemetry"))
+        );
     }
 
     #[test]
@@ -1516,6 +2031,24 @@ mod tests {
         );
         // Form should be marked saved (dirty cleared, snapshot updated).
         assert!(!model.settings.form.dirty);
+        assert!(model.event_log.entries.iter().any(|e| {
+            e.summary == "settings saved" && e.detail.as_deref().unwrap_or("").contains("temp unit")
+        }));
+    }
+
+    #[test]
+    fn charging_saved_logs_profile_values() {
+        let mut model = Model::new();
+        model.current_tab = Tab::Charging;
+        // Set profile to stationary.
+        handle_key(&mut model, key(KeyCode::Right));
+        handle_key(&mut model, key(KeyCode::Right));
+
+        handle_data(&mut model, DbusUpdate::FormSaved("charging".into()));
+        assert!(model.event_log.entries.iter().any(|e| {
+            e.summary == "charging settings saved"
+                && e.detail.as_deref().unwrap_or("").contains("stationary")
+        }));
     }
 
     #[test]

@@ -52,6 +52,7 @@ fn render_tab_content(frame: &mut Frame, area: Rect, model: &Model) {
         Tab::Dashboard => crate::views::dashboard::render(frame, area, &model.dashboard),
         Tab::FanCurve => crate::views::fan_curve::render(frame, area, &model.fan_curve),
         Tab::Info => crate::views::info::render(frame, area, &model.info),
+        Tab::EventLog => crate::views::event_log::render(frame, area, &model.event_log),
         Tab::Profiles => crate::views::profiles::render(frame, area, &model.profiles),
         Tab::Settings => crate::views::settings::render(frame, area, &model.settings),
         Tab::Keyboard => crate::views::keyboard::render(frame, area, &model.keyboard),
@@ -74,6 +75,13 @@ fn render_status_bar(frame: &mut Frame, area: Rect, model: &Model) {
         Span::raw("  "),
         Span::styled("? Help", Style::default().fg(Color::DarkGray)),
         Span::raw("  "),
+        Span::styled("l Event Log", Style::default().fg(Color::DarkGray)),
+        Span::raw("  "),
+        Span::styled(
+            "D Toggle Debug Filter",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw("  "),
         Span::styled("q Quit", Style::default().fg(Color::DarkGray)),
     ]);
 
@@ -91,6 +99,8 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  1–9, 0    Switch to tab"),
         Line::from("  Tab       Next tab"),
         Line::from("  Shift+Tab Previous tab"),
+        Line::from("  l         Open Event Log"),
+        Line::from("  D         Toggle debug log filter"),
         Line::from("  ?         Toggle this help"),
         Line::from("  q         Quit"),
         Line::from(""),

@@ -52,6 +52,7 @@ as bonus stages:
 
 - Stages 1 through 4 are primary and mandatory.
 - Stages 5 and 6 are optional bonus stages and should not block core delivery.
+- Stages 5 and 6 are currently postponed by user decision.
 
 ## Execution Rules
 

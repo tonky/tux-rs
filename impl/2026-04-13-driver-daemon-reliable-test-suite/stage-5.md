@@ -1,5 +1,13 @@
 # Stage 5 (Bonus): TUI Actionable Profile Coverage
 
+## Status
+
+Postponed
+
+## Postponement Note
+
+Deferred by user while focusing on hardware validation of core reliability stages.
+
 ## Objective
 
 As a bonus stage after core reliability delivery, expose all actionable Uniwill

@@ -1,5 +1,13 @@
 # Stage 6 (Bonus): TUI Runtime Controls and Optional API Additions
 
+## Status
+
+Postponed
+
+## Postponement Note
+
+Deferred by user while focusing on hardware validation of core reliability stages.
+
 ## Objective
 
 As a second bonus stage, extend Uniwill TUI runtime controls after core reliability

@@ -38,10 +38,11 @@
 	- hardened capture helper with warning accounting, warning logs, and strict failure mode.
 - Executed full Stage 4 verification (`just fmt`, `just clippy`, `just reliability-test`,
 	`just ci`) in flox environment and validated manual capture+compare flow.
+- Postponed bonus Stage 5 and Stage 6 TUI work by user decision.
 
 ## Notes
 
 - Core delivery is Stages 1-4 (reliability suite).
 - Bonus delivery is Stages 5+ (TUI enhancements).
 - New hardware-control subsystems are excluded from this feature.
-- Next action requires user confirmation before Stage 3 implementation.
+- Next action is hardware validation on real Uniwill device(s) for Stage 1 closeout.

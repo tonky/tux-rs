@@ -6,7 +6,7 @@ Stage 5 (Bonus): TUI Actionable Profile Coverage
 
 ## Status
 
-Pending
+Postponed
 
 ## Checklist
 
@@ -17,8 +17,8 @@ Pending
 
 ## Findings
 
-- Pending
+- Postponed by user while prioritizing hardware validation of Stages 1-4.
 
 ## Follow-up
 
-- Pending
+- Resume only after explicit user request.

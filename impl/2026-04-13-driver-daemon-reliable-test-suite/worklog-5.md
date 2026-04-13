@@ -6,7 +6,7 @@ Stage 5 (Bonus): TUI Actionable Profile Coverage
 
 ## Status
 
-Planned
+Postponed
 
 ## Session Entries
 
@@ -14,4 +14,4 @@ Planned
 
 - Stage plan created.
 - Stage converted to optional bonus scope after primary reliability stages.
-- Awaiting explicit user confirmation before implementation.
+- Postponed by user while moving to hardware validation for core reliability stages.

@@ -6,7 +6,7 @@ Stage 6 (Bonus): TUI Runtime Controls and Optional API Additions
 
 ## Status
 
-Pending
+Postponed
 
 ## Checklist
 
@@ -17,8 +17,8 @@ Pending
 
 ## Findings
 
-- Pending
+- Postponed by user while prioritizing hardware validation of Stages 1-4.
 
 ## Follow-up
 
-- Pending
+- Resume only after explicit user request.

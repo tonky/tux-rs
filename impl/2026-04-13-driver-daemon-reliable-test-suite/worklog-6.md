@@ -6,7 +6,7 @@ Stage 6 (Bonus): TUI Runtime Controls and Optional API Additions
 
 ## Status
 
-Planned
+Postponed
 
 ## Session Entries
 
@@ -14,4 +14,4 @@ Planned
 
 - Stage plan created.
 - Stage marked optional bonus work after core reliability delivery.
-- Awaiting explicit user confirmation before implementation.
+- Postponed by user while moving to hardware validation for core reliability stages.

@@ -1,0 +1,52 @@
+schema_version = 1
+
+[meta]
+fixture_id = "uniwill-ibp16g8-sample-v1"
+platform = "Uniwill"
+product_sku = "IBP16GEN8"
+captured_at = "2026-04-13T00:00:00Z"
+capture_tool_version = "0.1.0"
+capture_source = "manual-sample"
+kernel_release = "6.8.0"
+daemon_version = "0.1.0"
+driver_stack = "tuxedo-drivers"
+
+[raw.sysfs]
+cpu_temp = "45"
+fan1_pwm = "114"
+fan2_pwm = "98"
+fan1_enable = "1"
+fan2_enable = "1"
+charging_profile = "balanced"
+charging_priority = "charge_battery"
+charging_profiles_available = "high_capacity balanced stationary"
+charging_prios_available = "charge_battery performance"
+fn_lock = "0"
+
+[raw.dbus]
+fan_data_0 = "rpm = 0\ntemp_celsius = 45.0\nduty_percent = 57\nrpm_available = false\n"
+fan_data_1 = "rpm = 0\ntemp_celsius = 44.0\nduty_percent = 49\nrpm_available = false\n"
+fan_health = "status = \"ok\"\nconsecutive_failures = 0\n"
+charging_settings = "profile = \"balanced\"\npriority = \"charge_battery\"\n"
+
+[[normalized.fans]]
+index = 0
+temp_celsius = 45.0
+duty_percent = 57
+rpm = 0
+rpm_available = false
+
+[[normalized.fans]]
+index = 1
+temp_celsius = 44.0
+duty_percent = 49
+rpm = 0
+rpm_available = false
+
+[normalized.charging]
+profile = "balanced"
+priority = "charge_battery"
+
+[normalized.health]
+status = "ok"
+consecutive_failures = 0

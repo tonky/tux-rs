@@ -1,0 +1,46 @@
+# Follow-up tasks for 2026-04-13-driver-daemon-reliable-test-suite
+
+[[task]]
+id = "f001"
+title = "Expand fixtures to Clevo and NB05"
+status = "open"
+priority = "medium"
+description = "After Uniwill baseline stabilizes, capture and integrate Clevo and NB05 contract fixtures into the same replay framework."
+context = "Current primary scope is Uniwill-first reliability suite."
+reasoning = "Broadens coverage while reusing the same contract architecture."
+
+[[task]]
+id = "f002"
+title = "Mixed-version compatibility matrix"
+status = "open"
+priority = "high"
+description = "Add explicit tests for daemon/TUI and daemon/fixture version skew across additive fields."
+context = "Contract payloads and fixtures are expected to evolve over time."
+reasoning = "Prevents silent integration regressions during staggered upgrades."
+
+[[task]]
+id = "f003"
+title = "Hardware capture helper hardening"
+status = "open"
+priority = "medium"
+description = "Improve manual capture helpers with stronger validation, anonymization checks, and deterministic output formatting."
+context = "Fixture capture is manual by design and should remain low-friction."
+reasoning = "Reduces fixture review churn and operator error."
+
+[[task]]
+id = "f004"
+title = "Nightly stress regression suite"
+status = "open"
+priority = "low"
+description = "Add longer-running stress tests for retry/degrade/recovery paths outside normal PR latency budget."
+context = "Primary CI remains fast deterministic replay."
+reasoning = "Finds timing-sensitive regressions without slowing developer feedback loops."
+
+[[task]]
+id = "f005"
+title = "Bonus TUI stage scheduling"
+status = "open"
+priority = "low"
+description = "Schedule bonus TUI stages only after core reliability stages are complete and accepted."
+context = "User clarified TUI features are secondary to test-suite reliability."
+reasoning = "Maintains delivery focus and avoids scope creep."

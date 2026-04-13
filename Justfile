@@ -11,6 +11,14 @@ build:
 test:
     cargo test --workspace
 
+# Validate driver-daemon fixture schema (Stage 1 reliability suite)
+fixture-validate:
+    cargo test -p tux-daemon --test fixture_schema
+
+# Capture a Uniwill driver-daemon contract fixture into tmp/
+fixture-capture-uniwill:
+    ./tools/capture-uniwill-contract-fixture.sh
+
 # Run clippy with warnings as errors
 clippy:
     cargo clippy --workspace -- -D warnings

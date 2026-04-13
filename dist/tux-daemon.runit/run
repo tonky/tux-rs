@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runit service script for tux-daemon.
+
+# Wait briefly for the system bus socket to appear to reduce early-boot races.
+tries=0
+while [ ! -S /run/dbus/system_bus_socket ] && [ "$tries" -lt 50 ]; do
+	tries=$((tries + 1))
+	sleep 0.1
+done
+
+exec /usr/bin/tux-daemon

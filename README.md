@@ -37,6 +37,7 @@ just check              # fmt + clippy + test
 just daemon-debug       # stop systemd service, run daemon with debug logging
 just tui                # launch TUI against the running daemon
 just live-test          # regression tests against a live daemon
+just runit-smoke-repeat # run runit/dbus smoke container twice
 ```
 
 ### Individual commands
@@ -119,6 +120,50 @@ sudo cp dist/tux-daemon.dinit /etc/dinit.d/tux-daemon
 sudo dinitctl enable tux-daemon
 sudo dinitctl start tux-daemon
 ```
+
+#### Runit (Artix-runit, Void, etc.)
+
+```sh
+just deploy-runit      # build release (no systemd deps), install to /usr/bin, install + start runit service
+```
+
+Default `just deploy-runit` paths are:
+- service dir: `/etc/sv/tux-daemon`
+- enabled symlink: `/var/service/tux-daemon`
+
+The bundled run script waits briefly for `/run/dbus/system_bus_socket` before
+starting `tux-daemon` to reduce early-boot startup races.
+
+For Artix-runit layouts, override paths:
+
+```sh
+just deploy-runit SERVICE_DIR=/etc/runit/sv/tux-daemon ENABLE_DIR=/run/runit/service/tux-daemon
+```
+
+Or manually:
+```sh
+cargo build --release -p tux-daemon --no-default-features --features tcc-compat
+sudo cp target/release/tux-daemon /usr/bin/tux-daemon
+sudo mkdir -p /etc/sv/tux-daemon
+sudo cp dist/tux-daemon.runit/run /etc/sv/tux-daemon/run
+sudo cp dist/tux-daemon.runit/finish /etc/sv/tux-daemon/finish
+sudo chmod +x /etc/sv/tux-daemon/run /etc/sv/tux-daemon/finish
+sudo ln -sfn /etc/sv/tux-daemon /var/service/tux-daemon
+sudo sv up /var/service/tux-daemon
+```
+
+Troubleshooting:
+```sh
+sudo sv status /var/service/tux-daemon
+sudo sv down /var/service/tux-daemon
+sudo sv up /var/service/tux-daemon
+```
+
+Validation scope note:
+- `just runit-smoke` and `just runit-smoke-repeat` validate runit supervision,
+  dbus service registration, and restart behavior in a container with `--mock`.
+- They do not validate real EC/sysfs hardware behavior; keep real machine checks
+  (especially Artix-runit) as final verification before release.
 
 ### 2. TUI
 

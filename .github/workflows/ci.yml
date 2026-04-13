@@ -28,7 +28,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
-      - name: Check no-systemd build (dinit compatibility)
+      - name: Check no-systemd build (non-systemd compatibility)
         run: |
           cargo check -p tux-daemon --no-default-features --features tcc-compat
           cargo clippy -p tux-daemon --no-default-features --features tcc-compat -- -D warnings
@@ -41,3 +41,18 @@ jobs:
 
       - name: Test (all, including integration)
         run: dbus-run-session -- cargo test --workspace
+
+  runit-smoke:
+    name: Runit Smoke (Container)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build runit smoke image
+        run: docker build -f containers/runit-smoke/Dockerfile -t tux-rs-runit-smoke .
+
+      - name: Run runit smoke (pass 1)
+        run: docker run --rm --name tux-rs-runit-smoke-1 tux-rs-runit-smoke
+
+      - name: Run runit smoke (pass 2)
+        run: docker run --rm --name tux-rs-runit-smoke-2 tux-rs-runit-smoke

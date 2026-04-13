@@ -112,6 +112,32 @@ deploy-dinit:
     sudo cp dist/tux-daemon.dinit /etc/dinit.d/tux-daemon
     sudo dinitctl start tux-daemon
 
+# Rebuild/reinstall daemon and (re)enable runit service.
+# Defaults target common runit layout on Void-like systems.
+# Override paths for Artix, e.g.:
+# just deploy-runit SERVICE_DIR=/etc/runit/sv/tux-daemon ENABLE_DIR=/run/runit/service/tux-daemon
+deploy-runit SERVICE_DIR='/etc/sv/tux-daemon' ENABLE_DIR='/var/service/tux-daemon':
+    cargo build --release -p tux-daemon --no-default-features --features tcc-compat
+    sudo sv down "{{ENABLE_DIR}}" 2>/dev/null || true
+    sudo cp target/release/tux-daemon /usr/bin/tux-daemon
+    sudo mkdir -p "{{SERVICE_DIR}}"
+    sudo cp dist/tux-daemon.runit/run "{{SERVICE_DIR}}/run"
+    sudo cp dist/tux-daemon.runit/finish "{{SERVICE_DIR}}/finish"
+    sudo chmod +x "{{SERVICE_DIR}}/run" "{{SERVICE_DIR}}/finish"
+    sudo ln -sfn "{{SERVICE_DIR}}" "{{ENABLE_DIR}}"
+    sudo sv up "{{ENABLE_DIR}}" 2>/dev/null || true
+
+# Build and run runit smoke container (dbus + daemon --mock + restart assertion).
+runit-smoke:
+    docker build -f containers/runit-smoke/Dockerfile -t tux-rs-runit-smoke .
+    docker run --rm --name tux-rs-runit-smoke tux-rs-runit-smoke
+
+# Run the smoke container twice to catch startup races.
+runit-smoke-repeat:
+    docker build -f containers/runit-smoke/Dockerfile -t tux-rs-runit-smoke .
+    docker run --rm --name tux-rs-runit-smoke-1 tux-rs-runit-smoke
+    docker run --rm --name tux-rs-runit-smoke-2 tux-rs-runit-smoke
+
 # Run live regression test against a running daemon (requires tux-daemon on system or session bus)
 live-test:
     cargo test -p tux-daemon keyboard_state_roundtrip

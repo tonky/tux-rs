@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+echo "container smoke: tux-daemon exited code=$1 signal=$2" >&2
+exit 0

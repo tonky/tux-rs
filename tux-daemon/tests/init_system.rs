@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Returns the workspace root (parent of tux-daemon/).
@@ -176,6 +178,86 @@ fn dinit_service_depends_on_dbus() {
 }
 
 // ---------------------------------------------------------------------------
+// runit
+// ---------------------------------------------------------------------------
+
+fn parse_runit_exec_line(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("exec ") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+#[test]
+fn runit_service_files_exist() {
+    let root = workspace_root().join("dist/tux-daemon.runit");
+    assert!(root.exists(), "dist/tux-daemon.runit must exist");
+    assert!(
+        root.join("run").exists(),
+        "dist/tux-daemon.runit/run must exist"
+    );
+    assert!(
+        root.join("finish").exists(),
+        "dist/tux-daemon.runit/finish must exist"
+    );
+}
+
+#[test]
+fn runit_run_script_execs_daemon() {
+    let path = workspace_root().join("dist/tux-daemon.runit/run");
+    let content = fs::read_to_string(&path).expect("failed to read runit run script");
+
+    assert!(
+        content.lines().next().unwrap_or("").starts_with("#!"),
+        "runit run script should start with a shebang"
+    );
+
+    let exec = parse_runit_exec_line(&content).expect("missing exec line in runit run script");
+    assert!(
+        exec.contains("tux-daemon"),
+        "runit run script should exec tux-daemon, got: {exec}"
+    );
+
+    assert!(
+        content.contains("/run/dbus/system_bus_socket"),
+        "runit run script should guard startup on dbus socket readiness"
+    );
+}
+
+#[test]
+fn runit_finish_script_is_non_empty() {
+    let path = workspace_root().join("dist/tux-daemon.runit/finish");
+    let content = fs::read_to_string(&path).expect("failed to read runit finish script");
+    assert!(
+        !content.trim().is_empty(),
+        "runit finish script should not be empty"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn runit_service_scripts_are_executable() {
+    let run_path = workspace_root().join("dist/tux-daemon.runit/run");
+    let finish_path = workspace_root().join("dist/tux-daemon.runit/finish");
+
+    let run_mode = fs::metadata(run_path).unwrap().permissions().mode();
+    let finish_mode = fs::metadata(finish_path).unwrap().permissions().mode();
+
+    assert_ne!(run_mode & 0o111, 0, "runit run script must be executable");
+    assert_ne!(
+        finish_mode & 0o111,
+        0,
+        "runit finish script must be executable"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Cross-init consistency
 // ---------------------------------------------------------------------------
 
@@ -191,8 +273,15 @@ fn all_init_services_reference_same_binary_path() {
     let dinit = parse_dinit_service(&dinit_content);
     let dinit_cmd = dinit["command"].as_str();
 
+    let runit_content = fs::read_to_string(root.join("tux-daemon.runit/run")).unwrap();
+    let runit_cmd = parse_runit_exec_line(&runit_content).expect("missing runit exec line");
+
     assert_eq!(
         systemd_exec, dinit_cmd,
+        "all init system service files should use the same binary path"
+    );
+    assert_eq!(
+        systemd_exec, runit_cmd,
         "all init system service files should use the same binary path"
     );
 }
@@ -221,6 +310,14 @@ fn all_init_services_depend_on_dbus() {
             .map(|v| v.contains("dbus"))
             .unwrap_or(false),
         "dinit service must depend on dbus"
+    );
+
+    // Runit has no declarative dependency graph; the run script guards
+    // startup on the dbus system bus socket to reduce ordering races.
+    let runit_content = fs::read_to_string(root.join("tux-daemon.runit/run")).unwrap();
+    assert!(
+        runit_content.contains("/run/dbus/system_bus_socket"),
+        "runit run script should gate startup on dbus socket readiness"
     );
 }
 

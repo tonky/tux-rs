@@ -32,6 +32,12 @@
 	- charging settings retry assertions under transient I/O bursts.
 - Ran two independent Stage 3 review passes and applied low-risk helper hardening.
 - Validation completed with flox env: targeted integration pass plus full clippy/test pass.
+- Implemented Stage 4 workflow hardening:
+	- added reliability-focused just targets and explicit reliability gate in CI flows,
+	- documented fixture refresh and drift review process in top-level and fixture docs,
+	- hardened capture helper with warning accounting, warning logs, and strict failure mode.
+- Executed full Stage 4 verification (`just fmt`, `just clippy`, `just reliability-test`,
+	`just ci`) in flox environment and validated manual capture+compare flow.
 
 ## Notes
 

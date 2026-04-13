@@ -10,6 +10,15 @@ ts_file="$(date -u +%Y%m%dT%H%M%SZ)"
 default_out="tmp/uniwill-contract-${ts_file}.toml"
 out_file="${1:-$default_out}"
 
+warning_log="$(dirname "$out_file")/uniwill-capture-${ts_file}.warnings.log"
+: > "$warning_log"
+
+warn() {
+    local msg="[WARN] $*"
+    echo "$msg" >&2
+    echo "$msg" >> "$warning_log"
+}
+
 mkdir -p "$(dirname "$out_file")"
 
 sysfs_base_fan="/sys/devices/platform/tuxedo_uw_fan"
@@ -62,7 +71,7 @@ call_dbus_string() {
                 | sed -E "s/^\('?(.*)'?\)$/\1/" || true)"
         fi
         if [[ -z "$out" ]]; then
-            echo "[WARN] D-Bus call produced empty output: ${iface}.${method}" >&2
+            warn "D-Bus call produced empty output: ${iface}.${method}"
         fi
         printf '%s' "$out"
         return 0
@@ -84,13 +93,13 @@ call_dbus_string() {
                 | sed -E 's/^[a-z]+\s+"(.*)"$/\1/' || true)"
         fi
         if [[ -z "$out" ]]; then
-            echo "[WARN] D-Bus call produced empty output: ${iface}.${method}" >&2
+            warn "D-Bus call produced empty output: ${iface}.${method}"
         fi
         printf '%s' "$out"
         return 0
     fi
 
-    echo "[WARN] Neither gdbus nor busctl is available; skipping ${iface}.${method}" >&2
+    warn "Neither gdbus nor busctl is available; skipping ${iface}.${method}"
     printf ''
 }
 
@@ -102,7 +111,7 @@ if [[ -z "$daemon_version" ]]; then
 fi
 
 if [[ ! -d "$sysfs_base_fan" ]]; then
-    echo "[WARN] ${sysfs_base_fan} does not exist. Capture likely not running on Uniwill fan backend." >&2
+    warn "${sysfs_base_fan} does not exist. Capture likely not running on Uniwill fan backend."
 fi
 
 cpu_temp="$(read_attr "${sysfs_base_fan}/cpu_temp")"
@@ -196,3 +205,20 @@ EOF
 echo "Wrote fixture: $out_file"
 echo "Review and adjust normalized sections before committing if needed."
 echo "Run: just fixture-validate"
+
+warning_count=0
+if [[ -f "$warning_log" ]]; then
+    warning_count="$(wc -l < "$warning_log" | tr -d ' ')"
+fi
+
+if [[ "$warning_count" -gt 0 ]]; then
+    echo "Capture warnings: $warning_count"
+    echo "Warnings log: $warning_log"
+    echo "Use CAPTURE_STRICT=1 to fail the capture when warnings are present."
+    if [[ "${CAPTURE_STRICT:-0}" == "1" ]]; then
+        echo "[ERROR] Capture produced warnings with CAPTURE_STRICT=1" >&2
+        exit 1
+    fi
+else
+    rm -f "$warning_log"
+fi

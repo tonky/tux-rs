@@ -14,7 +14,10 @@ with clear manual hardware refresh procedures.
 ## Target Files
 
 - Justfile
+- .github/workflows/ci.yml
 - README.md
+- tools/capture-uniwill-contract-fixture.sh
+- tux-daemon/tests/fixtures/driver_contract/uniwill/README.md
 - impl/2026-04-13-driver-daemon-reliable-test-suite/worklog-4.md
 - impl/2026-04-13-driver-daemon-reliable-test-suite/review-4.md
 

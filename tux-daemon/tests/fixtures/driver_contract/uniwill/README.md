@@ -63,7 +63,42 @@ Use the capture helper:
 ./tools/capture-uniwill-contract-fixture.sh
 ```
 
+Strict mode (fail capture when warnings are emitted):
+
+```bash
+CAPTURE_STRICT=1 ./tools/capture-uniwill-contract-fixture.sh
+```
+
 This writes a fixture under tmp/ by default. Move reviewed fixtures into this directory.
+
+### Capture + Compare Checklist
+
+1. Capture candidate fixture to `tmp/`.
+2. Compare candidate against canonical fixture using `git diff --no-index`.
+3. Confirm any normalization drift is intentional and documented.
+4. Re-run deterministic contract tests before promotion.
+
+Example compare command:
+
+```bash
+git --no-pager diff --no-index \
+	tux-daemon/tests/fixtures/driver_contract/uniwill/sample-ibp16g8-v1.toml \
+	tmp/uniwill-fixture-*.toml
+```
+
+## Drift Approval Criteria
+
+- Allowed without schema bump:
+	- additive metadata,
+	- capture timestamp/tool version changes,
+	- additive backward-compatible fields with serde defaults.
+- Requires explicit review notes:
+	- changed normalized fan duty/temperature behavior,
+	- changed charging profile/priority semantics,
+	- changed health status mapping or thresholds.
+- Requires schema bump:
+	- removed or renamed fields,
+	- incompatible type changes.
 
 ## Validation
 

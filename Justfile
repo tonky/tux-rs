@@ -15,6 +15,14 @@ test:
 fixture-validate:
     cargo test -p tux-daemon --test fixture_schema
 
+# Validate fixture schema + deterministic replay contracts
+fixture-contract-test:
+    cargo test -p tux-daemon --test fixture_schema --test contract_replay
+
+# Driver-daemon reliability suite (deterministic, CI-safe)
+reliability-test:
+    dbus-run-session -- cargo test -p tux-daemon --test fixture_schema --test contract_replay --test integration
+
 # Capture a Uniwill driver-daemon contract fixture into tmp/
 fixture-capture-uniwill:
     ./tools/capture-uniwill-contract-fixture.sh
@@ -117,4 +125,5 @@ ci:
     cargo clippy --workspace -- -D warnings
     cargo check -p tux-daemon --no-default-features --features tcc-compat
     cargo clippy -p tux-daemon --no-default-features --features tcc-compat -- -D warnings
+    dbus-run-session -- cargo test -p tux-daemon --test fixture_schema --test contract_replay --test integration
     dbus-run-session -- cargo test --workspace

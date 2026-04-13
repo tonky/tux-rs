@@ -241,7 +241,12 @@ async fn fixture_raw_payloads_match_normalized_sections() {
                 .health
                 .as_ref()
                 .unwrap_or_else(|| panic!("missing normalized health in {}", path.display()));
-            assert_eq!(parsed.status, expected.status, "fixture: {}", path.display());
+            assert_eq!(
+                parsed.status,
+                expected.status,
+                "fixture: {}",
+                path.display()
+            );
             assert_eq!(
                 parsed.consecutive_failures,
                 expected.consecutive_failures,
@@ -296,7 +301,9 @@ async fn replay_fixture_matches_dbus_outputs() {
             daemon
                 .fan_backend
                 .write_pwm(fan.index as u8, fan.duty_percent)
-                .unwrap_or_else(|e| panic!("failed writing pwm for fixture {}: {e}", path.display()));
+                .unwrap_or_else(|e| {
+                    panic!("failed writing pwm for fixture {}: {e}", path.display())
+                });
             daemon.fan_backend.set_rpm(fan.index as u8, fan.rpm as u16);
         }
 
@@ -354,7 +361,12 @@ async fn replay_fixture_matches_dbus_outputs() {
             .health
             .as_ref()
             .unwrap_or_else(|| panic!("missing normalized.health in {}", path.display()));
-        assert_eq!(health.status, expected_health.status, "fixture: {}", path.display());
+        assert_eq!(
+            health.status,
+            expected_health.status,
+            "fixture: {}",
+            path.display()
+        );
         assert_eq!(
             health.consecutive_failures,
             expected_health.consecutive_failures,
@@ -365,14 +377,26 @@ async fn replay_fixture_matches_dbus_outputs() {
         let charging_proxy = ChargingProxy::new(&daemon.connection)
             .await
             .unwrap_or_else(|e| {
-                panic!("failed to connect charging proxy for {}: {e}", path.display())
+                panic!(
+                    "failed to connect charging proxy for {}: {e}",
+                    path.display()
+                )
             });
         let charging_toml = charging_proxy
             .get_charging_settings()
             .await
-            .unwrap_or_else(|e| panic!("failed to get charging settings for {}: {e}", path.display()));
-        let charging: ChargingSettings = toml::from_str(&charging_toml)
-            .unwrap_or_else(|e| panic!("failed to parse charging settings for {}: {e}", path.display()));
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to get charging settings for {}: {e}",
+                    path.display()
+                )
+            });
+        let charging: ChargingSettings = toml::from_str(&charging_toml).unwrap_or_else(|e| {
+            panic!(
+                "failed to parse charging settings for {}: {e}",
+                path.display()
+            )
+        });
         let expected_charging = fixture
             .normalized
             .charging

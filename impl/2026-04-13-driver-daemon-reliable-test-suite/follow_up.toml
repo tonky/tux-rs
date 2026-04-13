@@ -71,3 +71,21 @@ priority = "medium"
 description = "Add permanent-failure and partial-read-failure integration coverage for charging settings reads."
 context = "Stage 3 currently covers transient failures that recover within retry budget."
 reasoning = "Improves confidence in fallback and error propagation behavior under harder failure patterns."
+
+[[task]]
+id = "f009"
+title = "Evaluate CI reliability split"
+status = "open"
+priority = "low"
+description = "Evaluate splitting deterministic reliability gate and full workspace test run into separate CI jobs if runtime grows."
+context = "Stage 4 intentionally runs explicit reliability gate plus full workspace tests for visibility."
+reasoning = "Preserves signal quality while allowing future CI runtime optimization."
+
+[[task]]
+id = "f010"
+title = "Schema check for empty raw payloads"
+status = "open"
+priority = "medium"
+description = "Consider enforcing non-empty raw D-Bus fields for manual-hardware captures in fixture schema validation."
+context = "Capture helper now reports warnings and strict mode, but schema currently permits empty payload strings."
+reasoning = "Would prevent accidental promotion of incomplete fixtures."

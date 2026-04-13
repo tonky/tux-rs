@@ -113,13 +113,23 @@ where
     F: Fn(&FanHealthResponse) -> bool,
 {
     let deadline = tokio::time::Instant::now() + timeout;
-    let mut last = parse_fan_health(&proxy.get_fan_health().await.expect("fan health call failed"));
+    let mut last = parse_fan_health(
+        &proxy
+            .get_fan_health()
+            .await
+            .expect("fan health call failed"),
+    );
     if predicate(&last) {
         return last;
     }
 
     while tokio::time::Instant::now() < deadline {
-        let current = parse_fan_health(&proxy.get_fan_health().await.expect("fan health call failed"));
+        let current = parse_fan_health(
+            &proxy
+                .get_fan_health()
+                .await
+                .expect("fan health call failed"),
+        );
         if predicate(&current) {
             return current;
         }
@@ -155,9 +165,10 @@ impl FlakyChargingBackend {
     fn maybe_fail_read(&self) -> io::Result<()> {
         let remaining = self.remaining_read_failures.load(Ordering::Relaxed);
         if remaining > 0 {
-            self.remaining_read_failures
-                .fetch_sub(1, Ordering::Relaxed);
-            return Err(io::Error::other("simulated transient charging read failure"));
+            self.remaining_read_failures.fetch_sub(1, Ordering::Relaxed);
+            return Err(io::Error::other(
+                "simulated transient charging read failure",
+            ));
         }
         Ok(())
     }

@@ -36,5 +36,8 @@ jobs:
       - name: Install dbus
         run: sudo apt-get update -qq && sudo apt-get install -y -qq dbus
 
+      - name: Reliability suite (fixture + integration)
+        run: dbus-run-session -- cargo test -p tux-daemon --test fixture_schema --test contract_replay --test integration
+
       - name: Test (all, including integration)
         run: dbus-run-session -- cargo test --workspace

@@ -175,7 +175,7 @@ impl PowerStateMonitor {
             .watches()
             .add(Path::new("/sys/class/power_supply"), power_dir_watch_mask());
 
-        // The buffer must live as long as the event stream — both are in this scope.
+        // The buffer must live as long as the event stream - both are in this scope.
         let mut buffer = [0u8; 1024];
         let mut inotify = match inotify.into_event_stream(&mut buffer) {
             Ok(stream) => stream,
@@ -210,7 +210,7 @@ impl PowerStateMonitor {
                         Ok(new_state) => {
                             let old_state = *self.state_tx.borrow();
                             if new_state != old_state {
-                                info!("power state changed: {:?} → {:?}", old_state, new_state);
+                                info!("power state changed: {:?} -> {:?}", old_state, new_state);
                                 let _ = self.state_tx.send(new_state);
                             } else {
                                 debug!("power supply event, but state unchanged: {:?}", new_state);
@@ -226,7 +226,7 @@ impl PowerStateMonitor {
                         Ok(new_state) => {
                             let old_state = *self.state_tx.borrow();
                             if new_state != old_state {
-                                info!("power state changed (periodic): {:?} → {:?}", old_state, new_state);
+                                info!("power state changed (periodic): {:?} -> {:?}", old_state, new_state);
                                 let _ = self.state_tx.send(new_state);
                             }
                         }

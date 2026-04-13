@@ -7,11 +7,17 @@
 mod common;
 
 use serial_test::serial;
+use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use tux_core::backend::fan::FanBackend;
+use tux_core::dbus_types::{FanData, FanHealthResponse};
 use tux_core::device_table;
 use tux_core::dmi::{DetectedDevice, DmiInfo};
 use tux_core::fan_curve::FanConfig;
 use tux_core::platform::Platform;
+use tux_core::profile::ChargingSettings;
+use tux_daemon::charging::ChargingBackend;
 use zbus::proxy;
 
 /// D-Bus proxy for the Fan interface.
@@ -25,6 +31,8 @@ trait Fan {
     fn set_auto_mode(&self, fan_index: u32) -> zbus::Result<()>;
     fn get_fan_speed(&self, fan_index: u32) -> zbus::Result<u32>;
     fn get_temperature(&self, sensor_index: u32) -> zbus::Result<i32>;
+    fn get_fan_data(&self, fan_index: u32) -> zbus::Result<String>;
+    fn get_fan_health(&self) -> zbus::Result<String>;
     fn get_active_fan_curve(&self) -> zbus::Result<String>;
     fn set_fan_curve(&self, toml_str: &str) -> zbus::Result<()>;
     fn set_fan_mode(&self, mode: &str) -> zbus::Result<()>;
@@ -82,6 +90,136 @@ trait Settings {
     fn get_capabilities(&self) -> zbus::Result<String>;
 }
 
+/// D-Bus proxy for the Charging interface.
+#[proxy(
+    interface = "com.tuxedocomputers.tccd.Charging",
+    default_service = "com.tuxedocomputers.tccd",
+    default_path = "/com/tuxedocomputers/tccd"
+)]
+trait Charging {
+    fn get_charging_settings(&self) -> zbus::Result<String>;
+}
+
+fn parse_fan_health(toml_str: &str) -> FanHealthResponse {
+    toml::from_str(toml_str).expect("fan health TOML must deserialize")
+}
+
+async fn wait_for_fan_health<F>(
+    proxy: &FanProxy<'_>,
+    timeout: std::time::Duration,
+    predicate: F,
+) -> FanHealthResponse
+where
+    F: Fn(&FanHealthResponse) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last = parse_fan_health(
+        &proxy
+            .get_fan_health()
+            .await
+            .expect("fan health call failed"),
+    );
+    if predicate(&last) {
+        return last;
+    }
+
+    while tokio::time::Instant::now() < deadline {
+        let current = parse_fan_health(
+            &proxy
+                .get_fan_health()
+                .await
+                .expect("fan health call failed"),
+        );
+        if predicate(&current) {
+            return current;
+        }
+        last = current;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    panic!(
+        "timed out waiting for fan health condition; last status={} failures={}",
+        last.status, last.consecutive_failures
+    );
+}
+
+struct FlakyChargingBackend {
+    start: std::sync::Mutex<u8>,
+    end: std::sync::Mutex<u8>,
+    profile: std::sync::Mutex<Option<String>>,
+    priority: std::sync::Mutex<Option<String>>,
+    remaining_read_failures: AtomicU8,
+}
+
+impl FlakyChargingBackend {
+    fn new(start: u8, end: u8, profile: &str, priority: &str, read_failures: u8) -> Self {
+        Self {
+            start: std::sync::Mutex::new(start),
+            end: std::sync::Mutex::new(end),
+            profile: std::sync::Mutex::new(Some(profile.to_string())),
+            priority: std::sync::Mutex::new(Some(priority.to_string())),
+            remaining_read_failures: AtomicU8::new(read_failures),
+        }
+    }
+
+    fn maybe_fail_read(&self) -> io::Result<()> {
+        let remaining = self.remaining_read_failures.load(Ordering::Relaxed);
+        if remaining > 0 {
+            self.remaining_read_failures.fetch_sub(1, Ordering::Relaxed);
+            return Err(io::Error::other(
+                "simulated transient charging read failure",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ChargingBackend for FlakyChargingBackend {
+    fn get_start_threshold(&self) -> io::Result<u8> {
+        self.maybe_fail_read()?;
+        Ok(*self.start.lock().expect("start threshold lock poisoned"))
+    }
+
+    fn set_start_threshold(&self, pct: u8) -> io::Result<()> {
+        *self.start.lock().expect("start threshold lock poisoned") = pct;
+        Ok(())
+    }
+
+    fn get_end_threshold(&self) -> io::Result<u8> {
+        self.maybe_fail_read()?;
+        Ok(*self.end.lock().expect("end threshold lock poisoned"))
+    }
+
+    fn set_end_threshold(&self, pct: u8) -> io::Result<()> {
+        *self.end.lock().expect("end threshold lock poisoned") = pct;
+        Ok(())
+    }
+
+    fn get_profile(&self) -> io::Result<Option<String>> {
+        self.maybe_fail_read()?;
+        Ok(self.profile.lock().expect("profile lock poisoned").clone())
+    }
+
+    fn set_profile(&self, profile: &str) -> io::Result<()> {
+        *self.profile.lock().expect("profile lock poisoned") = Some(profile.to_string());
+        Ok(())
+    }
+
+    fn get_priority(&self) -> io::Result<Option<String>> {
+        self.maybe_fail_read()?;
+        Ok(self
+            .priority
+            .lock()
+            .expect("priority lock poisoned")
+            .clone())
+    }
+
+    fn set_priority(&self, priority: &str) -> io::Result<()> {
+        *self.priority.lock().expect("priority lock poisoned") = Some(priority.to_string());
+        Ok(())
+    }
+}
+
 fn test_device() -> DetectedDevice {
     DetectedDevice {
         descriptor: device_table::fallback_for_platform(Platform::Uniwill),
@@ -95,6 +233,25 @@ fn test_device() -> DetectedDevice {
         },
         exact_match: false,
     }
+}
+
+fn charging_test_device() -> DetectedDevice {
+    if let Some(desc) = device_table::lookup_by_sku("STELLARIS1XI03") {
+        return DetectedDevice {
+            descriptor: desc,
+            dmi: DmiInfo {
+                board_vendor: "TUXEDO".to_string(),
+                board_name: "TEST".to_string(),
+                product_sku: desc.product_sku.to_string(),
+                sys_vendor: "TUXEDO".to_string(),
+                product_name: desc.name.to_string(),
+                product_version: "1.0".to_string(),
+            },
+            exact_match: true,
+        };
+    }
+
+    test_device()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -474,5 +631,107 @@ speed = 100
 
     // Clean up.
     profile_proxy.delete_profile(&profile_id).await.unwrap();
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn fan_health_transitions_and_recovers_under_temp_failures() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = test_device();
+    let daemon = common::TestDaemon::start(&device, profile_dir.path()).await;
+    let proxy = FanProxy::new(&daemon.connection).await.unwrap();
+
+    // Increase tick frequency to make failure-state transitions deterministic and fast.
+    let fast_curve = r#"
+mode = "CustomCurve"
+min_speed_percent = 25
+active_poll_ms = 10
+idle_poll_ms = 10
+hysteresis_degrees = 0
+
+[[curve]]
+temp = 0
+speed = 20
+
+[[curve]]
+temp = 100
+speed = 100
+"#;
+    proxy.set_fan_curve(fast_curve).await.unwrap();
+
+    daemon.fan_backend.set_fail_temp(true);
+
+    let degraded = wait_for_fan_health(&proxy, std::time::Duration::from_secs(2), |h| {
+        h.status == "degraded" && h.consecutive_failures >= 5
+    })
+    .await;
+    let failed = wait_for_fan_health(&proxy, std::time::Duration::from_secs(3), |h| {
+        h.status == "failed" && h.consecutive_failures >= 30
+    })
+    .await;
+    assert!(
+        failed.consecutive_failures >= degraded.consecutive_failures,
+        "failures should keep increasing while temp reads fail"
+    );
+
+    daemon.fan_backend.set_fail_temp(false);
+
+    let recovered = wait_for_fan_health(&proxy, std::time::Duration::from_secs(2), |h| {
+        h.status == "ok" && h.consecutive_failures == 0
+    })
+    .await;
+    assert_eq!(recovered.status, "ok");
+    assert_eq!(recovered.consecutive_failures, 0);
+
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn fan_data_temp_gracefully_degrades_on_temp_read_failure() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = test_device();
+    let daemon = common::TestDaemon::start(&device, profile_dir.path()).await;
+    let proxy = FanProxy::new(&daemon.connection).await.unwrap();
+
+    daemon.fan_backend.set_fail_temp(true);
+    let data_toml = proxy.get_fan_data(0).await.unwrap();
+    let data: FanData = toml::from_str(&data_toml).unwrap();
+
+    assert_eq!(data.temp_celsius, 0.0);
+    assert_eq!(data.rpm, 2400);
+
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn charging_get_settings_retries_transient_read_failures() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = charging_test_device();
+    let backend = Arc::new(FlakyChargingBackend::new(
+        25,
+        80,
+        "balanced",
+        "charge_battery",
+        3,
+    ));
+
+    let daemon = common::TestDaemonBuilder::new(&device, profile_dir.path())
+        .with_charging(backend.clone())
+        .build()
+        .await;
+    let proxy = ChargingProxy::new(&daemon.connection).await.unwrap();
+
+    let settings_toml = proxy.get_charging_settings().await.unwrap();
+    let settings: ChargingSettings = toml::from_str(&settings_toml).unwrap();
+
+    assert_eq!(settings.start_threshold, Some(25));
+    assert_eq!(settings.end_threshold, Some(80));
+    assert_eq!(settings.profile.as_deref(), Some("balanced"));
+    assert_eq!(settings.priority.as_deref(), Some("charge_battery"));
+    assert_eq!(backend.remaining_read_failures.load(Ordering::Relaxed), 0);
+
     daemon.stop().await;
 }

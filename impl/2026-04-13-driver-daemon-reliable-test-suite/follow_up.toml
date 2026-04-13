@@ -1,0 +1,91 @@
+# Follow-up tasks for 2026-04-13-driver-daemon-reliable-test-suite
+
+[[task]]
+id = "f001"
+title = "Expand fixtures to Clevo and NB05"
+status = "open"
+priority = "medium"
+description = "After Uniwill baseline stabilizes, capture and integrate Clevo and NB05 contract fixtures into the same replay framework."
+context = "Current primary scope is Uniwill-first reliability suite."
+reasoning = "Broadens coverage while reusing the same contract architecture."
+
+[[task]]
+id = "f002"
+title = "Mixed-version compatibility matrix"
+status = "open"
+priority = "high"
+description = "Add explicit tests for daemon/TUI and daemon/fixture version skew across additive fields."
+context = "Contract payloads and fixtures are expected to evolve over time."
+reasoning = "Prevents silent integration regressions during staggered upgrades."
+
+[[task]]
+id = "f003"
+title = "Hardware capture helper hardening"
+status = "open"
+priority = "medium"
+description = "Improve manual capture helpers with stronger validation, anonymization checks, and deterministic output formatting."
+context = "Fixture capture is manual by design and should remain low-friction."
+reasoning = "Reduces fixture review churn and operator error."
+
+[[task]]
+id = "f004"
+title = "Nightly stress regression suite"
+status = "open"
+priority = "low"
+description = "Add longer-running stress tests for retry/degrade/recovery paths outside normal PR latency budget."
+context = "Primary CI remains fast deterministic replay."
+reasoning = "Finds timing-sensitive regressions without slowing developer feedback loops."
+
+[[task]]
+id = "f005"
+title = "Bonus TUI stage scheduling"
+status = "open"
+priority = "low"
+description = "Schedule bonus TUI stages only after core reliability stages are complete and accepted."
+context = "User clarified TUI features are secondary to test-suite reliability."
+reasoning = "Maintains delivery focus and avoids scope creep."
+
+[[task]]
+id = "f006"
+title = "Add edge and optional fixture variants"
+status = "open"
+priority = "high"
+description = "Add at least one malformed/missing-optional fixture and one boundary-value fixture for replay/schema coverage."
+context = "Stage 2 replay baseline is correct but still based on a single happy-path fixture."
+reasoning = "Improves confidence before Stage 3 fault-matrix and resilience expansion."
+
+[[task]]
+id = "f007"
+title = "Make charging retries non-blocking"
+status = "open"
+priority = "medium"
+description = "Replace blocking retry wait in charging settings read path with non-blocking async-friendly behavior."
+context = "Current retry loop in charging D-Bus handler uses std::thread::sleep for transient failures."
+reasoning = "Avoid potential event-loop starvation when repeated transient I/O errors occur."
+
+[[task]]
+id = "f008"
+title = "Expand charging failure matrix tests"
+status = "open"
+priority = "medium"
+description = "Add permanent-failure and partial-read-failure integration coverage for charging settings reads."
+context = "Stage 3 currently covers transient failures that recover within retry budget."
+reasoning = "Improves confidence in fallback and error propagation behavior under harder failure patterns."
+
+[[task]]
+id = "f009"
+title = "Evaluate CI reliability split"
+status = "open"
+priority = "low"
+description = "Evaluate splitting deterministic reliability gate and full workspace test run into separate CI jobs if runtime grows."
+context = "Stage 4 intentionally runs explicit reliability gate plus full workspace tests for visibility."
+reasoning = "Preserves signal quality while allowing future CI runtime optimization."
+
+[[task]]
+id = "f010"
+title = "Schema check for empty raw payloads"
+status = "open"
+priority = "medium"
+description = "Consider enforcing non-empty raw D-Bus fields for manual-hardware captures in fixture schema validation."
+context = "Capture helper now reports warnings and strict mode, but schema currently permits empty payload strings."
+reasoning = "Would prevent accidental promotion of incomplete fixtures."

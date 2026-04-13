@@ -48,6 +48,51 @@ just clippy             # lint with warnings as errors
 just fmt                # check formatting
 ```
 
+### Driver <-> Daemon Reliability Suite
+
+These checks are hardware-independent and are meant to be run both locally and in CI.
+
+```sh
+flox activate -- just fixture-contract-test   # schema + deterministic replay contracts
+flox activate -- just reliability-test         # fixture contracts + daemon integration/fault matrix
+flox activate -- just ci                       # full CI-equivalent pipeline
+```
+
+### Fixture Refresh Workflow (Manual Hardware Capture)
+
+1. Capture a candidate fixture from real hardware:
+
+```sh
+flox activate -- just fixture-capture-uniwill
+```
+
+To fail fast when capture warnings occur:
+
+```sh
+CAPTURE_STRICT=1 flox activate -- just fixture-capture-uniwill
+```
+
+2. Compare candidate vs canonical fixture:
+
+```sh
+latest=$(ls -1t tmp/uniwill-contract-*.toml | head -n 1)
+git --no-pager diff --no-index \
+  tux-daemon/tests/fixtures/driver_contract/uniwill/sample-ibp16g8-v1.toml \
+  "$latest"
+```
+
+3. Review drift before promotion:
+- Expected drift: kernel/daemon version fields, timestamp metadata, intentionally changed normalization rules.
+- Unexpected drift: changed fan-duty mapping, health semantics, or charging profile/priority normalization.
+- Any behavior drift must include a short rationale in the stage worklog/review notes.
+
+4. Validate before opening PR:
+
+```sh
+flox activate -- just fixture-contract-test
+flox activate -- just reliability-test
+```
+
 ## Installation
 
 **Prerequisite:** Install [tuxedo-drivers](https://github.com/tuxedocomputers/tuxedo-drivers) for your kernel (available via DKMS or your distro's package manager).

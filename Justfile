@@ -11,6 +11,22 @@ build:
 test:
     cargo test --workspace
 
+# Validate driver-daemon fixture schema (Stage 1 reliability suite)
+fixture-validate:
+    cargo test -p tux-daemon --test fixture_schema
+
+# Validate fixture schema + deterministic replay contracts
+fixture-contract-test:
+    cargo test -p tux-daemon --test fixture_schema --test contract_replay
+
+# Driver-daemon reliability suite (deterministic, CI-safe)
+reliability-test:
+    dbus-run-session -- cargo test -p tux-daemon --test fixture_schema --test contract_replay --test integration
+
+# Capture a Uniwill driver-daemon contract fixture into tmp/
+fixture-capture-uniwill:
+    ./tools/capture-uniwill-contract-fixture.sh
+
 # Run clippy with warnings as errors
 clippy:
     cargo clippy --workspace -- -D warnings
@@ -30,6 +46,7 @@ run-daemon:
 # Run daemon in debug mode (stops systemd service first, runs release build with --debug)
 daemon-debug:
     cargo build --release -p tux-daemon
+    sudo systemctl stop tccd 2>/dev/null || true
     sudo systemctl stop tux-daemon || true
     sudo ./target/release/tux-daemon --debug
 
@@ -60,6 +77,7 @@ install-tui:
 # Rebuild, reinstall and restart the daemon (systemd)
 deploy-daemon:
     cargo build --release -p tux-daemon
+    sudo systemctl stop tccd 2>/dev/null || true
     sudo systemctl stop tux-daemon 2>/dev/null || true
     sudo cp target/release/tux-daemon /usr/bin/tux-daemon
     sudo systemctl start tux-daemon
@@ -67,6 +85,7 @@ deploy-daemon:
 # Rebuild/reinstall daemon and print systemd status + recent journal logs
 deploy-daemon-debug:
     cargo build --release -p tux-daemon
+    sudo systemctl stop tccd 2>/dev/null || true
     sudo systemctl stop tux-daemon 2>/dev/null || true
     sudo cp target/release/tux-daemon /usr/bin/tux-daemon
     sudo systemctl start tux-daemon
@@ -109,4 +128,5 @@ ci:
     cargo clippy --workspace -- -D warnings
     cargo check -p tux-daemon --no-default-features --features tcc-compat
     cargo clippy -p tux-daemon --no-default-features --features tcc-compat -- -D warnings
+    dbus-run-session -- cargo test -p tux-daemon --test fixture_schema --test contract_replay --test integration
     dbus-run-session -- cargo test --workspace

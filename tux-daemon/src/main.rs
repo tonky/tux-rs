@@ -25,6 +25,32 @@ mod tcc_import;
 
 use client_tracker::ClientTracker;
 
+fn emit_startup_detection_diagnostics() {
+    let dmi_source = tux_core::dmi::SysFsDmiSource;
+    let dmi_report = tux_core::dmi::startup_detection_debug_block(&dmi_source);
+    let build_mode = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let argv = std::env::args().collect::<Vec<_>>().join(" ");
+    let report = format!(
+        "daemon.version={}\ndaemon.build_mode={}\ndaemon.argv={}\n{}",
+        tux_core::version(),
+        build_mode,
+        argv,
+        dmi_report
+    );
+    let begin = "BEGIN_TUX_RS_STARTUP_DIAGNOSTICS";
+    let end = "END_TUX_RS_STARTUP_DIAGNOSTICS";
+
+    error!("{begin}\n{report}\n{end}");
+    eprintln!("{begin}");
+    eprintln!("{report}");
+    eprintln!("{end}");
+    eprintln!("If startup fails, copy-paste the diagnostics block above and the full daemon logs.");
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Handle TCC profile/settings import mode (called via pkexec from TCC GUI).
@@ -51,6 +77,12 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+    }
+
+    if std::env::args().any(|a| a == "--dump-startup-diagnostics" || a == "--dump-init-diagnostics")
+    {
+        emit_startup_detection_diagnostics();
+        return Ok(());
     }
 
     let debug_mode = std::env::args().any(|a| a == "--debug" || a == "-d");
@@ -131,7 +163,10 @@ async fn main() -> anyhow::Result<()> {
             }
             Err(e) => {
                 error!("failed to detect device: {e}");
-                anyhow::bail!("cannot detect TUXEDO device: {e}");
+                emit_startup_detection_diagnostics();
+                anyhow::bail!(
+                    "cannot detect TUXEDO device: {e}. Run 'tux-daemon --dump-startup-diagnostics' and include the diagnostics block in your report"
+                );
             }
         }
     };

@@ -1,0 +1,25 @@
+title = "Follow-up tasks for: Issue #8 unknown platform and startup diagnostics"
+
+[[task]]
+id = "f001"
+description = "Validate Issue #8 fix on real InfinityBook Pro 14/15 Gen9 AMD hardware reports."
+status = "open"
+priority = "high"
+context = "Fix is designed from issue-provided DMI data and code-level heuristics."
+reasoning = "Real hardware confirmation is needed before closing the issue."
+
+[[task]]
+id = "f002"
+description = "Assess whether IBP14A09MK1 and IBP15A09MK1 should get explicit device-table entries with tuned capabilities."
+status = "open"
+priority = "medium"
+context = "Fallback descriptors are conservative and may under-report capabilities (fan count, keyboard features)."
+reasoning = "Exact entries improve feature coverage and telemetry fidelity."
+
+[[task]]
+id = "f003"
+description = "Document startup diagnostics copy-paste workflow in README troubleshooting section."
+status = "open"
+priority = "medium"
+context = "Issue triage quality improves when users share structured startup diagnostics."
+reasoning = "Reduces turnaround time for unknown-platform and init failures."

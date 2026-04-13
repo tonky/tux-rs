@@ -157,6 +157,7 @@ impl TestDaemon {
     ///
     /// Creates a mock fan backend, profile store (in a temp dir), and registers
     /// all D-Bus interfaces on the session bus.
+    #[allow(dead_code)]
     pub async fn start(device: &DetectedDevice, profile_dir: &std::path::Path) -> Self {
         Self::start_with_options(device, profile_dir, None).await
     }

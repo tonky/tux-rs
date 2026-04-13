@@ -1,0 +1,52 @@
+schema_version = 1
+
+[meta]
+fixture_id = "uniwill-capture-20260413T182122Z"
+platform = "Uniwill"
+product_sku = "IBP1XI08MK1"
+captured_at = "2026-04-13T18:21:22Z"
+capture_tool_version = "0.1.0"
+capture_source = "manual-hardware"
+kernel_release = "6.17.0-20-generic"
+daemon_version = "0.1.0"
+driver_stack = "tuxedo-drivers"
+
+[raw.sysfs]
+cpu_temp = "56"
+fan1_pwm = "50"
+fan2_pwm = ""
+fan1_enable = ""
+fan2_enable = ""
+charging_profile = "stationary"
+charging_priority = "performance"
+charging_profiles_available = "high_capacity balanced stationary"
+charging_prios_available = "charge_battery performance"
+fn_lock = "1"
+
+[raw.dbus]
+fan_data_0 = "rpm = 0\ntemp_celsius = 56.0\nduty_percent = 66\nrpm_available = false"
+fan_data_1 = "rpm = 0\ntemp_celsius = 56.0\nduty_percent = 66\nrpm_available = false"
+fan_health = "status = \"ok\"\nconsecutive_failures = 0"
+charging_settings = "profile = \"stationary\"\npriority = \"performance\""
+
+[[normalized.fans]]
+index = 0
+temp_celsius = 56.0
+duty_percent = 66
+rpm = 0
+rpm_available = false
+
+[[normalized.fans]]
+index = 1
+temp_celsius = 56.0
+duty_percent = 66
+rpm = 0
+rpm_available = false
+
+[normalized.charging]
+profile = "stationary"
+priority = "performance"
+
+[normalized.health]
+status = "ok"
+consecutive_failures = 0

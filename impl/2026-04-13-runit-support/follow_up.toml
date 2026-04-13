@@ -1,0 +1,20 @@
+[[tasks]]
+description = "Validate runit flow on real Artix-runit hardware"
+status = "todo"
+priority = "high"
+context = "Container smoke tests cannot validate EC and kernel-driver behavior on real hardware."
+reasoning = "Issue reporter uses Artix-runit; final confidence requires real-machine verification."
+
+[[tasks]]
+description = "Evaluate distro-specific runit service path support"
+status = "todo"
+priority = "medium"
+context = "Common layouts include /etc/sv and /etc/runit/sv; deploy helper may need conditional handling."
+reasoning = "Improve portability and reduce manual edits for users across runit distributions."
+
+[[tasks]]
+description = "Consider adding OpenRC after runit baseline"
+status = "todo"
+priority = "low"
+context = "Init-system abstraction now includes systemd, dinit, and planned runit support."
+reasoning = "Potential next portability increment if user demand appears."

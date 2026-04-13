@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runit finish script. Keep output concise for supervise logs.
+
+echo "tux-daemon exited: code=$1 signal=$2" >&2
+exit 0

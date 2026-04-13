@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+# Wait briefly for dbus socket to appear before starting the daemon.
+tries=0
+while [ ! -S /run/dbus/system_bus_socket ] && [ "$tries" -lt 50 ]; do
+    tries=$((tries + 1))
+    sleep 0.1
+done
+
+exec /usr/bin/tux-daemon --mock >>/tmp/tux-daemon-smoke.log 2>&1

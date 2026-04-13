@@ -53,3 +53,21 @@ priority = "high"
 description = "Add at least one malformed/missing-optional fixture and one boundary-value fixture for replay/schema coverage."
 context = "Stage 2 replay baseline is correct but still based on a single happy-path fixture."
 reasoning = "Improves confidence before Stage 3 fault-matrix and resilience expansion."
+
+[[task]]
+id = "f007"
+title = "Make charging retries non-blocking"
+status = "open"
+priority = "medium"
+description = "Replace blocking retry wait in charging settings read path with non-blocking async-friendly behavior."
+context = "Current retry loop in charging D-Bus handler uses std::thread::sleep for transient failures."
+reasoning = "Avoid potential event-loop starvation when repeated transient I/O errors occur."
+
+[[task]]
+id = "f008"
+title = "Expand charging failure matrix tests"
+status = "open"
+priority = "medium"
+description = "Add permanent-failure and partial-read-failure integration coverage for charging settings reads."
+context = "Stage 3 currently covers transient failures that recover within retry budget."
+reasoning = "Improves confidence in fallback and error propagation behavior under harder failure patterns."

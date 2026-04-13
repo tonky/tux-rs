@@ -26,6 +26,12 @@
 	- iterated replay tests over all fixture files in the Uniwill contract directory,
 	- improved panic diagnostics for D-Bus/TOML failure paths.
 - Ran two independent review passes for Stage 2 and folded low-risk improvements into the implementation.
+- Implemented Stage 3 daemon fault-matrix baseline in integration tests:
+	- fan health transition/recovery assertions under injected temp-read failures,
+	- graceful fan telemetry fallback assertions under sensor read failures,
+	- charging settings retry assertions under transient I/O bursts.
+- Ran two independent Stage 3 review passes and applied low-risk helper hardening.
+- Validation completed with flox env: targeted integration pass plus full clippy/test pass.
 
 ## Notes
 

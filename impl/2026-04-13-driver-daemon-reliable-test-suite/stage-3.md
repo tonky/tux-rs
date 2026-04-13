@@ -15,10 +15,8 @@ reliability under failure conditions.
 
 - tux-daemon/tests/common/mod.rs
 - tux-daemon/tests/integration.rs
-- tux-daemon/tests/e2e.rs
-- tux-daemon/src/fan_engine.rs
-- tux-daemon/src/platform/tuxedo_io.rs
-- tux-daemon/src/charging/uniwill.rs
+- impl/2026-04-13-driver-daemon-reliable-test-suite/review-3.md
+- impl/2026-04-13-driver-daemon-reliable-test-suite/worklog-3.md
 
 ## Tasks
 

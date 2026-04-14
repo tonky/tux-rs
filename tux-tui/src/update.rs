@@ -452,20 +452,8 @@ fn handle_profiles_list_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
             }
         }
         KeyCode::Char('c') => {
-            if let Some(profile) = model.profiles.selected_profile().cloned() {
-                // Build copy with current keyboard/display state from the model.
-                let mut copy = profile;
-                copy.id = format!("{}-copy", copy.id);
-                copy.name = format!("{} (Copy)", copy.name);
-                copy.is_default = false;
-
-                // Inherit current keyboard state from Keyboard tab.
-                apply_current_keyboard_to_profile(&model.keyboard.form, &mut copy);
-                // Inherit current display brightness from Display tab.
-                apply_current_display_to_profile(&model.display.form, &mut copy);
-
-                let toml_str = toml::to_string_pretty(&copy).unwrap_or_default();
-                return vec![Command::CreateProfile(toml_str)];
+            if let Some(profile) = model.profiles.selected_profile() {
+                return vec![Command::CopyProfile(profile.id.clone())];
             }
         }
         KeyCode::Char('d') => {
@@ -666,68 +654,6 @@ fn serialize_form_to_toml(form: &crate::model::Form) -> String {
         table.insert(key, value);
     }
     toml::to_string(&table).unwrap_or_default()
-}
-
-/// Copy current keyboard state from the Keyboard tab form into a profile.
-fn apply_current_keyboard_to_profile(
-    kb_form: &crate::model::Form,
-    profile: &mut tux_core::profile::TuxProfile,
-) {
-    use crate::model::FieldType;
-    for field in &kb_form.fields {
-        let key = field.key.clone().unwrap_or_else(|| {
-            field
-                .label
-                .to_lowercase()
-                .replace(' ', "_")
-                .replace("(%)", "percent")
-        });
-        match key.as_str() {
-            "brightness" => {
-                if let FieldType::Number { value, .. } = &field.field_type {
-                    profile.keyboard.brightness = *value as u8;
-                }
-            }
-            "color" => {
-                if let FieldType::Text(v) = &field.field_type {
-                    profile.keyboard.color = v.clone();
-                }
-            }
-            "mode" => {
-                if let FieldType::Text(v) = &field.field_type {
-                    profile.keyboard.mode = v.clone();
-                } else if let FieldType::Select { options, selected } = &field.field_type
-                    && let Some(m) = options.get(*selected)
-                {
-                    profile.keyboard.mode = m.clone();
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Copy current display brightness from the Display tab form into a profile.
-fn apply_current_display_to_profile(
-    display_form: &crate::model::Form,
-    profile: &mut tux_core::profile::TuxProfile,
-) {
-    use crate::model::FieldType;
-    for field in &display_form.fields {
-        let key = field.key.clone().unwrap_or_else(|| {
-            field
-                .label
-                .to_lowercase()
-                .replace(' ', "_")
-                .replace("(%)", "percent")
-        });
-        if key == "brightness"
-            && let FieldType::Number { value, .. } = &field.field_type
-        {
-            let v = *value as u8;
-            profile.display.brightness = if v > 0 { Some(v) } else { None };
-        }
-    }
 }
 
 /// Handle a D-Bus data update.
@@ -1738,7 +1664,7 @@ mod tests {
         model.current_tab = Tab::Profiles;
         model.profiles.profiles = tux_core::profile::builtin_profiles();
         let cmds = handle_key(&mut model, key(KeyCode::Char('c')));
-        assert!(cmds.iter().any(|c| matches!(c, Command::CreateProfile(_))));
+        assert!(cmds.iter().any(|c| matches!(c, Command::CopyProfile(_))));
     }
 
     #[test]

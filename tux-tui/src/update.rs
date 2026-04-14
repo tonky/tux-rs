@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::command::Command;
 use crate::event::DbusUpdate;
-use crate::model::{EventSource, FormTabState, Model, ProfilesMode, ProfilesState, Tab};
+use crate::model::{EventSource, Form, FormTabState, Model, ProfilesMode, ProfilesState, Tab};
 
 /// Handle a key event, returning commands to execute.
 pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
@@ -489,9 +489,20 @@ fn handle_profiles_list_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
 
 /// Keys in profile editor mode.
 fn handle_profiles_editor_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
+    // When a text field is being edited, intercept all keys for inline editing.
+    if let ProfilesMode::Editor { form, .. } = &mut model.profiles.mode
+        && form.is_editing_text()
+    {
+        return handle_text_edit_key(form, key);
+    }
     match key.code {
         KeyCode::Esc => {
             model.profiles.mode = ProfilesMode::List;
+        }
+        KeyCode::Enter => {
+            if let ProfilesMode::Editor { form, .. } = &mut model.profiles.mode {
+                form.start_text_edit();
+            }
         }
         KeyCode::Up => {
             if let ProfilesMode::Editor { form, .. } = &mut model.profiles.mode {
@@ -554,6 +565,21 @@ fn handle_profiles_editor_key(model: &mut Model, key: KeyEvent) -> Vec<Command> 
     vec![]
 }
 
+/// Handle keys while a text field is being edited inline.
+fn handle_text_edit_key(form: &mut Form, key: KeyEvent) -> Vec<Command> {
+    match key.code {
+        KeyCode::Enter => form.confirm_text_edit(),
+        KeyCode::Esc => form.cancel_text_edit(),
+        KeyCode::Backspace => form.text_backspace(),
+        KeyCode::Delete => form.text_delete(),
+        KeyCode::Left => form.text_cursor_left(),
+        KeyCode::Right => form.text_cursor_right(),
+        KeyCode::Char(c) => form.text_input(c),
+        _ => {}
+    }
+    vec![]
+}
+
 /// Generic key handler for form-backed tabs (Settings, Keyboard, Charging, Power, Display).
 fn handle_form_tab_key(
     state: &mut FormTabState,
@@ -564,12 +590,17 @@ fn handle_form_tab_key(
         return vec![];
     }
     state.status_message = None;
+    // Text edit mode intercepts all keys.
+    if state.form.is_editing_text() {
+        return handle_text_edit_key(&mut state.form, key);
+    }
     match key.code {
         KeyCode::Up => state.form.select_prev(),
         KeyCode::Down => state.form.select_next(),
         KeyCode::Left => state.form.adjust(-1),
         KeyCode::Right => state.form.adjust(1),
         KeyCode::Char(' ') => state.form.toggle(),
+        KeyCode::Enter => state.form.start_text_edit(),
         KeyCode::Esc => state.form.discard(),
         KeyCode::Char('s') => {
             if state.form.dirty {
@@ -589,6 +620,9 @@ fn handle_webcam_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         return vec![];
     }
     model.webcam.form_tab.status_message = None;
+    if model.webcam.form_tab.form.is_editing_text() {
+        return handle_text_edit_key(&mut model.webcam.form_tab.form, key);
+    }
     match key.code {
         KeyCode::Up => model.webcam.form_tab.form.select_prev(),
         KeyCode::Down => model.webcam.form_tab.form.select_next(),
@@ -1805,6 +1839,107 @@ mod tests {
 
         handle_key(&mut model, key(KeyCode::Down));
         assert!(model.profiles.status_message.is_none());
+    }
+
+    // ── Text edit tests ──
+
+    /// Helper: set up a model with a custom profile in the editor.
+    fn model_in_custom_profile_editor() -> Model {
+        let mut model = Model::new();
+        model.current_tab = Tab::Profiles;
+        let mut profile = tux_core::profile::builtin_profiles()[0].clone();
+        profile.id = "my-custom".into();
+        profile.name = "My Custom".into();
+        profile.is_default = false;
+        model.profiles.profiles = vec![profile];
+        // Open editor
+        handle_key(&mut model, key(KeyCode::Enter));
+        assert!(matches!(model.profiles.mode, ProfilesMode::Editor { .. }));
+        model
+    }
+
+    #[test]
+    fn text_edit_enter_starts_editing() {
+        let mut model = model_in_custom_profile_editor();
+        // First field is Name (Text). Press Enter to start editing.
+        handle_key(&mut model, key(KeyCode::Enter));
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+            assert!(form.is_editing_text());
+            let edit = form.text_edit.as_ref().unwrap();
+            assert_eq!(edit.buffer, "My Custom");
+        } else {
+            panic!("expected editor mode");
+        }
+    }
+
+    #[test]
+    fn text_edit_type_and_confirm() {
+        let mut model = model_in_custom_profile_editor();
+        handle_key(&mut model, key(KeyCode::Enter)); // start editing Name
+        handle_key(&mut model, key(KeyCode::Char('!'))); // type a char
+        handle_key(&mut model, key(KeyCode::Enter)); // confirm
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+            assert!(!form.is_editing_text());
+            assert!(form.dirty);
+            if let crate::model::FieldType::Text(ref s) = form.fields[0].field_type {
+                assert_eq!(s, "My Custom!");
+            } else {
+                panic!("expected Text field");
+            }
+        }
+    }
+
+    #[test]
+    fn text_edit_esc_cancels() {
+        let mut model = model_in_custom_profile_editor();
+        handle_key(&mut model, key(KeyCode::Enter)); // start editing
+        handle_key(&mut model, key(KeyCode::Char('X'))); // type
+        handle_key(&mut model, key(KeyCode::Esc)); // cancel
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+            assert!(!form.is_editing_text());
+            assert!(!form.dirty);
+            if let crate::model::FieldType::Text(ref s) = form.fields[0].field_type {
+                assert_eq!(s, "My Custom"); // unchanged
+            }
+        }
+    }
+
+    #[test]
+    fn text_edit_backspace() {
+        let mut model = model_in_custom_profile_editor();
+        handle_key(&mut model, key(KeyCode::Enter));
+        handle_key(&mut model, key(KeyCode::Backspace));
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+            let edit = form.text_edit.as_ref().unwrap();
+            assert_eq!(edit.buffer, "My Custo");
+        }
+    }
+
+    #[test]
+    fn text_edit_cursor_movement() {
+        let mut model = model_in_custom_profile_editor();
+        handle_key(&mut model, key(KeyCode::Enter));
+        // Cursor starts at end (9). Move left, type character.
+        handle_key(&mut model, key(KeyCode::Left));
+        handle_key(&mut model, key(KeyCode::Char('Z')));
+        handle_key(&mut model, key(KeyCode::Enter)); // confirm
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+            if let crate::model::FieldType::Text(ref s) = form.fields[0].field_type {
+                assert_eq!(s, "My CustoZm");
+            }
+        }
+    }
+
+    #[test]
+    fn text_edit_on_non_text_field_is_noop() {
+        let mut model = model_in_custom_profile_editor();
+        // Move to a non-text field (e.g., Fan Control = Bool)
+        handle_key(&mut model, key(KeyCode::Down)); // Description
+        handle_key(&mut model, key(KeyCode::Down)); // Fan Control (Bool)
+        handle_key(&mut model, key(KeyCode::Enter)); // try to start text edit
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+            assert!(!form.is_editing_text());
+        }
     }
 
     // ── Form-backed tab tests ──

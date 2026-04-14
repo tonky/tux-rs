@@ -218,6 +218,26 @@ impl FanCurveEngine {
         )
     }
 
+    /// Create an engine wired to a manual-PWM watch channel without hwmon CPU
+    /// temperature discovery.
+    ///
+    /// This is intended for deterministic integration tests where the backend
+    /// controls the temperature source and host hwmon devices must not affect
+    /// fan-health transitions.
+    pub fn new_with_manual_pwms_no_hwmon(
+        backend: Arc<dyn FanBackend>,
+        config_rx: watch::Receiver<FanConfig>,
+        manual_pwms_rx: watch::Receiver<Vec<u8>>,
+    ) -> Self {
+        Self::new_with_manual_pwms_and_cpu_load_source(
+            backend,
+            config_rx,
+            manual_pwms_rx,
+            Box::new(SamplerCpuLoadSource::system()),
+            Box::new(HwmonCpuTempSource::new(Path::new("/nonexistent"))),
+        )
+    }
+
     fn new_with_manual_pwms_and_cpu_load_source(
         backend: Arc<dyn FanBackend>,
         config_rx: watch::Receiver<FanConfig>,

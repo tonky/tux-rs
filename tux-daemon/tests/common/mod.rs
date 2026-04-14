@@ -212,8 +212,11 @@ impl TestDaemon {
         // Start fan engine and extract its failure counter before moving it.
         let engine_backend = fan_backend.clone() as Arc<dyn FanBackend>;
         let (manual_pwms_tx, manual_pwms_rx) = watch::channel(Vec::<u8>::new());
-        let mut engine =
-            FanCurveEngine::new_with_manual_pwms(engine_backend, config_rx.clone(), manual_pwms_rx);
+        let mut engine = FanCurveEngine::new_with_manual_pwms_no_hwmon(
+            engine_backend,
+            config_rx.clone(),
+            manual_pwms_rx,
+        );
         let fan_failure_counter = engine.failure_counter();
         let engine_shutdown = shutdown_tx.subscribe();
         let engine_handle = tokio::spawn(async move {

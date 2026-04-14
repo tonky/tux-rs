@@ -77,6 +77,13 @@
 	- unplugged state now initializes and reports correctly as `Battery`,
 	- D-Bus `System.GetPowerState` matches sysfs (`AC0 online=0`, `BAT0 Discharging`).
 - Postponed bonus Stage 5 and Stage 6 TUI work by user decision.
+- Fixed a daemon integration regression introduced by CPU hwmon fan-engine hardening:
+	- integration `TestDaemon` was constructing `FanCurveEngine` with host hwmon temperature discovery enabled,
+	- `fan_health_transitions_and_recovers_under_temp_failures` could therefore read real host CPU temps instead of the mock fan backend,
+	- added a deterministic `new_with_manual_pwms_no_hwmon` constructor and switched the integration harness to use it.
+- Re-validated after the harness fix:
+	- targeted failing integration test now passes,
+	- full `just check` passes again.
 
 ## Notes
 

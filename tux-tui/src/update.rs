@@ -9,6 +9,22 @@ use crate::model::{EventSource, Form, FormTabState, Model, ProfilesMode, Profile
 /// Handle a key event, returning commands to execute.
 pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     model.needs_render = true;
+
+    // Ctrl+C always quits, even during inline text editing.
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        model.should_quit = true;
+        let cmds = vec![Command::Quit];
+        log_commands(model, &cmds);
+        return cmds;
+    }
+
+    // While editing text inline, suppress global shortcuts (q/tab/number tabs/etc.).
+    if is_inline_text_edit_active(model) {
+        let cmds = dispatch_tab_key(model, key);
+        log_commands(model, &cmds);
+        return cmds;
+    }
+
     // Global key bindings (always active).
     match key.code {
         KeyCode::Char('q') => {
@@ -101,16 +117,14 @@ pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         _ => {}
     }
 
-    // Ctrl+C also quits.
-    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        model.should_quit = true;
-        let cmds = vec![Command::Quit];
-        log_commands(model, &cmds);
-        return cmds;
-    }
-
     // Tab-specific key handling.
-    let cmds = match model.current_tab {
+    let cmds = dispatch_tab_key(model, key);
+    log_commands(model, &cmds);
+    cmds
+}
+
+fn dispatch_tab_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
+    match model.current_tab {
         Tab::FanCurve => handle_fan_curve_key(model, key),
         Tab::Profiles => handle_profiles_key(model, key),
         Tab::Settings => handle_form_tab_key(&mut model.settings, key, Command::SaveSettings),
@@ -120,9 +134,26 @@ pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         Tab::Display => handle_form_tab_key(&mut model.display, key, Command::SaveDisplay),
         Tab::Webcam => handle_webcam_key(model, key),
         _ => vec![],
-    };
-    log_commands(model, &cmds);
-    cmds
+    }
+}
+
+fn is_inline_text_edit_active(model: &Model) -> bool {
+    match model.current_tab {
+        Tab::Profiles => {
+            if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+                form.is_editing_text()
+            } else {
+                false
+            }
+        }
+        Tab::Settings => model.settings.form.is_editing_text(),
+        Tab::Keyboard => model.keyboard.form.is_editing_text(),
+        Tab::Charging => model.charging.form.is_editing_text(),
+        Tab::Power => model.power.form_tab.form.is_editing_text(),
+        Tab::Display => model.display.form.is_editing_text(),
+        Tab::Webcam => model.webcam.form_tab.form.is_editing_text(),
+        _ => false,
+    }
 }
 
 fn log_commands(model: &mut Model, cmds: &[Command]) {
@@ -1886,6 +1917,38 @@ mod tests {
             } else {
                 panic!("expected Text field");
             }
+        }
+    }
+
+    #[test]
+    fn text_edit_q_does_not_trigger_quit_hotkey() {
+        let mut model = model_in_custom_profile_editor();
+        handle_key(&mut model, key(KeyCode::Enter)); // start editing Name
+        handle_key(&mut model, key(KeyCode::Char('q')));
+
+        assert!(!model.should_quit);
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+            assert!(form.is_editing_text());
+            let edit = form.text_edit.as_ref().unwrap();
+            assert!(edit.buffer.ends_with('q'));
+        } else {
+            panic!("expected editor mode");
+        }
+    }
+
+    #[test]
+    fn text_edit_number_does_not_switch_tab() {
+        let mut model = model_in_custom_profile_editor();
+        handle_key(&mut model, key(KeyCode::Enter)); // start editing Name
+        handle_key(&mut model, key(KeyCode::Char('1')));
+
+        assert_eq!(model.current_tab, Tab::Profiles);
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+            assert!(form.is_editing_text());
+            let edit = form.text_edit.as_ref().unwrap();
+            assert!(edit.buffer.ends_with('1'));
+        } else {
+            panic!("expected editor mode");
         }
     }
 

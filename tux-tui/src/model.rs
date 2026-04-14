@@ -927,6 +927,15 @@ pub struct Form {
     pub dirty: bool,
     /// Snapshot for reset on Esc.
     original_values: Vec<FieldType>,
+    /// When editing a Text field: buffer + cursor position.
+    pub text_edit: Option<TextEditState>,
+}
+
+/// Inline text-editing state for a single Text field.
+#[derive(Debug, Clone)]
+pub struct TextEditState {
+    pub buffer: String,
+    pub cursor: usize,
 }
 
 /// A single field in a form.
@@ -966,6 +975,7 @@ impl Form {
             selected_index: 0,
             dirty: false,
             original_values,
+            text_edit: None,
         }
     }
 
@@ -1066,6 +1076,108 @@ impl Form {
     pub fn mark_saved(&mut self) {
         self.original_values = self.fields.iter().map(|f| f.field_type.clone()).collect();
         self.dirty = false;
+    }
+
+    /// Whether a text field is currently being edited inline.
+    pub fn is_editing_text(&self) -> bool {
+        self.text_edit.is_some()
+    }
+
+    /// Enter text-edit mode on the selected field (if it's a Text field).
+    pub fn start_text_edit(&mut self) {
+        if let Some(field) = self.fields.get(self.selected_index) {
+            if !field.enabled {
+                return;
+            }
+            if let FieldType::Text(ref s) = field.field_type {
+                let buf = s.clone();
+                let cursor = buf.len();
+                self.text_edit = Some(TextEditState {
+                    buffer: buf,
+                    cursor,
+                });
+            }
+        }
+    }
+
+    /// Confirm text edit: write buffer back to the field.
+    pub fn confirm_text_edit(&mut self) {
+        if let Some(state) = self.text_edit.take()
+            && let Some(field) = self.fields.get_mut(self.selected_index)
+            && let FieldType::Text(ref mut s) = field.field_type
+            && *s != state.buffer
+        {
+            *s = state.buffer;
+            self.dirty = true;
+        }
+    }
+
+    /// Cancel text edit: discard buffer.
+    pub fn cancel_text_edit(&mut self) {
+        self.text_edit = None;
+    }
+
+    /// Insert a character at the cursor position.
+    pub fn text_input(&mut self, c: char) {
+        if let Some(ref mut state) = self.text_edit {
+            state.buffer.insert(state.cursor, c);
+            state.cursor += c.len_utf8();
+        }
+    }
+
+    /// Delete the character before the cursor.
+    pub fn text_backspace(&mut self) {
+        if let Some(ref mut state) = self.text_edit
+            && state.cursor > 0
+        {
+            let prev = state.buffer[..state.cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            state.buffer.drain(prev..state.cursor);
+            state.cursor = prev;
+        }
+    }
+
+    /// Delete the character at the cursor.
+    pub fn text_delete(&mut self) {
+        if let Some(ref mut state) = self.text_edit
+            && state.cursor < state.buffer.len()
+        {
+            let next = state.buffer[state.cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| state.cursor + i)
+                .unwrap_or(state.buffer.len());
+            state.buffer.drain(state.cursor..next);
+        }
+    }
+
+    /// Move cursor left within the text edit buffer.
+    pub fn text_cursor_left(&mut self) {
+        if let Some(ref mut state) = self.text_edit
+            && state.cursor > 0
+        {
+            state.cursor = state.buffer[..state.cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        }
+    }
+
+    /// Move cursor right within the text edit buffer.
+    pub fn text_cursor_right(&mut self) {
+        if let Some(ref mut state) = self.text_edit
+            && state.cursor < state.buffer.len()
+        {
+            state.cursor = state.buffer[state.cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| state.cursor + i)
+                .unwrap_or(state.buffer.len());
+        }
     }
 }
 

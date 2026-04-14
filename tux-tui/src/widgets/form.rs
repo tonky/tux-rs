@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::model::{FieldType, Form};
+use crate::model::{FieldType, Form, TextEditState};
 
 /// Render a form within the given area.
 #[allow(dead_code)]
@@ -42,26 +42,42 @@ pub fn render(frame: &mut Frame, area: Rect, form: &Form, title: &str) {
 
     for (chunk_i, &(orig_i, field)) in visible_fields.iter().enumerate() {
         let is_selected = orig_i == form.selected_index;
-        let line = render_field_line(field, is_selected);
+        let text_edit = if is_selected {
+            form.text_edit.as_ref()
+        } else {
+            None
+        };
+        let line = render_field_line(field, is_selected, text_edit);
         frame.render_widget(Paragraph::new(line), chunks[chunk_i]);
     }
 
-    // Footer: save/discard hints.
+    // Footer: save/discard hints (or text-edit hints).
     let footer_idx = visible_fields.len();
     if footer_idx < chunks.len() {
-        let dirty_marker = if form.dirty { " (modified)" } else { "" };
-        let footer = Line::from(vec![
-            Span::styled(
-                "  [s] Save   [Esc] Discard",
+        let footer = if form.is_editing_text() {
+            Line::from(vec![Span::styled(
+                "  [Enter] Confirm   [Esc] Cancel",
                 Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(dirty_marker, Style::default().fg(Color::Yellow)),
-        ]);
+            )])
+        } else {
+            let dirty_marker = if form.dirty { " (modified)" } else { "" };
+            Line::from(vec![
+                Span::styled(
+                    "  [s] Save   [Esc] Discard   [Enter] Edit text",
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(dirty_marker, Style::default().fg(Color::Yellow)),
+            ])
+        };
         frame.render_widget(Paragraph::new(footer), chunks[footer_idx]);
     }
 }
 
-fn render_field_line(field: &crate::model::FormField, selected: bool) -> Line<'static> {
+fn render_field_line(
+    field: &crate::model::FormField,
+    selected: bool,
+    text_edit: Option<&TextEditState>,
+) -> Line<'static> {
     let label_style = if !field.enabled {
         Style::default().fg(Color::DarkGray)
     } else if selected {
@@ -76,7 +92,15 @@ fn render_field_line(field: &crate::model::FormField, selected: bool) -> Line<'s
     let label = format!("{pointer}{:<20}", field.label);
 
     let value_str = match &field.field_type {
-        FieldType::Text(s) => format!("[{s}]"),
+        FieldType::Text(s) => {
+            if let (true, Some(edit)) = (selected, text_edit) {
+                // Show buffer with cursor.
+                let (before, after) = edit.buffer.split_at(edit.cursor);
+                format!("[{before}▏{after}]")
+            } else {
+                format!("[{s}]")
+            }
+        }
         FieldType::Number { value, .. } => format!("[{value:>5}]"),
         FieldType::Bool(b) => {
             if *b {
@@ -110,7 +134,7 @@ mod tests {
             field_type: FieldType::Bool(true),
             enabled: true,
         };
-        let line = render_field_line(&field, false);
+        let line = render_field_line(&field, false, None);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("✓"));
     }
@@ -128,7 +152,7 @@ mod tests {
             },
             enabled: true,
         };
-        let line = render_field_line(&field, true);
+        let line = render_field_line(&field, true, None);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("42"));
         assert!(text.contains("▸"));
@@ -142,7 +166,7 @@ mod tests {
             field_type: FieldType::Bool(false),
             enabled: false,
         };
-        let line = render_field_line(&field, false);
+        let line = render_field_line(&field, false, None);
         // Check that the style is DarkGray for disabled.
         assert_eq!(line.spans[0].style.fg, Some(Color::DarkGray));
     }

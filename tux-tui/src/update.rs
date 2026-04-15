@@ -2029,10 +2029,10 @@ mod tests {
         handle_key(&mut model, key(KeyCode::Left));
         handle_key(&mut model, key(KeyCode::Char('Z')));
         handle_key(&mut model, key(KeyCode::Enter)); // confirm
-        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
-            if let crate::model::FieldType::Text(ref s) = form.fields[0].field_type {
-                assert_eq!(s, "My CustoZm");
-            }
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode
+            && let crate::model::FieldType::Text(ref s) = form.fields[0].field_type
+        {
+            assert_eq!(s, "My CustoZm");
         }
     }
 

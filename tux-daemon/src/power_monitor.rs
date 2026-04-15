@@ -3,6 +3,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+use futures_util::StreamExt;
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, info, warn};
 

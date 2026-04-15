@@ -4,21 +4,30 @@ mod common;
 
 use serial_test::serial;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use tux_core::backend::fan::FanBackend;
 use tux_core::dbus_types::{FanData, FanHealthResponse};
+#[cfg(target_os = "linux")]
 use tux_core::device::DeviceDescriptor;
+#[cfg(target_os = "linux")]
 use tux_core::device_table;
+#[cfg(target_os = "linux")]
 use tux_core::dmi::{DetectedDevice, DmiInfo};
+#[cfg(target_os = "linux")]
 use tux_core::platform::Platform;
+#[cfg(target_os = "linux")]
 use tux_core::profile::ChargingSettings;
 use zbus::proxy;
 
+#[cfg(target_os = "linux")]
 use common::{MockChargingBackend, TestDaemonBuilder};
 
 const FIXTURE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct Fixture {
     schema_version: u32,
     meta: FixtureMeta,
@@ -27,17 +36,20 @@ struct Fixture {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct FixtureMeta {
     product_sku: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct FixtureRaw {
     sysfs: std::collections::BTreeMap<String, String>,
     dbus: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct FixtureNormalized {
     fans: Vec<FixtureFan>,
     charging: Option<FixtureCharging>,
@@ -45,6 +57,7 @@ struct FixtureNormalized {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct FixtureFan {
     index: u32,
     temp_celsius: f32,
@@ -54,12 +67,14 @@ struct FixtureFan {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct FixtureCharging {
     profile: Option<String>,
     priority: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct FixtureHealth {
     status: String,
     consecutive_failures: u32,
@@ -122,6 +137,7 @@ fn load_fixture(path: &Path) -> Fixture {
     fixture
 }
 
+#[cfg(target_os = "linux")]
 fn make_detected_device(descriptor: &'static DeviceDescriptor) -> DetectedDevice {
     DetectedDevice {
         descriptor,
@@ -137,6 +153,7 @@ fn make_detected_device(descriptor: &'static DeviceDescriptor) -> DetectedDevice
     }
 }
 
+#[cfg(target_os = "linux")]
 fn replay_device_from_fixture(fixture: &Fixture) -> DetectedDevice {
     let required_fans = fixture
         .normalized

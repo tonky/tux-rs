@@ -147,6 +147,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         assignments_rx.clone(),
         applier,
         power_rx.clone(),
+        daemon_config.clone(),
     );
 
     let settings_iface = SettingsInterface::new(

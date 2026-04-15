@@ -9,7 +9,6 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::model::{FieldType, Form, TextEditState};
 
 /// Render a form within the given area.
-#[allow(dead_code)]
 pub fn render(frame: &mut Frame, area: Rect, form: &Form, title: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -130,7 +129,7 @@ mod tests {
     fn render_field_line_bool_true() {
         let field = FormField {
             label: "Enabled".into(),
-            key: None,
+            key: "enabled".into(),
             field_type: FieldType::Bool(true),
             enabled: true,
         };
@@ -143,7 +142,7 @@ mod tests {
     fn render_field_line_number() {
         let field = FormField {
             label: "Speed".into(),
-            key: None,
+            key: "speed".into(),
             field_type: FieldType::Number {
                 value: 42,
                 min: 0,
@@ -162,7 +161,7 @@ mod tests {
     fn render_field_line_disabled() {
         let field = FormField {
             label: "Locked".into(),
-            key: None,
+            key: "locked".into(),
             field_type: FieldType::Bool(false),
             enabled: false,
         };

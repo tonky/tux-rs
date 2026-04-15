@@ -60,7 +60,9 @@ impl KeyboardLed for MockKeyboard {
 
 /// A test daemon running on the session bus with mock backends.
 pub struct TestDaemon {
+    #[allow(dead_code)]
     pub connection: Connection,
+    #[allow(dead_code)]
     pub fan_backend: Arc<MockFanBackend>,
     shutdown_tx: broadcast::Sender<()>,
     engine_handle: Option<tokio::task::JoinHandle<()>>,
@@ -258,6 +260,7 @@ impl TestDaemon {
     }
 
     /// Gracefully shut down the test daemon.
+    #[allow(dead_code)]
     pub async fn stop(mut self) {
         let _ = self.shutdown_tx.send(());
         if let Some(handle) = self.engine_handle.take() {

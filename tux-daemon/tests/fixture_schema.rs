@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tux_core::dbus_types::{FanData, FanHealthResponse};
@@ -90,7 +90,7 @@ fn parse_fixture(path: &PathBuf) -> Fixture {
         .unwrap_or_else(|e| panic!("failed to parse fixture {}: {e}", path.display()))
 }
 
-fn require_non_empty(value: &str, field: &str, path: &PathBuf) {
+fn require_non_empty(value: &str, field: &str, path: &Path) {
     assert!(
         !value.trim().is_empty(),
         "{} must be non-empty in {}",
@@ -99,7 +99,7 @@ fn require_non_empty(value: &str, field: &str, path: &PathBuf) {
     );
 }
 
-fn parse_required_i32(raw: &BTreeMap<String, String>, key: &str, path: &PathBuf) -> i32 {
+fn parse_required_i32(raw: &BTreeMap<String, String>, key: &str, path: &Path) -> i32 {
     let value = raw
         .get(key)
         .unwrap_or_else(|| panic!("missing raw.sysfs key '{}' in {}", key, path.display()));

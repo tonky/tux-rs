@@ -6,6 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tux_core::fan_curve::FanCurvePoint;
 use tux_core::profile::TuxProfile;
 
+use crate::bounded_index::BoundedIndex;
+
 /// Which tab is currently active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -100,6 +102,8 @@ pub struct Model {
     pub display: FormTabState,
     pub webcam: WebcamState,
     pub event_log: EventLogState,
+    /// Which tab is currently performing an inline text edit.
+    pub editing_text_in: Option<Tab>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,7 +247,7 @@ pub struct ProfileAssignments {
 /// Profiles tab state.
 pub struct ProfilesState {
     pub profiles: Vec<TuxProfile>,
-    pub selected_index: usize,
+    pub selected_index: BoundedIndex,
     pub assignments: ProfileAssignments,
     pub mode: ProfilesMode,
     /// Status message shown briefly after operations.
@@ -260,7 +264,7 @@ impl ProfilesState {
     pub fn new() -> Self {
         Self {
             profiles: Vec::new(),
-            selected_index: 0,
+            selected_index: BoundedIndex::default(),
             assignments: ProfileAssignments::default(),
             mode: ProfilesMode::List,
             status_message: None,
@@ -269,22 +273,17 @@ impl ProfilesState {
 
     /// Select the next profile in list.
     pub fn select_next(&mut self) {
-        if !self.profiles.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.profiles.len();
-        }
+        self.selected_index.next(self.profiles.len());
     }
 
     /// Select the previous profile in list.
     pub fn select_prev(&mut self) {
-        if !self.profiles.is_empty() {
-            self.selected_index =
-                (self.selected_index + self.profiles.len() - 1) % self.profiles.len();
-        }
+        self.selected_index.prev(self.profiles.len());
     }
 
     /// Get the currently selected profile.
     pub fn selected_profile(&self) -> Option<&TuxProfile> {
-        self.profiles.get(self.selected_index)
+        self.profiles.get(self.selected_index.get())
     }
 
     /// Build a Form from a TuxProfile for editing.
@@ -293,26 +292,26 @@ impl ProfilesState {
         let fields = vec![
             FormField {
                 label: "Name".into(),
-                key: None,
+                key: "name".into(),
                 field_type: FieldType::Text(profile.name.clone()),
                 enabled: !read_only,
             },
             FormField {
                 label: "Description".into(),
-                key: None,
+                key: "description".into(),
                 field_type: FieldType::Text(profile.description.clone()),
                 enabled: !read_only,
             },
             // ── Fan Settings ──
             FormField {
                 label: "Fan Control".into(),
-                key: None,
+                key: "fan_control".into(),
                 field_type: FieldType::Bool(profile.fan.enabled),
                 enabled: !read_only,
             },
             FormField {
                 label: "Fan Mode".into(),
-                key: None,
+                key: "fan_mode".into(),
                 field_type: FieldType::Select {
                     options: vec!["Auto".into(), "CustomCurve".into(), "Manual".into()],
                     selected: match profile.fan.mode {
@@ -325,7 +324,7 @@ impl ProfilesState {
             },
             FormField {
                 label: "Min Speed (%)".into(),
-                key: None,
+                key: "min_speed_percent".into(),
                 field_type: FieldType::Number {
                     value: profile.fan.min_speed_percent as i64,
                     min: 0,
@@ -336,7 +335,7 @@ impl ProfilesState {
             },
             FormField {
                 label: "Max Speed (%)".into(),
-                key: None,
+                key: "max_speed_percent".into(),
                 field_type: FieldType::Number {
                     value: profile.fan.max_speed_percent as i64,
                     min: 0,
@@ -348,7 +347,7 @@ impl ProfilesState {
             // ── CPU Settings ──
             FormField {
                 label: "Governor".into(),
-                key: None,
+                key: "governor".into(),
                 field_type: FieldType::Select {
                     options: vec!["powersave".into(), "schedutil".into(), "performance".into()],
                     selected: match profile.cpu.governor.as_str() {
@@ -361,7 +360,7 @@ impl ProfilesState {
             },
             FormField {
                 label: "Energy Pref".into(),
-                key: None,
+                key: "energy_pref".into(),
                 field_type: FieldType::Select {
                     options: vec![
                         "power".into(),
@@ -385,14 +384,14 @@ impl ProfilesState {
             },
             FormField {
                 label: "No Turbo".into(),
-                key: None,
+                key: "no_turbo".into(),
                 field_type: FieldType::Bool(profile.cpu.no_turbo),
                 enabled: !read_only,
             },
             // ── Keyboard ──
             FormField {
                 label: "KB Brightness (%)".into(),
-                key: None,
+                key: "kb_brightness_percent".into(),
                 field_type: FieldType::Number {
                     value: profile.keyboard.brightness as i64,
                     min: 0,
@@ -403,13 +402,13 @@ impl ProfilesState {
             },
             FormField {
                 label: "KB Color".into(),
-                key: None,
+                key: "kb_color".into(),
                 field_type: FieldType::Text(profile.keyboard.color.clone()),
                 enabled: !read_only,
             },
             FormField {
                 label: "KB Mode".into(),
-                key: None,
+                key: "kb_mode".into(),
                 field_type: FieldType::Select {
                     options: vec![
                         "static".into(),
@@ -429,7 +428,7 @@ impl ProfilesState {
             // ── Display ──
             FormField {
                 label: "Display Brightness (%)".into(),
-                key: None,
+                key: "display_brightness_percent".into(),
                 field_type: FieldType::Number {
                     value: profile.display.brightness.unwrap_or(0) as i64,
                     min: 0,
@@ -447,23 +446,23 @@ impl ProfilesState {
         let mut profile = base.clone();
 
         for field in &form.fields {
-            match field.label.as_str() {
-                "Name" => {
+            match field.key.as_str() {
+                "name" => {
                     if let FieldType::Text(v) = &field.field_type {
                         profile.name = v.clone();
                     }
                 }
-                "Description" => {
+                "description" => {
                     if let FieldType::Text(v) = &field.field_type {
                         profile.description = v.clone();
                     }
                 }
-                "Fan Control" => {
+                "fan_control" => {
                     if let FieldType::Bool(v) = &field.field_type {
                         profile.fan.enabled = *v;
                     }
                 }
-                "Fan Mode" => {
+                "fan_mode" => {
                     if let FieldType::Select { options, selected } = &field.field_type
                         && let Some(mode_str) = options.get(*selected)
                     {
@@ -474,53 +473,53 @@ impl ProfilesState {
                         };
                     }
                 }
-                "Min Speed (%)" => {
+                "min_speed_percent" => {
                     if let FieldType::Number { value, .. } = &field.field_type {
                         profile.fan.min_speed_percent = *value as u8;
                     }
                 }
-                "Max Speed (%)" => {
+                "max_speed_percent" => {
                     if let FieldType::Number { value, .. } = &field.field_type {
                         profile.fan.max_speed_percent = *value as u8;
                     }
                 }
-                "Governor" => {
+                "governor" => {
                     if let FieldType::Select { options, selected } = &field.field_type
                         && let Some(gov) = options.get(*selected)
                     {
                         profile.cpu.governor = gov.clone();
                     }
                 }
-                "Energy Pref" => {
+                "energy_pref" => {
                     if let FieldType::Select { options, selected } = &field.field_type
                         && let Some(pref) = options.get(*selected)
                     {
                         profile.cpu.energy_performance_preference = Some(pref.clone());
                     }
                 }
-                "No Turbo" => {
+                "no_turbo" => {
                     if let FieldType::Bool(v) = &field.field_type {
                         profile.cpu.no_turbo = *v;
                     }
                 }
-                "KB Brightness (%)" => {
+                "kb_brightness_percent" => {
                     if let FieldType::Number { value, .. } = &field.field_type {
                         profile.keyboard.brightness = *value as u8;
                     }
                 }
-                "KB Color" => {
+                "kb_color" => {
                     if let FieldType::Text(v) = &field.field_type {
                         profile.keyboard.color = v.clone();
                     }
                 }
-                "KB Mode" => {
+                "kb_mode" => {
                     if let FieldType::Select { options, selected } = &field.field_type
                         && let Some(mode) = options.get(*selected)
                     {
                         profile.keyboard.mode = mode.clone();
                     }
                 }
-                "Display Brightness (%)" => {
+                "display_brightness_percent" => {
                     if let FieldType::Number { value, .. } = &field.field_type {
                         let v = *value as u8;
                         profile.display.brightness = if v > 0 { Some(v) } else { None };
@@ -553,15 +552,6 @@ impl FormTabState {
             status_message: None,
         }
     }
-
-    #[allow(dead_code)]
-    pub fn unsupported() -> Self {
-        Self {
-            form: Form::new(vec![]),
-            supported: false,
-            status_message: None,
-        }
-    }
 }
 
 /// Build the Settings tab form.
@@ -569,7 +559,7 @@ pub fn settings_form() -> FormTabState {
     FormTabState::new(vec![
         FormField {
             label: "Temperature Unit".into(),
-            key: None,
+            key: "temperature_unit".into(),
             field_type: FieldType::Select {
                 options: vec!["Celsius".into(), "Fahrenheit".into()],
                 selected: 0,
@@ -578,13 +568,13 @@ pub fn settings_form() -> FormTabState {
         },
         FormField {
             label: "Fan Control Enabled".into(),
-            key: None,
+            key: "fan_control_enabled".into(),
             field_type: FieldType::Bool(true),
             enabled: true,
         },
         FormField {
             label: "CPU Settings Enabled".into(),
-            key: None,
+            key: "cpu_settings_enabled".into(),
             field_type: FieldType::Bool(true),
             enabled: true,
         },
@@ -596,7 +586,7 @@ pub fn keyboard_form() -> FormTabState {
     FormTabState::new(vec![
         FormField {
             label: "Brightness".into(),
-            key: None,
+            key: "brightness".into(),
             field_type: FieldType::Number {
                 value: 50,
                 min: 0,
@@ -607,13 +597,13 @@ pub fn keyboard_form() -> FormTabState {
         },
         FormField {
             label: "Color".into(),
-            key: None,
+            key: "color".into(),
             field_type: FieldType::Text("#ffffff".into()),
             enabled: true,
         },
         FormField {
             label: "Mode".into(),
-            key: None,
+            key: "mode".into(),
             field_type: FieldType::Select {
                 options: vec!["static".into()],
                 selected: 0,
@@ -628,7 +618,7 @@ pub fn charging_form() -> FormTabState {
     FormTabState::new(vec![
         FormField {
             label: "Charging Profile".into(),
-            key: Some("profile".into()),
+            key: "profile".into(),
             field_type: FieldType::Select {
                 options: vec![
                     "high_capacity".into(),
@@ -641,7 +631,7 @@ pub fn charging_form() -> FormTabState {
         },
         FormField {
             label: "Charging Priority".into(),
-            key: Some("priority".into()),
+            key: "priority".into(),
             field_type: FieldType::Select {
                 options: vec!["charge_battery".into(), "performance".into()],
                 selected: 0,
@@ -650,7 +640,7 @@ pub fn charging_form() -> FormTabState {
         },
         FormField {
             label: "Start Threshold (%)".into(),
-            key: Some("start_threshold".into()),
+            key: "start_threshold".into(),
             field_type: FieldType::Number {
                 value: 0,
                 min: 0,
@@ -661,7 +651,7 @@ pub fn charging_form() -> FormTabState {
         },
         FormField {
             label: "End Threshold (%)".into(),
-            key: Some("end_threshold".into()),
+            key: "end_threshold".into(),
             field_type: FieldType::Number {
                 value: 100,
                 min: 0,
@@ -677,7 +667,7 @@ pub fn charging_form() -> FormTabState {
 pub fn display_form() -> FormTabState {
     let mut state = FormTabState::new(vec![FormField {
         label: "Brightness (%)".into(),
-        key: Some("brightness".into()),
+        key: "brightness".into(),
         field_type: FieldType::Number {
             value: 50,
             min: 0,
@@ -706,7 +696,7 @@ impl PowerState {
         Self {
             form_tab: FormTabState::new(vec![FormField {
                 label: "TGP Offset".into(),
-                key: None,
+                key: "tgp_offset".into(),
                 field_type: FieldType::Number {
                     value: 0,
                     min: -15,
@@ -729,7 +719,7 @@ impl PowerState {
 pub struct WebcamState {
     pub form_tab: FormTabState,
     pub devices: Vec<String>,
-    pub selected_device: usize,
+    pub selected_device: BoundedIndex,
 }
 
 impl WebcamState {
@@ -737,21 +727,16 @@ impl WebcamState {
         Self {
             form_tab: webcam_form(),
             devices: Vec::new(),
-            selected_device: 0,
+            selected_device: BoundedIndex::default(),
         }
     }
 
     pub fn select_next_device(&mut self) {
-        if !self.devices.is_empty() {
-            self.selected_device = (self.selected_device + 1) % self.devices.len();
-        }
+        self.selected_device.next(self.devices.len());
     }
 
     pub fn select_prev_device(&mut self) {
-        if !self.devices.is_empty() {
-            self.selected_device =
-                (self.selected_device + self.devices.len() - 1) % self.devices.len();
-        }
+        self.selected_device.prev(self.devices.len());
     }
 }
 
@@ -760,7 +745,7 @@ fn webcam_form() -> FormTabState {
     let mut state = FormTabState::new(vec![
         FormField {
             label: "Brightness".into(),
-            key: None,
+            key: "brightness".into(),
             field_type: FieldType::Number {
                 value: 50,
                 min: 0,
@@ -771,7 +756,7 @@ fn webcam_form() -> FormTabState {
         },
         FormField {
             label: "Contrast".into(),
-            key: None,
+            key: "contrast".into(),
             field_type: FieldType::Number {
                 value: 50,
                 min: 0,
@@ -782,7 +767,7 @@ fn webcam_form() -> FormTabState {
         },
         FormField {
             label: "Exposure".into(),
-            key: None,
+            key: "exposure".into(),
             field_type: FieldType::Number {
                 value: 30,
                 min: 0,
@@ -793,7 +778,7 @@ fn webcam_form() -> FormTabState {
         },
         FormField {
             label: "Auto Exposure".into(),
-            key: None,
+            key: "auto_exposure".into(),
             field_type: FieldType::Bool(true),
             enabled: true,
         },
@@ -807,7 +792,7 @@ pub struct FanCurveState {
     /// Editable copy of curve points.
     pub points: Vec<FanCurvePoint>,
     /// Index of the currently selected point.
-    pub selected_index: usize,
+    pub selected_index: BoundedIndex,
     /// Live CPU temperature from daemon (°C).
     pub current_temp: Option<u8>,
     /// Live fan speed from daemon (%).
@@ -816,6 +801,8 @@ pub struct FanCurveState {
     pub dirty: bool,
     /// Original points for reset.
     pub original_points: Vec<FanCurvePoint>,
+    /// Status message shown briefly after operations.
+    pub status_message: Option<String>,
 }
 
 impl FanCurveState {
@@ -824,10 +811,11 @@ impl FanCurveState {
         Self {
             original_points: default_points.clone(),
             points: default_points,
-            selected_index: 0,
+            selected_index: BoundedIndex::default(),
             current_temp: None,
             current_speed: None,
             dirty: false,
+            status_message: None,
         }
     }
 
@@ -835,27 +823,23 @@ impl FanCurveState {
     pub fn load_curve(&mut self, points: Vec<FanCurvePoint>) {
         self.original_points = points.clone();
         self.points = points;
-        self.selected_index = 0;
+        self.selected_index.set(0);
         self.dirty = false;
     }
 
     /// Move selection to next point.
     pub fn select_next(&mut self) {
-        if !self.points.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.points.len();
-        }
+        self.selected_index.next(self.points.len());
     }
 
     /// Move selection to previous point.
     pub fn select_prev(&mut self) {
-        if !self.points.is_empty() {
-            self.selected_index = (self.selected_index + self.points.len() - 1) % self.points.len();
-        }
+        self.selected_index.prev(self.points.len());
     }
 
     /// Increase selected point's speed by 5%, capped at 100.
     pub fn increase_speed(&mut self) {
-        if let Some(p) = self.points.get_mut(self.selected_index) {
+        if let Some(p) = self.points.get_mut(self.selected_index.get()) {
             p.speed = (p.speed + 5).min(100);
             self.dirty = true;
         }
@@ -863,7 +847,7 @@ impl FanCurveState {
 
     /// Decrease selected point's speed by 5%, floored at 0.
     pub fn decrease_speed(&mut self) {
-        if let Some(p) = self.points.get_mut(self.selected_index) {
+        if let Some(p) = self.points.get_mut(self.selected_index.get()) {
             p.speed = p.speed.saturating_sub(5);
             self.dirty = true;
         }
@@ -874,7 +858,7 @@ impl FanCurveState {
         if self.points.len() >= 20 {
             return; // Reasonable cap.
         }
-        let idx = self.selected_index;
+        let idx = self.selected_index.get();
         if idx + 1 < self.points.len() {
             let a = &self.points[idx];
             let b = &self.points[idx + 1];
@@ -883,7 +867,7 @@ impl FanCurveState {
                 speed: (a.speed / 2) + (b.speed / 2) + (a.speed % 2 + b.speed % 2) / 2,
             };
             self.points.insert(idx + 1, mid);
-            self.selected_index = idx + 1;
+            self.selected_index.set(idx + 1);
             self.dirty = true;
         }
     }
@@ -893,10 +877,8 @@ impl FanCurveState {
         if self.points.len() <= 2 {
             return false;
         }
-        self.points.remove(self.selected_index);
-        if self.selected_index >= self.points.len() {
-            self.selected_index = self.points.len() - 1;
-        }
+        self.points.remove(self.selected_index.get());
+        self.selected_index.clamp_to(self.points.len());
         self.dirty = true;
         true
     }
@@ -905,14 +887,14 @@ impl FanCurveState {
     pub fn reset(&mut self) {
         let defaults = tux_core::fan_curve::FanConfig::default().curve;
         self.points = defaults;
-        self.selected_index = 0;
+        self.selected_index.set(0);
         self.dirty = true;
     }
 
     /// Revert to the last-loaded points (undo unsaved changes).
     pub fn revert(&mut self) {
         self.points = self.original_points.clone();
-        self.selected_index = 0;
+        self.selected_index.set(0);
         self.dirty = false;
     }
 }
@@ -920,7 +902,6 @@ impl FanCurveState {
 // ── Generic Form Widget State ───────────────────────────────
 
 /// A reusable form with labelled, typed fields.
-#[allow(dead_code)]
 pub struct Form {
     pub fields: Vec<FormField>,
     pub selected_index: usize,
@@ -939,18 +920,16 @@ pub struct TextEditState {
 }
 
 /// A single field in a form.
-#[allow(dead_code)]
 pub struct FormField {
     pub label: String,
-    /// TOML key used for D-Bus serialization. If `None`, derived from label.
-    pub key: Option<String>,
+    /// TOML key used for D-Bus serialization.
+    pub key: String,
     pub field_type: FieldType,
     pub enabled: bool,
 }
 
 /// Type-safe field value.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum FieldType {
     Text(String),
     Number {
@@ -966,7 +945,6 @@ pub enum FieldType {
     },
 }
 
-#[allow(dead_code)]
 impl Form {
     pub fn new(fields: Vec<FormField>) -> Self {
         let original_values: Vec<FieldType> = fields.iter().map(|f| f.field_type.clone()).collect();
@@ -1252,6 +1230,7 @@ impl Model {
             display: display_form(),
             webcam: WebcamState::new(),
             event_log: EventLogState::new(),
+            editing_text_in: None,
         };
         model.log_event(
             EventSource::System,
@@ -1369,7 +1348,7 @@ mod tests {
             temp: 90,
             speed: 98,
         }];
-        fc.selected_index = 0;
+        fc.selected_index.set(0);
         fc.increase_speed();
         assert_eq!(fc.points[0].speed, 100);
         assert!(fc.dirty);
@@ -1379,7 +1358,7 @@ mod tests {
     fn fan_curve_decrease_speed_floors_at_0() {
         let mut fc = FanCurveState::new();
         fc.points = vec![FanCurvePoint { temp: 40, speed: 3 }];
-        fc.selected_index = 0;
+        fc.selected_index.set(0);
         fc.decrease_speed();
         assert_eq!(fc.points[0].speed, 0);
         assert!(fc.dirty);
@@ -1395,12 +1374,12 @@ mod tests {
                 speed: 80,
             },
         ];
-        fc.selected_index = 0;
+        fc.selected_index.set(0);
         fc.insert_point();
         assert_eq!(fc.points.len(), 3);
         assert_eq!(fc.points[1].temp, 60);
         assert_eq!(fc.points[1].speed, 40);
-        assert_eq!(fc.selected_index, 1);
+        assert_eq!(fc.selected_index.get(), 1);
         assert!(fc.dirty);
     }
 
@@ -1428,7 +1407,7 @@ mod tests {
         fc.revert();
         assert!(!fc.dirty);
         assert_eq!(fc.points.len(), orig_len);
-        assert_eq!(fc.selected_index, 0);
+        assert_eq!(fc.selected_index.get(), 0);
     }
 
     #[test]
@@ -1448,7 +1427,7 @@ mod tests {
     fn form_number_respects_bounds() {
         let mut form = Form::new(vec![FormField {
             label: "Speed".into(),
-            key: None,
+            key: "speed".into(),
             field_type: FieldType::Number {
                 value: 95,
                 min: 0,
@@ -1473,7 +1452,7 @@ mod tests {
     fn form_select_wraps_around() {
         let mut form = Form::new(vec![FormField {
             label: "Unit".into(),
-            key: None,
+            key: "unit".into(),
             field_type: FieldType::Select {
                 options: vec!["Celsius".into(), "Fahrenheit".into()],
                 selected: 1,
@@ -1491,7 +1470,7 @@ mod tests {
     fn form_bool_toggles_on_space() {
         let mut form = Form::new(vec![FormField {
             label: "Enabled".into(),
-            key: None,
+            key: "enabled".into(),
             field_type: FieldType::Bool(false),
             enabled: true,
         }]);
@@ -1504,7 +1483,7 @@ mod tests {
     fn form_dirty_on_change() {
         let mut form = Form::new(vec![FormField {
             label: "Val".into(),
-            key: None,
+            key: "val".into(),
             field_type: FieldType::Number {
                 value: 50,
                 min: 0,
@@ -1522,7 +1501,7 @@ mod tests {
     fn form_esc_resets_to_original() {
         let mut form = Form::new(vec![FormField {
             label: "Val".into(),
-            key: None,
+            key: "val".into(),
             field_type: FieldType::Number {
                 value: 50,
                 min: 0,
@@ -1557,7 +1536,7 @@ mod tests {
                 speed: i * 5,
             })
             .collect();
-        fc.selected_index = 0;
+        fc.selected_index.set(0);
         fc.insert_point();
         assert_eq!(fc.points.len(), 20);
         assert!(!fc.dirty);
@@ -1573,7 +1552,7 @@ mod tests {
                 speed: 100,
             },
         ];
-        fc.selected_index = 1; // Last point.
+        fc.selected_index.set(1); // Last point.
         fc.insert_point();
         assert_eq!(fc.points.len(), 2);
         assert!(!fc.dirty);
@@ -1584,13 +1563,13 @@ mod tests {
         let mut form = Form::new(vec![
             FormField {
                 label: "A".into(),
-                key: None,
+                key: "a".into(),
                 field_type: FieldType::Bool(true),
                 enabled: false,
             },
             FormField {
                 label: "B".into(),
-                key: None,
+                key: "b".into(),
                 field_type: FieldType::Bool(false),
                 enabled: false,
             },
@@ -1605,7 +1584,7 @@ mod tests {
     fn form_adjust_disabled_field_is_noop() {
         let mut form = Form::new(vec![FormField {
             label: "Val".into(),
-            key: None,
+            key: "val".into(),
             field_type: FieldType::Number {
                 value: 50,
                 min: 0,
@@ -1633,29 +1612,29 @@ mod tests {
     fn profiles_select_wraps() {
         let mut ps = ProfilesState::new();
         ps.profiles = tux_core::profile::builtin_profiles();
-        assert_eq!(ps.selected_index, 0);
+        assert_eq!(ps.selected_index.get(), 0);
         ps.select_next();
-        assert_eq!(ps.selected_index, 1);
+        assert_eq!(ps.selected_index.get(), 1);
         ps.select_prev();
-        assert_eq!(ps.selected_index, 0);
+        assert_eq!(ps.selected_index.get(), 0);
         ps.select_prev(); // wraps
-        assert_eq!(ps.selected_index, 3);
+        assert_eq!(ps.selected_index.get(), 3);
     }
 
     #[test]
     fn profiles_select_empty_is_noop() {
         let mut ps = ProfilesState::new();
         ps.select_next();
-        assert_eq!(ps.selected_index, 0);
+        assert_eq!(ps.selected_index.get(), 0);
         ps.select_prev();
-        assert_eq!(ps.selected_index, 0);
+        assert_eq!(ps.selected_index.get(), 0);
     }
 
     #[test]
     fn profiles_selected_profile_returns_correct() {
         let mut ps = ProfilesState::new();
         ps.profiles = tux_core::profile::builtin_profiles();
-        ps.selected_index = 2;
+        ps.selected_index.set(2);
         assert_eq!(ps.selected_profile().unwrap().id, "__office__");
     }
 

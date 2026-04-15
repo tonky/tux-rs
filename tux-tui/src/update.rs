@@ -19,8 +19,8 @@ pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     }
 
     // While editing text inline, suppress global shortcuts (q/tab/number tabs/etc.).
-    if is_inline_text_edit_active(model) {
-        let cmds = dispatch_tab_key(model, key);
+    if model.editing_text_in.is_some() {
+        let (cmds, _) = dispatch_tab_key(model, key);
         log_commands(model, &cmds);
         return cmds;
     }
@@ -118,13 +118,13 @@ pub fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
     }
 
     // Tab-specific key handling.
-    let cmds = dispatch_tab_key(model, key);
+    let (cmds, _) = dispatch_tab_key(model, key);
     log_commands(model, &cmds);
     cmds
 }
 
-fn dispatch_tab_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
-    match model.current_tab {
+fn dispatch_tab_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool) {
+    let (cmds, editing) = match model.current_tab {
         Tab::FanCurve => handle_fan_curve_key(model, key),
         Tab::Profiles => handle_profiles_key(model, key),
         Tab::Settings => handle_form_tab_key(&mut model.settings, key, Command::SaveSettings),
@@ -133,27 +133,14 @@ fn dispatch_tab_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         Tab::Power => handle_form_tab_key(&mut model.power.form_tab, key, Command::SavePower),
         Tab::Display => handle_form_tab_key(&mut model.display, key, Command::SaveDisplay),
         Tab::Webcam => handle_webcam_key(model, key),
-        _ => vec![],
-    }
-}
-
-fn is_inline_text_edit_active(model: &Model) -> bool {
-    match model.current_tab {
-        Tab::Profiles => {
-            if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
-                form.is_editing_text()
-            } else {
-                false
-            }
-        }
-        Tab::Settings => model.settings.form.is_editing_text(),
-        Tab::Keyboard => model.keyboard.form.is_editing_text(),
-        Tab::Charging => model.charging.form.is_editing_text(),
-        Tab::Power => model.power.form_tab.form.is_editing_text(),
-        Tab::Display => model.display.form.is_editing_text(),
-        Tab::Webcam => model.webcam.form_tab.form.is_editing_text(),
-        _ => false,
-    }
+        _ => (vec![], false),
+    };
+    model.editing_text_in = if editing {
+        Some(model.current_tab)
+    } else {
+        None
+    };
+    (cmds, editing)
 }
 
 fn log_commands(model: &mut Model, cmds: &[Command]) {
@@ -164,6 +151,7 @@ fn log_commands(model: &mut Model, cmds: &[Command]) {
                 let selected = model
                     .fan_curve
                     .selected_index
+                    .get()
                     .min(points.len().saturating_sub(1));
                 let selected_point = points.get(selected).cloned();
                 let summary = if let Some(p) = selected_point {
@@ -319,7 +307,7 @@ fn format_fan_curve_points(points: &[tux_core::fan_curve::FanCurvePoint]) -> Str
 
 fn form_string(form: &crate::model::Form, key: &str) -> Option<String> {
     use crate::model::FieldType;
-    let field = form.fields.iter().find(|f| f.key.as_deref() == Some(key))?;
+    let field = form.fields.iter().find(|f| f.key == key)?;
     match &field.field_type {
         FieldType::Text(v) => Some(v.clone()),
         FieldType::Select { options, selected } => options.get(*selected).cloned(),
@@ -329,7 +317,7 @@ fn form_string(form: &crate::model::Form, key: &str) -> Option<String> {
 
 fn form_int(form: &crate::model::Form, key: &str) -> Option<i64> {
     use crate::model::FieldType;
-    let field = form.fields.iter().find(|f| f.key.as_deref() == Some(key))?;
+    let field = form.fields.iter().find(|f| f.key == key)?;
     match &field.field_type {
         FieldType::Number { value, .. } => Some(*value),
         _ => None,
@@ -337,24 +325,8 @@ fn form_int(form: &crate::model::Form, key: &str) -> Option<i64> {
 }
 
 fn summarize_keyboard_form(form: &crate::model::Form) -> Option<String> {
-    use crate::model::FieldType;
-    let brightness = form
-        .fields
-        .iter()
-        .find(|f| f.label == "Brightness")
-        .and_then(|f| match &f.field_type {
-            FieldType::Number { value, .. } => Some(*value),
-            _ => None,
-        })?;
-    let mode = form
-        .fields
-        .iter()
-        .find(|f| f.label == "Mode")
-        .and_then(|f| match &f.field_type {
-            FieldType::Select { options, selected } => options.get(*selected).cloned(),
-            _ => None,
-        })
-        .unwrap_or_else(|| "unknown".to_string());
+    let brightness = form_int(form, "brightness")?;
+    let mode = form_string(form, "mode").unwrap_or_else(|| "unknown".to_string());
     Some(format!(
         "keyboard set to {}% brightness, mode '{}'",
         brightness, mode
@@ -378,37 +350,22 @@ fn summarize_display_form(form: &crate::model::Form) -> Option<String> {
 }
 
 fn summarize_power_form(form: &crate::model::Form) -> Option<String> {
-    use crate::model::FieldType;
-    let offset = form
-        .fields
-        .iter()
-        .find(|f| f.label == "TGP Offset")
-        .and_then(|f| match &f.field_type {
-            FieldType::Number { value, .. } => Some(*value),
-            _ => None,
-        })?;
+    let offset = form_int(form, "tgp_offset")?;
     Some(format!("power limit offset set to {}", offset))
 }
 
-fn summarize_settings_form(form: &crate::model::Form) -> Option<String> {
+fn form_bool(form: &crate::model::Form, key: &str) -> Option<bool> {
     use crate::model::FieldType;
-    let unit = form
-        .fields
-        .iter()
-        .find(|f| f.label == "Temperature Unit")
-        .and_then(|f| match &f.field_type {
-            FieldType::Select { options, selected } => options.get(*selected).cloned(),
-            _ => None,
-        })?;
-    let fan_enabled = form
-        .fields
-        .iter()
-        .find(|f| f.label == "Fan Control Enabled")
-        .and_then(|f| match &f.field_type {
-            FieldType::Bool(v) => Some(*v),
-            _ => None,
-        })
-        .unwrap_or(true);
+    let field = form.fields.iter().find(|f| f.key == key)?;
+    match &field.field_type {
+        FieldType::Bool(v) => Some(*v),
+        _ => None,
+    }
+}
+
+fn summarize_settings_form(form: &crate::model::Form) -> Option<String> {
+    let unit = form_string(form, "temperature_unit")?;
+    let fan_enabled = form_bool(form, "fan_control_enabled").unwrap_or(true);
     Some(format!(
         "settings updated: temp unit '{}', fan control {}",
         unit,
@@ -417,7 +374,8 @@ fn summarize_settings_form(form: &crate::model::Form) -> Option<String> {
 }
 
 /// Fan curve tab key handling.
-fn handle_fan_curve_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
+fn handle_fan_curve_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool) {
+    model.fan_curve.status_message = None;
     match key.code {
         KeyCode::Left => {
             model.fan_curve.select_prev();
@@ -443,7 +401,7 @@ fn handle_fan_curve_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         KeyCode::Char('s') => {
             if model.fan_curve.dirty {
                 let points = model.fan_curve.points.clone();
-                return vec![Command::SaveFanCurve(points)];
+                return (vec![Command::SaveFanCurve(points)], false);
             }
         }
         KeyCode::Esc => {
@@ -451,11 +409,11 @@ fn handle_fan_curve_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         }
         _ => {}
     }
-    vec![]
+    (vec![], false)
 }
 
 /// Profiles tab key handling.
-fn handle_profiles_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
+fn handle_profiles_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool) {
     match &model.profiles.mode {
         ProfilesMode::List => handle_profiles_list_key(model, key),
         ProfilesMode::Editor { .. } => handle_profiles_editor_key(model, key),
@@ -463,7 +421,7 @@ fn handle_profiles_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
 }
 
 /// Keys in profile list mode.
-fn handle_profiles_list_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
+fn handle_profiles_list_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool) {
     // Clear status message on any list interaction.
     model.profiles.status_message = None;
     match key.code {
@@ -484,7 +442,7 @@ fn handle_profiles_list_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
         }
         KeyCode::Char('c') => {
             if let Some(profile) = model.profiles.selected_profile() {
-                return vec![Command::CopyProfile(profile.id.clone())];
+                return (vec![Command::CopyProfile(profile.id.clone())], false);
             }
         }
         KeyCode::Char('d') => {
@@ -493,38 +451,44 @@ fn handle_profiles_list_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
                     model.profiles.status_message =
                         Some("Cannot delete built-in profiles".to_string());
                 } else {
-                    return vec![Command::DeleteProfile(profile.id.clone())];
+                    return (vec![Command::DeleteProfile(profile.id.clone())], false);
                 }
             }
         }
         KeyCode::Char('a') => {
             if let Some(profile) = model.profiles.selected_profile() {
-                return vec![Command::SetActiveProfile {
-                    id: profile.id.clone(),
-                    state: "ac".to_string(),
-                }];
+                return (
+                    vec![Command::SetActiveProfile {
+                        id: profile.id.clone(),
+                        state: "ac".to_string(),
+                    }],
+                    false,
+                );
             }
         }
         KeyCode::Char('b') => {
             if let Some(profile) = model.profiles.selected_profile() {
-                return vec![Command::SetActiveProfile {
-                    id: profile.id.clone(),
-                    state: "battery".to_string(),
-                }];
+                return (
+                    vec![Command::SetActiveProfile {
+                        id: profile.id.clone(),
+                        state: "battery".to_string(),
+                    }],
+                    false,
+                );
             }
         }
         _ => {}
     }
-    vec![]
+    (vec![], false)
 }
 
 /// Keys in profile editor mode.
-fn handle_profiles_editor_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
+fn handle_profiles_editor_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool) {
     // When a text field is being edited, intercept all keys for inline editing.
     if let ProfilesMode::Editor { form, .. } = &mut model.profiles.mode
         && form.is_editing_text()
     {
-        return handle_text_edit_key(form, key);
+        return (vec![], handle_text_edit_key(form, key));
     }
     match key.code {
         KeyCode::Esc => {
@@ -566,7 +530,7 @@ fn handle_profiles_editor_key(model: &mut Model, key: KeyEvent) -> Vec<Command> 
             } = &model.profiles.mode
             {
                 if !form.dirty {
-                    return vec![];
+                    return (vec![], false);
                 }
                 // Find the base profile to apply form changes to.
                 let base = model
@@ -579,10 +543,13 @@ fn handle_profiles_editor_key(model: &mut Model, key: KeyEvent) -> Vec<Command> 
                 if let Some(base) = base {
                     let updated = ProfilesState::apply_form_to_profile(form, &base);
                     if let Ok(toml_str) = toml::to_string_pretty(&updated) {
-                        return vec![Command::SaveProfile {
-                            id: pid,
-                            toml: toml_str,
-                        }];
+                        return (
+                            vec![Command::SaveProfile {
+                                id: pid,
+                                toml: toml_str,
+                            }],
+                            false,
+                        );
                     }
                 } else {
                     // Profile was deleted while editor was open.
@@ -593,11 +560,17 @@ fn handle_profiles_editor_key(model: &mut Model, key: KeyEvent) -> Vec<Command> 
         }
         _ => {}
     }
-    vec![]
+
+    let editing = if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
+        form.is_editing_text()
+    } else {
+        false
+    };
+    (vec![], editing)
 }
 
 /// Handle keys while a text field is being edited inline.
-fn handle_text_edit_key(form: &mut Form, key: KeyEvent) -> Vec<Command> {
+fn handle_text_edit_key(form: &mut Form, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Enter => form.confirm_text_edit(),
         KeyCode::Esc => form.cancel_text_edit(),
@@ -608,7 +581,7 @@ fn handle_text_edit_key(form: &mut Form, key: KeyEvent) -> Vec<Command> {
         KeyCode::Char(c) => form.text_input(c),
         _ => {}
     }
-    vec![]
+    form.is_editing_text()
 }
 
 /// Generic key handler for form-backed tabs (Settings, Keyboard, Charging, Power, Display).
@@ -616,14 +589,14 @@ fn handle_form_tab_key(
     state: &mut FormTabState,
     key: KeyEvent,
     save_cmd: fn(String) -> Command,
-) -> Vec<Command> {
+) -> (Vec<Command>, bool) {
     if !state.supported {
-        return vec![];
+        return (vec![], false);
     }
     state.status_message = None;
     // Text edit mode intercepts all keys.
     if state.form.is_editing_text() {
-        return handle_text_edit_key(&mut state.form, key);
+        return (vec![], handle_text_edit_key(&mut state.form, key));
     }
     match key.code {
         KeyCode::Up => state.form.select_prev(),
@@ -637,22 +610,25 @@ fn handle_form_tab_key(
             if state.form.dirty {
                 // Serialize form fields as a simple TOML table.
                 let toml_str = serialize_form_to_toml(&state.form);
-                return vec![save_cmd(toml_str)];
+                return (vec![save_cmd(toml_str)], false);
             }
         }
         _ => {}
     }
-    vec![]
+    (vec![], state.form.is_editing_text())
 }
 
 /// Webcam tab key handler: form controls + device switching.
-fn handle_webcam_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
+fn handle_webcam_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool) {
     if !model.webcam.form_tab.supported {
-        return vec![];
+        return (vec![], false);
     }
     model.webcam.form_tab.status_message = None;
     if model.webcam.form_tab.form.is_editing_text() {
-        return handle_text_edit_key(&mut model.webcam.form_tab.form, key);
+        return (
+            vec![],
+            handle_text_edit_key(&mut model.webcam.form_tab.form, key),
+        );
     }
     match key.code {
         KeyCode::Up => model.webcam.form_tab.form.select_prev(),
@@ -679,19 +655,22 @@ fn handle_webcam_key(model: &mut Model, key: KeyEvent) -> Vec<Command> {
                 let device = model
                     .webcam
                     .devices
-                    .get(model.webcam.selected_device)
+                    .get(model.webcam.selected_device.get())
                     .cloned()
                     .unwrap_or_default();
                 let toml_str = serialize_form_to_toml(&model.webcam.form_tab.form);
-                return vec![Command::SaveWebcam {
-                    device,
-                    toml: toml_str,
-                }];
+                return (
+                    vec![Command::SaveWebcam {
+                        device,
+                        toml: toml_str,
+                    }],
+                    false,
+                );
             }
         }
         _ => {}
     }
-    vec![]
+    (vec![], model.webcam.form_tab.form.is_editing_text())
 }
 
 /// Serialize form fields into a TOML string for D-Bus transmission.
@@ -699,15 +678,7 @@ fn serialize_form_to_toml(form: &crate::model::Form) -> String {
     use crate::model::FieldType;
     let mut table = toml::map::Map::new();
     for field in &form.fields {
-        let key = if let Some(ref k) = field.key {
-            k.clone()
-        } else {
-            field
-                .label
-                .to_lowercase()
-                .replace(' ', "_")
-                .replace("(%)", "percent")
-        };
+        let key = field.key.clone();
         let value = match &field.field_type {
             FieldType::Text(v) => toml::Value::String(v.clone()),
             FieldType::Number { value, .. } => toml::Value::Integer(*value),
@@ -963,7 +934,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                 // For white-only keyboards, disable color and mode fields.
                 if caps.keyboard_type == "white" {
                     for field in &mut model.keyboard.form.fields {
-                        if field.label == "Color" || field.label == "Mode" {
+                        if field.key == "color" || field.key == "mode" {
                             field.enabled = false;
                         }
                     }
@@ -971,7 +942,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                 // Update keyboard mode options from hardware capabilities.
                 if !caps.keyboard_modes.is_empty() {
                     for field in &mut model.keyboard.form.fields {
-                        if field.label == "Mode"
+                        if field.key == "mode"
                             && let crate::model::FieldType::Select { options, selected } =
                                 &mut field.field_type
                         {
@@ -989,11 +960,11 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                 }
                 // Disable individual fields based on what the hardware supports.
                 for field in &mut model.charging.form.fields {
-                    match field.key.as_deref() {
-                        Some("start_threshold") | Some("end_threshold") => {
+                    match field.key.as_str() {
+                        "start_threshold" | "end_threshold" => {
                             field.enabled = caps.charging_thresholds;
                         }
-                        Some("profile") | Some("priority") => {
+                        "profile" | "priority" => {
                             field.enabled = caps.charging_profiles;
                         }
                         _ => {}
@@ -1006,7 +977,17 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             }
         }
         DbusUpdate::FanCurve(points) => {
-            model.fan_curve.load_curve(points);
+            if model.fan_curve.dirty {
+                model.fan_curve.status_message =
+                    Some("Daemon update skipped (unsaved changes)".into());
+                model.log_debug_event(
+                    EventSource::Daemon,
+                    "update skipped",
+                    Some("unsaved local changes".into()),
+                );
+            } else {
+                model.fan_curve.load_curve(points);
+            }
         }
         DbusUpdate::FanCurveSaved => {
             // Mark current points as the new baseline.
@@ -1014,13 +995,22 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             model.fan_curve.dirty = false;
         }
         DbusUpdate::ProfileList(profiles) => {
-            model.profiles.profiles = profiles;
-            // Clamp selection index.
-            if model.profiles.selected_index >= model.profiles.profiles.len()
-                && !model.profiles.profiles.is_empty()
+            if let ProfilesMode::Editor { form, .. } = &model.profiles.mode
+                && form.dirty
             {
-                model.profiles.selected_index = model.profiles.profiles.len() - 1;
+                model.profiles.status_message =
+                    Some("Daemon update skipped (unsaved changes)".into());
+                model.log_debug_event(
+                    EventSource::Daemon,
+                    "update skipped",
+                    Some("unsaved local profile changes".into()),
+                );
             }
+            model.profiles.profiles = profiles;
+            model
+                .profiles
+                .selected_index
+                .clamp_to(model.profiles.profiles.len());
             // Auto-close editor if the edited profile was removed.
             if let ProfilesMode::Editor { profile_id, .. } = &model.profiles.mode
                 && !model.profiles.profiles.iter().any(|p| p.id == *profile_id)
@@ -1057,17 +1047,47 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             );
         }
         DbusUpdate::SettingsData(toml_str) => {
-            load_form_from_toml(&mut model.settings.form, &toml_str);
+            if model.settings.form.dirty {
+                model.settings.status_message =
+                    Some("Daemon update skipped (unsaved changes)".into());
+                model.log_debug_event(
+                    EventSource::Daemon,
+                    "update skipped",
+                    Some("unsaved local changes".into()),
+                );
+            } else {
+                load_form_from_toml(&mut model.settings.form, &toml_str);
+            }
         }
         DbusUpdate::KeyboardData(toml_str) => {
-            load_form_from_toml(&mut model.keyboard.form, &toml_str);
+            if model.keyboard.form.dirty {
+                model.keyboard.status_message =
+                    Some("Daemon update skipped (unsaved changes)".into());
+                model.log_debug_event(
+                    EventSource::Daemon,
+                    "update skipped",
+                    Some("unsaved local changes".into()),
+                );
+            } else {
+                load_form_from_toml(&mut model.keyboard.form, &toml_str);
+            }
             // Check if keyboard is supported (from capabilities).
             if model.info.keyboard_type == "None" || model.info.keyboard_type.is_empty() {
                 model.keyboard.supported = false;
             }
         }
         DbusUpdate::ChargingData(toml_str) => {
-            load_form_from_toml(&mut model.charging.form, &toml_str);
+            if model.charging.form.dirty {
+                model.charging.status_message =
+                    Some("Daemon update skipped (unsaved changes)".into());
+                model.log_debug_event(
+                    EventSource::Daemon,
+                    "update skipped",
+                    Some("unsaved local changes".into()),
+                );
+            } else {
+                load_form_from_toml(&mut model.charging.form, &toml_str);
+            }
         }
         DbusUpdate::GpuInfo(toml_str) => {
             if let Ok(table) = toml_str.parse::<toml::Table>() {
@@ -1092,10 +1112,30 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             }
         }
         DbusUpdate::PowerData(toml_str) => {
-            load_form_from_toml(&mut model.power.form_tab.form, &toml_str);
+            if model.power.form_tab.form.dirty {
+                model.power.form_tab.status_message =
+                    Some("Daemon update skipped (unsaved changes)".into());
+                model.log_debug_event(
+                    EventSource::Daemon,
+                    "update skipped",
+                    Some("unsaved local changes".into()),
+                );
+            } else {
+                load_form_from_toml(&mut model.power.form_tab.form, &toml_str);
+            }
         }
         DbusUpdate::DisplayData(toml_str) => {
-            load_form_from_toml(&mut model.display.form, &toml_str);
+            if model.display.form.dirty {
+                model.display.status_message =
+                    Some("Daemon update skipped (unsaved changes)".into());
+                model.log_debug_event(
+                    EventSource::Daemon,
+                    "update skipped",
+                    Some("unsaved local changes".into()),
+                );
+            } else {
+                load_form_from_toml(&mut model.display.form, &toml_str);
+            }
             model.display.supported = true; // Backend responded
         }
         DbusUpdate::WebcamDevices(devices) => {
@@ -1103,14 +1143,23 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             if !model.webcam.devices.is_empty() {
                 model.webcam.form_tab.supported = true; // Backend has devices
             }
-            if model.webcam.selected_device >= model.webcam.devices.len()
-                && !model.webcam.devices.is_empty()
-            {
-                model.webcam.selected_device = model.webcam.devices.len() - 1;
-            }
+            model
+                .webcam
+                .selected_device
+                .clamp_to(model.webcam.devices.len());
         }
         DbusUpdate::WebcamData(toml_str) => {
-            load_form_from_toml(&mut model.webcam.form_tab.form, &toml_str);
+            if model.webcam.form_tab.form.dirty {
+                model.webcam.form_tab.status_message =
+                    Some("Daemon update skipped (unsaved changes)".into());
+                model.log_debug_event(
+                    EventSource::Daemon,
+                    "update skipped",
+                    Some("unsaved local changes".into()),
+                );
+            } else {
+                load_form_from_toml(&mut model.webcam.form_tab.form, &toml_str);
+            }
             model.webcam.form_tab.supported = true; // Backend responded
         }
         DbusUpdate::FormSaved(tab_name) => match tab_name.as_str() {
@@ -1202,14 +1251,8 @@ fn load_form_from_toml(form: &mut crate::model::Form, toml_str: &str) {
         return;
     };
     for field in &mut form.fields {
-        let key = field.key.clone().unwrap_or_else(|| {
-            field
-                .label
-                .to_lowercase()
-                .replace(' ', "_")
-                .replace("(%)", "percent")
-        });
-        if let Some(value) = table.get(&key) {
+        let key = &field.key;
+        if let Some(value) = table.get(key) {
             match &mut field.field_type {
                 FieldType::Text(v) => {
                     if let Some(s) = value.as_str() {
@@ -1562,13 +1605,13 @@ mod tests {
     fn fan_curve_arrow_selects_points() {
         let mut model = Model::new();
         model.current_tab = Tab::FanCurve;
-        assert_eq!(model.fan_curve.selected_index, 0);
+        assert_eq!(model.fan_curve.selected_index.get(), 0);
 
         handle_key(&mut model, key(KeyCode::Right));
-        assert_eq!(model.fan_curve.selected_index, 1);
+        assert_eq!(model.fan_curve.selected_index.get(), 1);
 
         handle_key(&mut model, key(KeyCode::Left));
-        assert_eq!(model.fan_curve.selected_index, 0);
+        assert_eq!(model.fan_curve.selected_index.get(), 0);
     }
 
     #[test]
@@ -1698,9 +1741,9 @@ mod tests {
         model.current_tab = Tab::Profiles;
         model.profiles.profiles = tux_core::profile::builtin_profiles();
         handle_key(&mut model, key(KeyCode::Down));
-        assert_eq!(model.profiles.selected_index, 1);
+        assert_eq!(model.profiles.selected_index.get(), 1);
         handle_key(&mut model, key(KeyCode::Up));
-        assert_eq!(model.profiles.selected_index, 0);
+        assert_eq!(model.profiles.selected_index.get(), 0);
     }
 
     #[test]
@@ -1838,14 +1881,14 @@ mod tests {
     fn profiles_delete_selected_clamps_index() {
         let mut model = Model::new();
         model.profiles.profiles = tux_core::profile::builtin_profiles();
-        model.profiles.selected_index = 3; // Select last (index 3 of 4 profiles).
+        model.profiles.selected_index.set(3); // Select last (index 3 of 4 profiles).
 
         // Simulate profile list shrinking to 3.
         handle_data(
             &mut model,
             DbusUpdate::ProfileList(tux_core::profile::builtin_profiles()[0..3].to_vec()),
         );
-        assert_eq!(model.profiles.selected_index, 2);
+        assert_eq!(model.profiles.selected_index.get(), 2);
     }
 
     #[test]
@@ -1854,11 +1897,11 @@ mod tests {
         assert!(ps.selected_profile().is_none());
 
         ps.select_next(); // Should be safe (noop).
-        assert_eq!(ps.selected_index, 0);
+        assert_eq!(ps.selected_index.get(), 0);
 
         ps.profiles = tux_core::profile::builtin_profiles();
         assert!(ps.selected_profile().is_some());
-        assert_eq!(ps.selected_index, 0);
+        assert_eq!(ps.selected_index.get(), 0);
     }
 
     #[test]
@@ -1986,10 +2029,10 @@ mod tests {
         handle_key(&mut model, key(KeyCode::Left));
         handle_key(&mut model, key(KeyCode::Char('Z')));
         handle_key(&mut model, key(KeyCode::Enter)); // confirm
-        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
-            if let crate::model::FieldType::Text(ref s) = form.fields[0].field_type {
-                assert_eq!(s, "My CustoZm");
-            }
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode
+            && let crate::model::FieldType::Text(ref s) = form.fields[0].field_type
+        {
+            assert_eq!(s, "My CustoZm");
         }
     }
 
@@ -2119,7 +2162,7 @@ mod tests {
         model.current_tab = Tab::Webcam;
         model.webcam.form_tab.supported = true;
         model.webcam.devices = vec!["Cam1".into(), "Cam2".into()];
-        assert_eq!(model.webcam.selected_device, 0);
+        assert_eq!(model.webcam.selected_device.get(), 0);
 
         let shift_right = KeyEvent {
             code: KeyCode::Right,
@@ -2128,7 +2171,7 @@ mod tests {
             state: KeyEventState::NONE,
         };
         handle_key(&mut model, shift_right);
-        assert_eq!(model.webcam.selected_device, 1);
+        assert_eq!(model.webcam.selected_device.get(), 1);
     }
 
     #[test]
@@ -2236,12 +2279,12 @@ mod tests {
     #[test]
     fn webcam_devices_update_clamps_index() {
         let mut model = Model::new();
-        model.webcam.selected_device = 5;
+        model.webcam.selected_device.set(5);
         handle_data(
             &mut model,
             DbusUpdate::WebcamDevices(vec!["Cam1".into(), "Cam2".into()]),
         );
-        assert_eq!(model.webcam.selected_device, 1); // Clamped to last.
+        assert_eq!(model.webcam.selected_device.get(), 1); // Clamped to last.
     }
 
     #[test]
@@ -2276,11 +2319,11 @@ mod tests {
         assert!(model.charging.supported);
         // Profile/priority fields enabled, threshold fields disabled.
         for field in &model.charging.form.fields {
-            match field.key.as_deref() {
-                Some("profile") | Some("priority") => {
+            match field.key.as_str() {
+                "profile" | "priority" => {
                     assert!(field.enabled, "field '{}' should be enabled", field.label);
                 }
-                Some("start_threshold") | Some("end_threshold") => {
+                "start_threshold" | "end_threshold" => {
                     assert!(!field.enabled, "field '{}' should be disabled", field.label);
                 }
                 _ => {}
@@ -2315,6 +2358,190 @@ end_threshold = 80"#;
         assert!(
             serialized.contains("priority = \"performance\""),
             "expected performance, got: {serialized}"
+        );
+    }
+
+    #[test]
+    fn text_edit_suppresses_global_hotkeys() {
+        let mut model = Model::new();
+        let profile = tux_core::profile::TuxProfile {
+            id: "test".into(),
+            name: "Test".into(),
+            ..Default::default()
+        };
+        model.current_tab = Tab::Profiles;
+        model.profiles.mode = crate::model::ProfilesMode::Editor {
+            form: crate::model::ProfilesState::build_editor_form(&profile),
+            profile_id: profile.id.clone(),
+        };
+        // Select first field ("Name", which is Text).
+        if let crate::model::ProfilesMode::Editor { form, .. } = &mut model.profiles.mode {
+            form.selected_index = 0;
+        }
+
+        // Initially not editing.
+        assert!(model.editing_text_in.is_none());
+
+        // Press Enter to start editing.
+        handle_key(&mut model, key(KeyCode::Enter));
+        assert_eq!(model.editing_text_in, Some(Tab::Profiles));
+
+        // Press '1' (Dashboard shortcut). It should be suppressed.
+        handle_key(&mut model, key(KeyCode::Char('1')));
+        assert_eq!(model.current_tab, Tab::Profiles);
+        assert_eq!(model.editing_text_in, Some(Tab::Profiles));
+
+        // Press Esc to cancel editing.
+        handle_key(&mut model, key(KeyCode::Esc));
+        assert!(model.editing_text_in.is_none());
+
+        // Now '1' should work.
+        handle_key(&mut model, key(KeyCode::Char('1')));
+        assert_eq!(model.current_tab, Tab::Dashboard);
+    }
+
+    #[test]
+    fn daemon_updates_skipped_when_form_dirty() {
+        let mut model = Model::new();
+
+        // 1. Settings: change to Fahrenheit locally, daemon sends Celsius.
+        model.settings.form.adjust(1); // 0 (Celsius) -> 1 (Fahrenheit)
+        assert!(model.settings.form.dirty);
+        handle_data(
+            &mut model,
+            DbusUpdate::SettingsData("temperature_unit = \"Celsius\"".into()),
+        );
+        assert!(
+            model
+                .settings
+                .status_message
+                .as_ref()
+                .unwrap()
+                .contains("skipped")
+        );
+        // Check that it didn't load (remains 1 / Fahrenheit).
+        if let crate::model::FieldType::Select { selected, .. } =
+            &model.settings.form.fields[0].field_type
+        {
+            assert_eq!(*selected, 1);
+        }
+
+        // 2. Keyboard: change brightness to 55 locally, daemon sends 99.
+        model.keyboard.form.adjust(1); // 50 -> 55
+        handle_data(
+            &mut model,
+            DbusUpdate::KeyboardData("brightness = 99".into()),
+        );
+        assert!(
+            model
+                .keyboard
+                .status_message
+                .as_ref()
+                .unwrap()
+                .contains("skipped")
+        );
+        if let crate::model::FieldType::Number { value, .. } =
+            &model.keyboard.form.fields[0].field_type
+        {
+            assert_eq!(*value, 55);
+        }
+
+        // 3. Charging: change to Stationary locally, daemon sends Balanced.
+        model.charging.form.adjust(2); // 0 (High Capacity) -> 2 (Stationary)
+        handle_data(
+            &mut model,
+            DbusUpdate::ChargingData("profile = \"balanced\"".into()),
+        );
+        assert!(
+            model
+                .charging
+                .status_message
+                .as_ref()
+                .unwrap()
+                .contains("skipped")
+        );
+        if let crate::model::FieldType::Select { selected, .. } =
+            &model.charging.form.fields[0].field_type
+        {
+            assert_eq!(*selected, 2);
+        }
+
+        // 4. Power: change offset to 1 locally, daemon sends 10.
+        model.power.form_tab.form.adjust(1); // 0 -> 1
+        handle_data(&mut model, DbusUpdate::PowerData("tgp_offset = 10".into()));
+        assert!(
+            model
+                .power
+                .form_tab
+                .status_message
+                .as_ref()
+                .unwrap()
+                .contains("skipped")
+        );
+        if let crate::model::FieldType::Number { value, .. } =
+            &model.power.form_tab.form.fields[0].field_type
+        {
+            assert_eq!(*value, 1);
+        }
+
+        // 5. Display: change brightness to 55 locally, daemon sends 10.
+        model.display.form.adjust(1); // 50 -> 55
+        handle_data(
+            &mut model,
+            DbusUpdate::DisplayData("brightness = 10".into()),
+        );
+        assert!(
+            model
+                .display
+                .status_message
+                .as_ref()
+                .unwrap()
+                .contains("skipped")
+        );
+        if let crate::model::FieldType::Number { value, .. } =
+            &model.display.form.fields[0].field_type
+        {
+            assert_eq!(*value, 55);
+        }
+
+        // 6. Webcam: change brightness to 55 locally, daemon sends 10.
+        model.webcam.form_tab.form.adjust(1); // 50 -> 55
+        handle_data(&mut model, DbusUpdate::WebcamData("brightness = 10".into()));
+        assert!(
+            model
+                .webcam
+                .form_tab
+                .status_message
+                .as_ref()
+                .unwrap()
+                .contains("skipped")
+        );
+        if let crate::model::FieldType::Number { value, .. } =
+            &model.webcam.form_tab.form.fields[0].field_type
+        {
+            assert_eq!(*value, 55);
+        }
+
+        // 7. Fan Curve: change speed locally, daemon sends 100.
+        model.fan_curve.increase_speed();
+        let local_speed = model.fan_curve.points[0].speed;
+        handle_data(
+            &mut model,
+            DbusUpdate::FanCurve(vec![tux_core::fan_curve::FanCurvePoint {
+                temp: 0,
+                speed: 100,
+            }]),
+        );
+        // Should still have local speed (increased by 5 from default).
+        assert_eq!(model.fan_curve.points[0].speed, local_speed);
+        assert_ne!(local_speed, 100);
+        // Verify debug event was logged.
+        assert!(
+            model
+                .event_log
+                .entries
+                .iter()
+                .any(|e| e.summary == "update skipped" && e.debug)
         );
     }
 }

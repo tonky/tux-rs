@@ -3,8 +3,9 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+use futures_util::StreamExt;
 use tokio::sync::{broadcast, watch};
-use tokio_stream::StreamExt;
 use tracing::{debug, info, warn};
 
 /// Whether the laptop is on AC power or battery.
@@ -15,11 +16,13 @@ pub enum PowerState {
 }
 
 /// Inotify mask for the AC `online` file itself.
+#[cfg(target_os = "linux")]
 fn power_file_watch_mask() -> inotify::WatchMask {
     inotify::WatchMask::MODIFY | inotify::WatchMask::ATTRIB | inotify::WatchMask::CLOSE_WRITE
 }
 
 /// Inotify mask for the parent power-supply directory as fallback.
+#[cfg(target_os = "linux")]
 fn power_dir_watch_mask() -> inotify::WatchMask {
     inotify::WatchMask::MODIFY
         | inotify::WatchMask::ATTRIB
@@ -144,13 +147,15 @@ impl PowerStateMonitor {
     /// Run the monitor loop, watching for power state changes.
     ///
     /// Debounces rapid transitions (500ms).
+    #[cfg(target_os = "linux")]
     pub async fn run(&self, mut shutdown: broadcast::Receiver<()>) {
         use inotify::Inotify;
 
         let inotify = match Inotify::init() {
             Ok(i) => i,
             Err(e) => {
-                warn!("failed to init inotify: {e}, power monitoring disabled");
+                warn!("failed to init inotify: {e}, power monitoring falling back to polling");
+                self.run_polling(shutdown).await;
                 return;
             }
         };
@@ -180,7 +185,10 @@ impl PowerStateMonitor {
         let mut inotify = match inotify.into_event_stream(&mut buffer) {
             Ok(stream) => stream,
             Err(e) => {
-                warn!("failed to create inotify event stream: {e}, power monitoring disabled");
+                warn!(
+                    "failed to create inotify event stream: {e}, power monitoring falling back to polling"
+                );
+                self.run_polling(shutdown).await;
                 return;
             }
         };
@@ -198,7 +206,8 @@ impl PowerStateMonitor {
                             continue;
                         }
                         None => {
-                            warn!("inotify stream ended");
+                            warn!("inotify stream ended, falling back to polling");
+                            self.run_polling(shutdown).await;
                             return;
                         }
                     }
@@ -206,37 +215,56 @@ impl PowerStateMonitor {
                     // Debounce: wait 500ms before reading.
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-                    match detect_power_state_from_paths(&self.online_paths) {
-                        Ok(new_state) => {
-                            let old_state = *self.state_tx.borrow();
-                            if new_state != old_state {
-                                info!("power state changed: {:?} -> {:?}", old_state, new_state);
-                                let _ = self.state_tx.send(new_state);
-                            } else {
-                                debug!("power supply event, but state unchanged: {:?}", new_state);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("failed to read power state: {e}");
-                        }
-                    }
+                    self.check_now();
                 }
                 _ = resync_tick.tick() => {
-                    match detect_power_state_from_paths(&self.online_paths) {
-                        Ok(new_state) => {
-                            let old_state = *self.state_tx.borrow();
-                            if new_state != old_state {
-                                info!("power state changed (periodic): {:?} -> {:?}", old_state, new_state);
-                                let _ = self.state_tx.send(new_state);
-                            }
-                        }
-                        Err(e) => warn!("periodic power-state check failed: {e}"),
-                    }
+                    self.check_now();
                 }
                 _ = shutdown.recv() => {
                     info!("power monitor shutting down");
                     return;
                 }
+            }
+        }
+    }
+
+    /// Run the monitor loop, watching for power state changes via polling.
+    #[cfg(not(target_os = "linux"))]
+    pub async fn run(&self, shutdown: broadcast::Receiver<()>) {
+        self.run_polling(shutdown).await;
+    }
+
+    async fn run_polling(&self, mut shutdown: broadcast::Receiver<()>) {
+        info!("power monitor starting in polling mode");
+        let mut resync_tick = tokio::time::interval(POWER_RESYNC_INTERVAL);
+        resync_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                _ = resync_tick.tick() => {
+                    self.check_now();
+                }
+                _ = shutdown.recv() => {
+                    info!("power monitor shutting down");
+                    return;
+                }
+            }
+        }
+    }
+
+    fn check_now(&self) {
+        match detect_power_state_from_paths(&self.online_paths) {
+            Ok(new_state) => {
+                let old_state = *self.state_tx.borrow();
+                if new_state != old_state {
+                    info!("power state changed: {:?} -> {:?}", old_state, new_state);
+                    let _ = self.state_tx.send(new_state);
+                } else {
+                    debug!("power supply check, state unchanged: {:?}", new_state);
+                }
+            }
+            Err(e) => {
+                warn!("failed to read power state: {e}");
             }
         }
     }
@@ -332,6 +360,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn file_watch_mask_includes_attr_and_write_events() {
         let mask = power_file_watch_mask();
         assert!(mask.contains(inotify::WatchMask::ATTRIB));
@@ -340,6 +369,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn dir_watch_mask_includes_recreate_events() {
         let mask = power_dir_watch_mask();
         assert!(mask.contains(inotify::WatchMask::CREATE));

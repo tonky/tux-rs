@@ -58,7 +58,7 @@ fn render_profile_list(frame: &mut Frame, area: Rect, state: &ProfilesState) {
     let mut lines: Vec<Line> = Vec::new();
 
     for (i, profile) in state.profiles.iter().enumerate() {
-        let is_selected = i == state.selected_index;
+        let is_selected = i == state.selected_index.get();
         let is_ac = profile.id == state.assignments.ac_profile;
         let is_bat = profile.id == state.assignments.battery_profile;
 
@@ -170,13 +170,13 @@ mod tests {
     fn profile_list_renders_with_selection() {
         let mut state = ProfilesState::new();
         state.profiles = tux_core::profile::builtin_profiles();
-        state.selected_index = 1;
+        state.selected_index.set(1);
         state.assignments = ProfileAssignments {
             ac_profile: "__office__".to_string(),
             battery_profile: "__quiet__".to_string(),
         };
         // Just verify we can construct the rendering without panic.
         assert_eq!(state.profiles.len(), 4);
-        assert_eq!(state.selected_index, 1);
+        assert_eq!(state.selected_index.get(), 1);
     }
 }

@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! End-to-end tests: full-stack device-driven D-Bus roundtrips.
 //!
 //! Each test starts a daemon configured for a specific device archetype,

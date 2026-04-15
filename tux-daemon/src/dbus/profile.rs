@@ -23,6 +23,7 @@ pub struct ProfileInterface {
     applier: Arc<ProfileApplier>,
     #[allow(dead_code)]
     power_rx: watch::Receiver<PowerState>,
+    daemon_config: Arc<std::sync::RwLock<crate::config::DaemonConfig>>,
 }
 
 impl ProfileInterface {
@@ -32,6 +33,7 @@ impl ProfileInterface {
         assignments_rx: watch::Receiver<ProfileAssignments>,
         applier: Arc<ProfileApplier>,
         power_rx: watch::Receiver<PowerState>,
+        daemon_config: Arc<std::sync::RwLock<crate::config::DaemonConfig>>,
     ) -> Self {
         Self {
             store,
@@ -39,6 +41,7 @@ impl ProfileInterface {
             assignments_rx,
             applier,
             power_rx,
+            daemon_config,
         }
     }
 
@@ -78,6 +81,13 @@ impl ProfileInterface {
                     .send_modify(|a| a.battery_profile = id_string);
             }
             _ => unreachable!(),
+        }
+
+        if let Ok(mut config) = self.daemon_config.write() {
+            config.profiles = self.assignments_rx.borrow().clone();
+            if let Err(e) = config.save(std::path::Path::new(crate::config::DEFAULT_CONFIG_PATH)) {
+                tracing::warn!("failed to save profile assignments: {e}");
+            }
         }
 
         Ok(())
@@ -244,6 +254,9 @@ mod tests {
             None,
         ));
         let (_, power_rx) = watch::channel(PowerState::Ac);
+        let daemon_config = Arc::new(std::sync::RwLock::new(
+            crate::config::DaemonConfig::default(),
+        ));
 
         (
             ProfileInterface::new(
@@ -252,6 +265,7 @@ mod tests {
                 assignments_rx,
                 applier,
                 power_rx,
+                daemon_config,
             ),
             config_rx,
         )

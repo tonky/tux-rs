@@ -4,7 +4,6 @@ use tux_core::fan_curve::FanCurvePoint;
 
 /// A side-effect command to be executed after updating state.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum Command {
     /// No operation.
     None,

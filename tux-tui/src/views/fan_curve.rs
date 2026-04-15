@@ -11,16 +11,34 @@ use crate::model::FanCurveState;
 
 /// Render the fan curve tab.
 pub fn render(frame: &mut Frame, area: Rect, state: &FanCurveState) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let constraints = if state.status_message.is_some() {
+        vec![
             Constraint::Min(10),   // Chart area
             Constraint::Length(3), // Info + key hints
-        ])
+            Constraint::Length(1), // Status message
+        ]
+    } else {
+        vec![
+            Constraint::Min(10),   // Chart area
+            Constraint::Length(3), // Info + key hints
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(area);
 
     render_chart(frame, chunks[0], state);
     render_info_bar(frame, chunks[1], state);
+
+    if let Some(ref msg) = state.status_message {
+        let status = Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(msg, Style::default().fg(Color::Yellow)),
+        ]));
+        frame.render_widget(status, chunks[2]);
+    }
 }
 
 fn render_chart(frame: &mut Frame, area: Rect, state: &FanCurveState) {
@@ -37,7 +55,7 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &FanCurveState) {
     // Build selected point highlight.
     let selected_data: Vec<(f64, f64)> = state
         .points
-        .get(state.selected_index)
+        .get(state.selected_index.get())
         .map(|p| vec![(p.temp as f64, p.speed as f64)])
         .unwrap_or_default();
 
@@ -122,12 +140,12 @@ fn render_info_bar(frame: &mut Frame, area: Rect, state: &FanCurveState) {
         .split(area);
 
     // Selected point info.
-    let selected_info = if let Some(p) = state.points.get(state.selected_index) {
+    let selected_info = if let Some(p) = state.points.get(state.selected_index.get()) {
         format!(
             "◆ Selected: {}°C → {}%  [{}/{}]",
             p.temp,
             p.speed,
-            state.selected_index + 1,
+            state.selected_index.get() + 1,
             state.points.len()
         )
     } else {
@@ -168,6 +186,7 @@ fn render_info_bar(frame: &mut Frame, area: Rect, state: &FanCurveState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bounded_index::BoundedIndex;
     use tux_core::fan_curve::FanCurvePoint;
 
     #[test]
@@ -175,11 +194,12 @@ mod tests {
         // Should not panic with empty points.
         let state = FanCurveState {
             points: vec![],
-            selected_index: 0,
+            selected_index: BoundedIndex::default(),
             current_temp: None,
             current_speed: None,
             dirty: false,
             original_points: vec![],
+            status_message: None,
         };
         // Build same data as render_chart — verify no panic.
         let curve_data: Vec<(f64, f64)> = state
@@ -200,18 +220,19 @@ mod tests {
                     speed: 80,
                 },
             ],
-            selected_index: 1,
+            selected_index: BoundedIndex::new(1),
             current_temp: Some(65),
             current_speed: Some(40),
             dirty: false,
             original_points: vec![],
+            status_message: None,
         };
-        let p = &state.points[state.selected_index];
+        let p = &state.points[state.selected_index.get()];
         let info = format!(
             "◆ Selected: {}°C → {}%  [{}/{}]",
             p.temp,
             p.speed,
-            state.selected_index + 1,
+            state.selected_index.get() + 1,
             state.points.len()
         );
         assert_eq!(info, "◆ Selected: 80°C → 80%  [2/2]");

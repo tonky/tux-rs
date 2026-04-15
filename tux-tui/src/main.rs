@@ -1,5 +1,6 @@
 //! tux-tui: Terminal UI for TUXEDO laptop control.
 
+mod bounded_index;
 mod cli;
 mod command;
 mod dbus_task;

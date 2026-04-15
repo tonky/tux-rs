@@ -259,6 +259,7 @@ async fn fixture_raw_payloads_match_normalized_sections() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
+#[cfg(target_os = "linux")]
 async fn replay_fixture_matches_dbus_outputs() {
     for path in fixture_files() {
         let fixture = load_fixture(&path);

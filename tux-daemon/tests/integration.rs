@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Integration tests: full daemon D-Bus roundtrips on the session bus.
 //!
 //! These tests start a real D-Bus service with mock backends and exercise

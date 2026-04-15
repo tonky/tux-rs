@@ -552,14 +552,6 @@ impl FormTabState {
             status_message: None,
         }
     }
-
-    pub fn unsupported() -> Self {
-        Self {
-            form: Form::new(vec![]),
-            supported: false,
-            status_message: None,
-        }
-    }
 }
 
 /// Build the Settings tab form.

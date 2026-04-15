@@ -7,11 +7,13 @@
 pub struct BoundedIndex(usize);
 
 impl BoundedIndex {
+    /// Create a new bounded index with the given initial value.
+    #[allow(dead_code)]
     pub fn new(val: usize) -> Self {
         Self(val)
     }
 
-    /// Current index value.
+    /// Get the current index value.
     pub fn get(self) -> usize {
         self.0
     }

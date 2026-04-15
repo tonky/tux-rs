@@ -4,7 +4,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use tokio::sync::{broadcast, watch};
-use tokio_stream::StreamExt;
 use tracing::{debug, info, warn};
 
 /// Whether the laptop is on AC power or battery.

@@ -18,6 +18,7 @@ pub enum AppEvent {
 
 /// Updates received from the D-Bus daemon.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum DbusUpdate {
     /// Connection status changed.
     ConnectionStatus(crate::model::ConnectionStatus),

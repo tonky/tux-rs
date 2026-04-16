@@ -433,7 +433,10 @@ fn handle_profiles_list_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, 
         }
         KeyCode::Enter => {
             if let Some(profile) = model.profiles.selected_profile().cloned() {
-                let form = ProfilesState::build_editor_form(&profile);
+                let form = ProfilesState::build_editor_form(
+                    &profile,
+                    model.profiles.cpu_hw_limits.as_ref(),
+                );
                 model.profiles.mode = ProfilesMode::Editor {
                     form,
                     profile_id: profile.id,
@@ -899,6 +902,9 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
         }
         DbusUpdate::CpuCoreCount(count) => {
             model.dashboard.core_count = Some(count);
+        }
+        DbusUpdate::CpuHwLimits(limits) => {
+            model.profiles.cpu_hw_limits = Some(limits);
         }
         DbusUpdate::DeviceName(name) => {
             model.info.device_name = name;
@@ -1502,6 +1508,21 @@ mod tests {
         let mut model = Model::new();
         handle_data(&mut model, DbusUpdate::CpuCoreCount(16));
         assert_eq!(model.dashboard.core_count, Some(16));
+    }
+
+    #[test]
+    fn cpu_hw_limits_updates_profiles_state() {
+        let mut model = Model::new();
+        let limits = tux_core::dbus_types::CpuHwLimits {
+            core_count: 12,
+            freq_min_mhz: 400,
+            freq_max_mhz: 5200,
+        };
+        handle_data(&mut model, DbusUpdate::CpuHwLimits(limits.clone()));
+        let stored = model.profiles.cpu_hw_limits.expect("hw limits should be stored");
+        assert_eq!(stored.core_count, 12);
+        assert_eq!(stored.freq_min_mhz, 400);
+        assert_eq!(stored.freq_max_mhz, 5200);
     }
 
     #[test]
@@ -2382,7 +2403,7 @@ end_threshold = 80"#;
         };
         model.current_tab = Tab::Profiles;
         model.profiles.mode = crate::model::ProfilesMode::Editor {
-            form: crate::model::ProfilesState::build_editor_form(&profile),
+            form: crate::model::ProfilesState::build_editor_form(&profile, None),
             profile_id: profile.id.clone(),
         };
         // Select first field ("Name", which is Text).

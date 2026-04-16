@@ -413,6 +413,15 @@ async fn fetch_info_data(client: &DaemonClient, tx: &mpsc::Sender<AppEvent>) -> 
             .await;
     }
 
+    // Hardware CPU limits (core count, hw min/max freq) — one-time.
+    if let Ok(toml_str) = client.get_cpu_hw_limits().await
+        && let Ok(limits) = toml::from_str::<tux_core::dbus_types::CpuHwLimits>(&toml_str)
+    {
+        let _ = tx
+            .send(AppEvent::DbusData(DbusUpdate::CpuHwLimits(limits)))
+            .await;
+    }
+
     // Fan curve.
     if let Ok(toml_str) = client.get_active_fan_curve().await
         && let Ok(config) = toml::from_str::<tux_core::fan_curve::FanConfig>(&toml_str)

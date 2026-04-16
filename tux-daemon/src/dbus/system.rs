@@ -12,8 +12,10 @@ use crate::gpu::hwmon;
 use crate::power_monitor::PowerState;
 use crate::profile_store::ProfileStore;
 use tux_core::dbus_types::{
-    BatteryInfoResponse, CpuFreqResponse, CpuLoadResponse, SystemInfoResponse,
+    BatteryInfoResponse, CpuFreqResponse, CpuHwLimits, CpuLoadResponse, SystemInfoResponse,
 };
+
+use crate::cpu::governor::CpuGovernor;
 
 /// D-Bus object implementing the System interface.
 pub struct SystemInterface {
@@ -91,6 +93,28 @@ impl SystemInterface {
     fn get_cpu_count(&self) -> zbus::fdo::Result<u32> {
         cpu_core_count(Path::new("/sys/devices/system/cpu"))
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
+    /// Get hardware CPU limits (core count, min/max freq in MHz) as TOML.
+    fn get_cpu_hw_limits(&self) -> zbus::fdo::Result<String> {
+        let gov = CpuGovernor::new();
+        let core_count = gov
+            .cpu_count()
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let freq_min_mhz = gov
+            .get_cpuinfo_min_freq()
+            .map(|khz| khz / 1_000)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let freq_max_mhz = gov
+            .get_cpuinfo_max_freq()
+            .map(|khz| khz / 1_000)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        let limits = CpuHwLimits {
+            core_count,
+            freq_min_mhz,
+            freq_max_mhz,
+        };
+        toml::to_string(&limits).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// Get the active profile name for the current power state.

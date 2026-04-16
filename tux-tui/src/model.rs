@@ -252,6 +252,8 @@ pub struct ProfilesState {
     pub mode: ProfilesMode,
     /// Status message shown briefly after operations.
     pub status_message: Option<String>,
+    /// Hardware CPU limits fetched from daemon at startup (if available).
+    pub cpu_hw_limits: Option<tux_core::dbus_types::CpuHwLimits>,
 }
 
 /// Whether we're in list view or editing a profile.
@@ -268,6 +270,7 @@ impl ProfilesState {
             assignments: ProfileAssignments::default(),
             mode: ProfilesMode::List,
             status_message: None,
+            cpu_hw_limits: None,
         }
     }
 
@@ -287,7 +290,10 @@ impl ProfilesState {
     }
 
     /// Build a Form from a TuxProfile for editing.
-    pub fn build_editor_form(profile: &TuxProfile) -> Form {
+    pub fn build_editor_form(
+        profile: &TuxProfile,
+        hw: Option<&tux_core::dbus_types::CpuHwLimits>,
+    ) -> Form {
         let read_only = profile.is_default;
         let fields = vec![
             FormField {
@@ -394,7 +400,7 @@ impl ProfilesState {
                 field_type: FieldType::Number {
                     value: profile.cpu.online_cores.unwrap_or(0) as i64,
                     min: 0,
-                    max: 256,
+                    max: hw.map_or(256, |h| h.core_count) as i64,
                     step: 1,
                 },
                 enabled: !read_only,
@@ -405,7 +411,7 @@ impl ProfilesState {
                 field_type: FieldType::FreqMhz {
                     value: profile.cpu.scaling_min_frequency.unwrap_or(0) as i64 / 1_000,
                     min: 0,
-                    max: 10_000,
+                    max: hw.map_or(10_000, |h| h.freq_max_mhz) as i64,
                     step: 100,
                 },
                 enabled: !read_only,
@@ -416,7 +422,7 @@ impl ProfilesState {
                 field_type: FieldType::FreqMhz {
                     value: profile.cpu.scaling_max_frequency.unwrap_or(0) as i64 / 1_000,
                     min: 0,
-                    max: 10_000,
+                    max: hw.map_or(10_000, |h| h.freq_max_mhz) as i64,
                     step: 100,
                 },
                 enabled: !read_only,
@@ -1718,7 +1724,7 @@ mod tests {
     #[test]
     fn profiles_build_editor_form_default_readonly() {
         let profiles = tux_core::profile::builtin_profiles();
-        let form = ProfilesState::build_editor_form(&profiles[0]);
+        let form = ProfilesState::build_editor_form(&profiles[0], None);
         // All fields disabled for default profiles.
         for field in &form.fields {
             assert!(!field.enabled, "field '{}' should be disabled", field.label);
@@ -1729,7 +1735,7 @@ mod tests {
     fn profiles_build_editor_form_custom_editable() {
         let mut profile = tux_core::profile::builtin_profiles()[0].clone();
         profile.is_default = false;
-        let form = ProfilesState::build_editor_form(&profile);
+        let form = ProfilesState::build_editor_form(&profile, None);
         for field in &form.fields {
             assert!(field.enabled, "field '{}' should be enabled", field.label);
         }
@@ -1739,7 +1745,7 @@ mod tests {
     fn profiles_apply_form_roundtrip() {
         let profiles = tux_core::profile::builtin_profiles();
         let profile = &profiles[2]; // Office
-        let form = ProfilesState::build_editor_form(profile);
+        let form = ProfilesState::build_editor_form(profile, None);
         let result = ProfilesState::apply_form_to_profile(&form, profile);
         assert_eq!(result.name, profile.name);
         assert_eq!(result.fan.enabled, profile.fan.enabled);
@@ -1748,7 +1754,7 @@ mod tests {
     #[test]
     fn profiles_build_editor_form_has_cpu_fields() {
         let profile = tux_core::profile::builtin_profiles()[0].clone();
-        let form = ProfilesState::build_editor_form(&profile);
+        let form = ProfilesState::build_editor_form(&profile, None);
         let labels: Vec<&str> = form.fields.iter().map(|f| f.label.as_str()).collect();
         assert!(
             labels.contains(&"Online Cores (0=Auto)"),
@@ -1772,7 +1778,7 @@ mod tests {
         profile.cpu.scaling_min_frequency = Some(800_000);
         profile.cpu.scaling_max_frequency = Some(3_500_000);
 
-        let mut form = ProfilesState::build_editor_form(&profile);
+        let mut form = ProfilesState::build_editor_form(&profile, None);
 
         for field in &mut form.fields {
             match field.label.as_str() {
@@ -1815,5 +1821,54 @@ mod tests {
         assert_eq!(result_none.cpu.online_cores, None);
         assert_eq!(result_none.cpu.scaling_min_frequency, None);
         assert_eq!(result_none.cpu.scaling_max_frequency, None);
+    }
+
+    #[test]
+    fn build_editor_form_uses_hw_limits_for_cpu_bounds() {
+        let profile = tux_core::profile::builtin_profiles()[0].clone();
+        let hw = tux_core::dbus_types::CpuHwLimits {
+            core_count: 16,
+            freq_min_mhz: 400,
+            freq_max_mhz: 5200,
+        };
+        let form = ProfilesState::build_editor_form(&profile, Some(&hw));
+
+        for field in &form.fields {
+            match field.label.as_str() {
+                "Online Cores (0=Auto)" => {
+                    if let FieldType::Number { max, .. } = field.field_type {
+                        assert_eq!(max, 16, "cores max should match hw.core_count");
+                    }
+                }
+                "Min Freq GHz (0=Unset)" | "Max Freq GHz (0=Unset)" => {
+                    if let FieldType::FreqMhz { max, .. } = field.field_type {
+                        assert_eq!(max, 5200, "freq max should match hw.freq_max_mhz");
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn build_editor_form_falls_back_to_defaults_without_hw_limits() {
+        let profile = tux_core::profile::builtin_profiles()[0].clone();
+        let form = ProfilesState::build_editor_form(&profile, None);
+
+        for field in &form.fields {
+            match field.label.as_str() {
+                "Online Cores (0=Auto)" => {
+                    if let FieldType::Number { max, .. } = field.field_type {
+                        assert_eq!(max, 256, "cores max should fall back to 256");
+                    }
+                }
+                "Min Freq GHz (0=Unset)" | "Max Freq GHz (0=Unset)" => {
+                    if let FieldType::FreqMhz { max, .. } = field.field_type {
+                        assert_eq!(max, 10_000, "freq max should fall back to 10_000 MHz");
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }

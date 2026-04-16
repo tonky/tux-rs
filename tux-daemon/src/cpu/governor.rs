@@ -253,6 +253,33 @@ impl CpuGovernor {
             )
         })
     }
+
+    /// Get the hardware (BIOS/HW) minimum frequency in kHz from cpu0.
+    pub fn get_cpuinfo_min_freq(&self) -> io::Result<u32> {
+        let raw = self.read_cpu0("cpuinfo_min_freq")?;
+        raw.parse::<u32>().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid cpuinfo_min_freq value '{raw}': {e}"),
+            )
+        })
+    }
+
+    /// Get the hardware (BIOS/HW) maximum frequency in kHz from cpu0.
+    pub fn get_cpuinfo_max_freq(&self) -> io::Result<u32> {
+        let raw = self.read_cpu0("cpuinfo_max_freq")?;
+        raw.parse::<u32>().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid cpuinfo_max_freq value '{raw}': {e}"),
+            )
+        })
+    }
+
+    /// Count of CPU cores (directories with cpufreq under cpu_base).
+    pub fn cpu_count(&self) -> io::Result<u32> {
+        Ok(self.all_cpu_dirs()?.len() as u32)
+    }
 }
 
 /// Check if CPU governor control is available.
@@ -284,6 +311,8 @@ mod tests {
             .unwrap();
             fs::write(cpufreq.join("scaling_min_freq"), "400000\n").unwrap();
             fs::write(cpufreq.join("scaling_max_freq"), "2000000\n").unwrap();
+            fs::write(cpufreq.join("cpuinfo_min_freq"), "400000\n").unwrap();
+            fs::write(cpufreq.join("cpuinfo_max_freq"), "4800000\n").unwrap();
             if i > 0 {
                 fs::write(cpu_dir.join("online"), "1\n").unwrap();
             }
@@ -451,5 +480,24 @@ mod tests {
 
         assert_eq!(gov.get_scaling_min_freq().unwrap(), 400000);
         assert_eq!(gov.get_scaling_max_freq().unwrap(), 2000000);
+    }
+
+    #[test]
+    fn get_cpuinfo_min_max_freq_reads_cpu0() {
+        let tmp = tempfile::tempdir().unwrap();
+        setup_cpu_tree(tmp.path(), 2);
+        let gov = CpuGovernor::with_path(tmp.path());
+
+        assert_eq!(gov.get_cpuinfo_min_freq().unwrap(), 400000);
+        assert_eq!(gov.get_cpuinfo_max_freq().unwrap(), 4800000);
+    }
+
+    #[test]
+    fn cpu_count_returns_number_of_cpu_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        setup_cpu_tree(tmp.path(), 4);
+        let gov = CpuGovernor::with_path(tmp.path());
+
+        assert_eq!(gov.cpu_count().unwrap(), 4);
     }
 }

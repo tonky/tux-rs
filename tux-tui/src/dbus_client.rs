@@ -117,6 +117,11 @@ impl DaemonClient {
         self.call_method(SYSTEM_IFACE, "GetCpuCount", &()).await
     }
 
+    /// Get hardware CPU limits (core count, min/max freq in MHz) as TOML string.
+    pub async fn get_cpu_hw_limits(&self) -> Result<String, zbus::Error> {
+        self.call_method(SYSTEM_IFACE, "GetCpuHwLimits", &()).await
+    }
+
     /// Get CPU load (overall + per-core) as TOML string.
     pub async fn get_cpu_load(&self) -> Result<String, zbus::Error> {
         self.call_method(SYSTEM_IFACE, "GetCpuLoad", &()).await

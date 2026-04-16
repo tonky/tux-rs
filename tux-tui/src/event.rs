@@ -41,6 +41,8 @@ pub enum DbusUpdate {
     FanInfo { num_fans: u8, max_rpm: u32 },
     /// CPU core count (one-time).
     CpuCoreCount(u32),
+    /// Hardware CPU limits (core count + hw min/max freq in MHz, one-time).
+    CpuHwLimits(tux_core::dbus_types::CpuHwLimits),
     /// Device name (one-time).
     DeviceName(String),
     /// Platform name (one-time).

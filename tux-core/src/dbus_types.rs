@@ -103,6 +103,18 @@ pub struct CapabilitiesResponse {
     pub display_brightness: bool,
 }
 
+/// Hardware CPU limits as exposed by the kernel.
+///
+/// Frequencies are in MHz; they come from `cpuinfo_min_freq` / `cpuinfo_max_freq`
+/// converted from kHz.  `core_count` is the number of logical CPU cores that
+/// expose a `cpufreq` directory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CpuHwLimits {
+    pub core_count: u32,
+    pub freq_min_mhz: u32,
+    pub freq_max_mhz: u32,
+}
+
 /// Charging settings as returned by D-Bus `GetChargingSettings`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChargingSettingsResponse {

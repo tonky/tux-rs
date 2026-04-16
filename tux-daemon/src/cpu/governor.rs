@@ -35,22 +35,31 @@ impl CpuGovernor {
         }
     }
 
-    /// List all cpuN directories that have a cpufreq subdirectory.
-    fn cpu_dirs(&self) -> io::Result<Vec<PathBuf>> {
+    /// List all cpuN directories with their parsed index.
+    fn all_cpu_dirs(&self) -> io::Result<Vec<(u32, PathBuf)>> {
         let mut dirs = Vec::new();
         for entry in std::fs::read_dir(&self.cpu_base)? {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with("cpu")
-                && name[3..].chars().all(|c| c.is_ascii_digit())
-                && entry.path().join("cpufreq").is_dir()
+            if let Some(stripped) = name.strip_prefix("cpu")
+                && let Ok(idx) = stripped.parse::<u32>()
             {
-                dirs.push(entry.path());
+                dirs.push((idx, entry.path()));
             }
         }
-        dirs.sort();
+        dirs.sort_by_key(|(idx, _)| *idx);
         Ok(dirs)
+    }
+
+    /// List all cpuN directories that have a cpufreq subdirectory.
+    fn cpu_dirs(&self) -> io::Result<Vec<PathBuf>> {
+        Ok(self
+            .all_cpu_dirs()?
+            .into_iter()
+            .filter(|(_, p)| p.join("cpufreq").is_dir())
+            .map(|(_, p)| p)
+            .collect())
     }
 
     /// Write a value to a cpufreq attribute on all CPUs.
@@ -174,6 +183,76 @@ impl CpuGovernor {
         let raw = self.read_cpu0("scaling_available_governors")?;
         Ok(raw.split_whitespace().map(String::from).collect())
     }
+
+    /// Set the number of online CPU cores.
+    ///
+    /// Iterates over all logical CPUs. Sets `online=1` for the first `count` CPUs,
+    /// and `online=0` for the rest. CPU0 is always skipped (cannot be taken offline).
+    pub fn set_online_cores(&self, count: u32) -> io::Result<()> {
+        let count = count.max(1); // At least 1 core must be online
+        let dirs = self.all_cpu_dirs()?;
+
+        let mut successes = 0usize;
+        let mut last_err = None;
+
+        for (idx, dir) in dirs {
+            if idx == 0 {
+                continue; // CPU 0 is usually not hotpluggable
+            }
+            let online_path = dir.join("online");
+            if !online_path.exists() {
+                continue;
+            }
+
+            let val = if idx < count { "1" } else { "0" };
+            match std::fs::write(&online_path, val) {
+                Ok(()) => successes += 1,
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        // We only error out if we tried to write something and completely failed.
+        // If there were no `online` files, we just succeed.
+        if successes > 0 {
+            Ok(())
+        } else if let Some(e) = last_err {
+            Err(e)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Set the scaling minimum frequency for all online CPUs.
+    pub fn set_scaling_min_freq(&self, freq: u32) -> io::Result<()> {
+        self.write_all("scaling_min_freq", &freq.to_string())
+    }
+
+    /// Set the scaling maximum frequency for all online CPUs.
+    pub fn set_scaling_max_freq(&self, freq: u32) -> io::Result<()> {
+        self.write_all("scaling_max_freq", &freq.to_string())
+    }
+
+    /// Get the current scaling minimum frequency from cpu0.
+    pub fn get_scaling_min_freq(&self) -> io::Result<u32> {
+        let raw = self.read_cpu0("scaling_min_freq")?;
+        raw.parse::<u32>().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid scaling_min_freq value '{raw}': {e}"),
+            )
+        })
+    }
+
+    /// Get the current scaling maximum frequency from cpu0.
+    pub fn get_scaling_max_freq(&self) -> io::Result<u32> {
+        let raw = self.read_cpu0("scaling_max_freq")?;
+        raw.parse::<u32>().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid scaling_max_freq value '{raw}': {e}"),
+            )
+        })
+    }
 }
 
 /// Check if CPU governor control is available.
@@ -189,7 +268,8 @@ mod tests {
     /// Create a fake CPU sysfs tree with N cpus.
     fn setup_cpu_tree(dir: &Path, num_cpus: usize) {
         for i in 0..num_cpus {
-            let cpufreq = dir.join(format!("cpu{i}/cpufreq"));
+            let cpu_dir = dir.join(format!("cpu{i}"));
+            let cpufreq = cpu_dir.join("cpufreq");
             fs::create_dir_all(&cpufreq).unwrap();
             fs::write(cpufreq.join("scaling_governor"), "powersave\n").unwrap();
             fs::write(
@@ -202,6 +282,11 @@ mod tests {
                 "balance_performance\n",
             )
             .unwrap();
+            fs::write(cpufreq.join("scaling_min_freq"), "400000\n").unwrap();
+            fs::write(cpufreq.join("scaling_max_freq"), "2000000\n").unwrap();
+            if i > 0 {
+                fs::write(cpu_dir.join("online"), "1\n").unwrap();
+            }
         }
     }
 
@@ -311,5 +396,60 @@ mod tests {
 
         let avail = gov.available_governors().unwrap();
         assert_eq!(avail, vec!["performance", "powersave", "schedutil"]);
+    }
+
+    #[test]
+    fn set_online_cores_works() {
+        let tmp = tempfile::tempdir().unwrap();
+        setup_cpu_tree(tmp.path(), 4);
+        let gov = CpuGovernor::with_path(tmp.path());
+
+        // Set to 2 cores online
+        gov.set_online_cores(2).unwrap();
+
+        // CPU0 is always online, so it doesn't have an online file in our test setup
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("cpu1/online")).unwrap(),
+            "1"
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("cpu2/online")).unwrap(),
+            "0"
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("cpu3/online")).unwrap(),
+            "0"
+        );
+    }
+
+    #[test]
+    fn set_scaling_min_max_freq_works() {
+        let tmp = tempfile::tempdir().unwrap();
+        setup_cpu_tree(tmp.path(), 2);
+        let gov = CpuGovernor::with_path(tmp.path());
+
+        gov.set_scaling_min_freq(800000).unwrap();
+        gov.set_scaling_max_freq(3500000).unwrap();
+
+        for i in 0..2 {
+            let min_val =
+                fs::read_to_string(tmp.path().join(format!("cpu{i}/cpufreq/scaling_min_freq")))
+                    .unwrap();
+            let max_val =
+                fs::read_to_string(tmp.path().join(format!("cpu{i}/cpufreq/scaling_max_freq")))
+                    .unwrap();
+            assert_eq!(min_val, "800000");
+            assert_eq!(max_val, "3500000");
+        }
+    }
+
+    #[test]
+    fn get_scaling_min_max_freq_reads_cpu0() {
+        let tmp = tempfile::tempdir().unwrap();
+        setup_cpu_tree(tmp.path(), 2);
+        let gov = CpuGovernor::with_path(tmp.path());
+
+        assert_eq!(gov.get_scaling_min_freq().unwrap(), 400000);
+        assert_eq!(gov.get_scaling_max_freq().unwrap(), 2000000);
     }
 }

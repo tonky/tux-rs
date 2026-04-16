@@ -711,6 +711,7 @@ fn serialize_form_to_toml(form: &crate::model::Form) -> String {
         let value = match &field.field_type {
             FieldType::Text(v) => toml::Value::String(v.clone()),
             FieldType::Number { value, .. } => toml::Value::Integer(*value),
+            FieldType::FreqMhz { value, .. } => toml::Value::Integer(*value),
             FieldType::Bool(v) => toml::Value::Boolean(*v),
             FieldType::Select { options, selected } => {
                 toml::Value::String(options.get(*selected).cloned().unwrap_or_default())
@@ -1229,6 +1230,16 @@ fn load_form_from_toml(form: &mut crate::model::Form, toml_str: &str) {
                 FieldType::Bool(b) => {
                     if let Some(v) = value.as_bool() {
                         *b = v;
+                    }
+                }
+                FieldType::FreqMhz {
+                    value: val,
+                    min,
+                    max,
+                    ..
+                } => {
+                    if let Some(n) = value.as_integer() {
+                        *val = n.clamp(*min, *max);
                     }
                 }
                 FieldType::Select { options, selected } => {
@@ -1986,10 +1997,10 @@ mod tests {
         handle_key(&mut model, key(KeyCode::Left));
         handle_key(&mut model, key(KeyCode::Char('Z')));
         handle_key(&mut model, key(KeyCode::Enter)); // confirm
-        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode {
-            if let crate::model::FieldType::Text(ref s) = form.fields[0].field_type {
-                assert_eq!(s, "My CustoZm");
-            }
+        if let ProfilesMode::Editor { form, .. } = &model.profiles.mode
+            && let crate::model::FieldType::Text(ref s) = form.fields[0].field_type
+        {
+            assert_eq!(s, "My CustoZm");
         }
     }
 

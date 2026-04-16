@@ -74,6 +74,40 @@ fn parse_args() -> Args {
     }
 }
 
+fn print_help() {
+    println!(
+        "tux-tui - Terminal UI for TUXEDO control
+
+USAGE:
+    tux-tui [OPTIONS]
+
+OPTIONS:
+    -h, --help              Show this help text and exit
+        --session           Connect to session bus instead of system bus
+    -t, --tab <TAB>         Start with selected tab
+        --tab=<TAB>         Same as above
+
+TAB VALUES:
+    dashboard, profiles, fan-curve, settings, keyboard, charging,
+    power, display, webcam, info, event-log
+
+HEADLESS DUMP MODES:
+        --dump-dashboard
+        --dump-fan-curve
+        --dump-profiles
+        --dump-capabilities
+        --dump-system-info
+        --dump-battery-info
+        --json
+
+EXAMPLES:
+    tux-tui --tab profiles
+    tux-tui -t fan-curve
+    tux-tui --session --tab event-log
+    tux-tui --dump-dashboard"
+    );
+}
+
 fn parse_tab_arg(s: &str) -> Option<model::Tab> {
     match s.to_lowercase().replace('-', "").as_str() {
         "dashboard" => Some(model::Tab::Dashboard),
@@ -86,6 +120,7 @@ fn parse_tab_arg(s: &str) -> Option<model::Tab> {
         "display" => Some(model::Tab::Display),
         "webcam" => Some(model::Tab::Webcam),
         "info" => Some(model::Tab::Info),
+        "eventlog" => Some(model::Tab::EventLog),
         _ => {
             eprintln!("Warning: unknown tab '{}', defaulting to Dashboard", s);
             None
@@ -96,10 +131,16 @@ fn parse_tab_arg(s: &str) -> Option<model::Tab> {
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
+
+    let all_args: Vec<String> = std::env::args().collect();
+    if all_args.iter().any(|a| a == "-h" || a == "--help") {
+        print_help();
+        return Ok(());
+    }
+
     let args = parse_args();
 
     // CLI mode: dump state and exit without opening a terminal.
-    let all_args: Vec<String> = std::env::args().collect();
     if let Some(cli_cmd) = cli::parse_cli_command(&all_args) {
         match cli::run_cli(cli_cmd, args.session_bus).await {
             Ok(output) => {
@@ -313,5 +354,51 @@ async fn dispatch_command(cmd_tx: &mpsc::Sender<DbusCommand>, cmd: command::Comm
         command::Command::SaveWebcam { device, toml } => {
             let _ = cmd_tx.send(DbusCommand::SaveWebcam { device, toml }).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_flag_detected() {
+        // Simulate detection logic: any of -h or --help triggers help
+        let cases = vec![
+            vec!["tux-tui".to_string(), "--help".to_string()],
+            vec!["tux-tui".to_string(), "-h".to_string()],
+        ];
+        for args in cases {
+            assert!(
+                args.iter().any(|a| a == "-h" || a == "--help"),
+                "expected help flag detected in {args:?}"
+            );
+        }
+        // non-help args should not trigger
+        let no_help = vec![
+            "tux-tui".to_string(),
+            "--tab".to_string(),
+            "profiles".to_string(),
+        ];
+        assert!(!no_help.iter().any(|a| a == "-h" || a == "--help"));
+    }
+
+    #[test]
+    fn parse_tab_arg_event_log_aliases() {
+        assert_eq!(parse_tab_arg("event-log"), Some(model::Tab::EventLog));
+        assert_eq!(parse_tab_arg("eventlog"), Some(model::Tab::EventLog));
+        assert_eq!(parse_tab_arg("EventLog"), Some(model::Tab::EventLog));
+    }
+
+    #[test]
+    fn parse_tab_arg_known_tabs() {
+        assert_eq!(parse_tab_arg("profiles"), Some(model::Tab::Profiles));
+        assert_eq!(parse_tab_arg("fan-curve"), Some(model::Tab::FanCurve));
+        assert_eq!(parse_tab_arg("fancurve"), Some(model::Tab::FanCurve));
+    }
+
+    #[test]
+    fn parse_tab_arg_unknown_returns_none() {
+        assert_eq!(parse_tab_arg("not-a-tab"), None);
     }
 }

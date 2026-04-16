@@ -1,0 +1,27 @@
+[[task]]
+description = "Validate CPU profile values before casting i32 -> u32 for online_cores and scaling frequencies; reject/log negative values explicitly."
+status = "done"
+priority = "high"
+context = "tux-daemon/src/profile_apply.rs"
+reasoning = "Implemented via sanitize_positive_u32() in Stage 3. Negative values are warned and ignored."
+
+[[task]]
+description = "Define and enforce behavior when both scaling_min_frequency and scaling_max_frequency are set, including min<=max validation and write ordering to avoid kernel EINVAL."
+status = "done"
+priority = "high"
+context = "tux-daemon/src/profile_apply.rs, tux-daemon/src/cpu/governor.rs"
+reasoning = "Implemented via apply_scaling_bounds() in Stage 3. Reads current kernel bounds to decide write order; min>max skips both with a warning."
+
+[[task]]
+description = "Decide explicit policy for online_cores=None (leave untouched vs reset-to-all) and codify it in stage docs + implementation/tests."
+status = "done"
+priority = "medium"
+context = "tux-daemon/src/profile_apply.rs"
+reasoning = "Policy: reset to 256 (kernel clamps to actual count). Comment clarified in code. Behavior: profiles without online_cores always restore all cores."
+
+[[task]]
+description = "Align plan/spec with implementation for scaling writes (all cpufreq dirs vs online-only CPUs), then codify and test the chosen behavior."
+status = "done"
+priority = "medium"
+context = "tux-daemon/src/cpu/governor.rs"
+reasoning = "cpu_dirs() already filters to cpuN dirs that have a cpufreq/ subdirectory. Offline CPUs do not expose cpufreq, so write_all implicitly targets only online CPUs. No code change needed."

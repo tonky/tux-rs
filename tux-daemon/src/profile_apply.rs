@@ -47,6 +47,55 @@ impl ProfileApplier {
         }
     }
 
+    fn sanitize_positive_u32(value: i32, field: &str, profile_name: &str) -> Option<u32> {
+        if value <= 0 {
+            warn!(
+                "profile '{}' has invalid {}={} (must be > 0), ignoring",
+                profile_name, field, value
+            );
+            None
+        } else {
+            Some(value as u32)
+        }
+    }
+
+    fn apply_scaling_bounds(gov: &CpuGovernor, min_freq: u32, max_freq: u32) {
+        let apply_min_then_max = match (gov.get_scaling_min_freq(), gov.get_scaling_max_freq()) {
+            (Ok(current_min), Ok(_current_max)) => {
+                // If the requested max is below the current min, lower min first.
+                max_freq < current_min
+            }
+            _ => {
+                // Best-effort fallback when current bounds cannot be read.
+                false
+            }
+        };
+
+        if apply_min_then_max {
+            debug!(
+                "applying CPU scaling bounds with min->max ordering: min={} max={}",
+                min_freq, max_freq
+            );
+            if let Err(e) = gov.set_scaling_min_freq(min_freq) {
+                warn!("failed to set scaling min freq: {e}");
+            }
+            if let Err(e) = gov.set_scaling_max_freq(max_freq) {
+                warn!("failed to set scaling max freq: {e}");
+            }
+        } else {
+            debug!(
+                "applying CPU scaling bounds with max->min ordering: min={} max={}",
+                min_freq, max_freq
+            );
+            if let Err(e) = gov.set_scaling_max_freq(max_freq) {
+                warn!("failed to set scaling max freq: {e}");
+            }
+            if let Err(e) = gov.set_scaling_min_freq(min_freq) {
+                warn!("failed to set scaling min freq: {e}");
+            }
+        }
+    }
+
     /// Apply a profile's settings to hardware.
     pub fn apply(&self, profile: &TuxProfile) -> anyhow::Result<()> {
         // 1. Update fan curve engine config from profile.
@@ -75,7 +124,7 @@ impl ProfileApplier {
             );
         }
 
-        // 2. CPU governor + EPP + turbo.
+        // 2. CPU governor + EPP + turbo + cores + frequencies.
         if let Some(ref gov) = self.cpu_governor {
             if let Err(e) = gov.set_governor(&profile.cpu.governor) {
                 warn!("failed to set CPU governor: {e}");
@@ -88,9 +137,62 @@ impl ProfileApplier {
             if let Err(e) = gov.set_no_turbo(profile.cpu.no_turbo) {
                 warn!("failed to set no_turbo: {e}");
             }
+            if let Some(cores) = profile.cpu.online_cores {
+                if let Some(cores) =
+                    Self::sanitize_positive_u32(cores, "online_cores", &profile.name)
+                    && let Err(e) = gov.set_online_cores(cores)
+                {
+                    warn!("failed to set online cores: {e}");
+                }
+            } else {
+                // online_cores=None means "unmanaged" — restore all cores so the
+                // profile doesn't leave the system in a reduced-core state from a
+                // previous profile. Writing 256 is safe: the kernel clamps to the
+                // actual CPU count.
+                if let Err(e) = gov.set_online_cores(256) {
+                    warn!("failed to reset online cores: {e}");
+                }
+            }
+
+            let min_freq = profile.cpu.scaling_min_frequency.and_then(|v| {
+                Self::sanitize_positive_u32(v, "scaling_min_frequency", &profile.name)
+            });
+            let max_freq = profile.cpu.scaling_max_frequency.and_then(|v| {
+                Self::sanitize_positive_u32(v, "scaling_max_frequency", &profile.name)
+            });
+
+            match (min_freq, max_freq) {
+                (Some(min_freq), Some(max_freq)) => {
+                    if min_freq > max_freq {
+                        warn!(
+                            "profile '{}' has invalid CPU frequency bounds (min={} > max={}), skipping both",
+                            profile.name, min_freq, max_freq
+                        );
+                    } else {
+                        Self::apply_scaling_bounds(gov, min_freq, max_freq);
+                    }
+                }
+                (Some(min_freq), None) => {
+                    if let Err(e) = gov.set_scaling_min_freq(min_freq) {
+                        warn!("failed to set scaling min freq: {e}");
+                    }
+                }
+                (None, Some(max_freq)) => {
+                    if let Err(e) = gov.set_scaling_max_freq(max_freq) {
+                        warn!("failed to set scaling max freq: {e}");
+                    }
+                }
+                (None, None) => {}
+            }
+
             info!(
-                "applied CPU settings from profile '{}': governor={}, no_turbo={}",
-                profile.name, profile.cpu.governor, profile.cpu.no_turbo
+                "applied CPU settings from profile '{}': governor={}, no_turbo={}, cores={:?}, min_freq={:?}, max_freq={:?}",
+                profile.name,
+                profile.cpu.governor,
+                profile.cpu.no_turbo,
+                profile.cpu.online_cores,
+                profile.cpu.scaling_min_frequency,
+                profile.cpu.scaling_max_frequency
             );
         }
 
@@ -623,7 +725,8 @@ mod tests {
 
         // Set up fake CPU sysfs
         for i in 0..2 {
-            let cpufreq = cpu_dir.join(format!("cpu{i}/cpufreq"));
+            let cpu_i_dir = cpu_dir.join(format!("cpu{i}"));
+            let cpufreq = cpu_i_dir.join("cpufreq");
             std::fs::create_dir_all(&cpufreq).unwrap();
             std::fs::write(cpufreq.join("scaling_governor"), "powersave\n").unwrap();
             std::fs::write(
@@ -636,6 +739,12 @@ mod tests {
                 "balance_performance\n",
             )
             .unwrap();
+            std::fs::write(cpufreq.join("scaling_min_freq"), "400000\n").unwrap();
+            std::fs::write(cpufreq.join("scaling_max_freq"), "2000000\n").unwrap();
+
+            if i > 0 {
+                std::fs::write(cpu_i_dir.join("online"), "1\n").unwrap();
+            }
         }
         let intel = cpu_dir.join("intel_pstate");
         std::fs::create_dir_all(&intel).unwrap();
@@ -673,6 +782,9 @@ mod tests {
         profile.cpu.governor = "performance".to_string();
         profile.cpu.energy_performance_preference = Some("power".to_string());
         profile.cpu.no_turbo = true;
+        profile.cpu.online_cores = Some(1);
+        profile.cpu.scaling_min_frequency = Some(800000);
+        profile.cpu.scaling_max_frequency = Some(3500000);
         profile.tdp = Some(TdpSettings {
             pl1: Some(20),
             pl2: Some(35),
@@ -682,8 +794,149 @@ mod tests {
 
         assert_eq!(gov.get_governor().unwrap(), "performance");
         assert!(gov.get_no_turbo().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(cpu_dir.join("cpu1/online"))
+                .unwrap()
+                .trim(),
+            "0"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cpu_dir.join("cpu0/cpufreq/scaling_min_freq"))
+                .unwrap()
+                .trim(),
+            "800000"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cpu_dir.join("cpu0/cpufreq/scaling_max_freq"))
+                .unwrap()
+                .trim(),
+            "3500000"
+        );
         assert_eq!(tdp.get_pl1().unwrap(), 20);
         assert_eq!(tdp.get_pl2().unwrap(), 35);
+    }
+
+    #[test]
+    fn apply_cpu_invalid_negative_values_are_ignored() {
+        use crate::cpu::governor::CpuGovernor;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cpu_dir = tmp.path().join("cpu");
+
+        for i in 0..2 {
+            let cpu_i_dir = cpu_dir.join(format!("cpu{i}"));
+            let cpufreq = cpu_i_dir.join("cpufreq");
+            std::fs::create_dir_all(&cpufreq).unwrap();
+            std::fs::write(cpufreq.join("scaling_governor"), "powersave\n").unwrap();
+            std::fs::write(
+                cpufreq.join("scaling_available_governors"),
+                "performance powersave\n",
+            )
+            .unwrap();
+            std::fs::write(
+                cpufreq.join("energy_performance_preference"),
+                "balance_performance\n",
+            )
+            .unwrap();
+            std::fs::write(cpufreq.join("scaling_min_freq"), "400000\n").unwrap();
+            std::fs::write(cpufreq.join("scaling_max_freq"), "2000000\n").unwrap();
+
+            if i > 0 {
+                std::fs::write(cpu_i_dir.join("online"), "1\n").unwrap();
+            }
+        }
+
+        let intel = cpu_dir.join("intel_pstate");
+        std::fs::create_dir_all(&intel).unwrap();
+        std::fs::write(intel.join("no_turbo"), "0\n").unwrap();
+
+        let gov = Arc::new(CpuGovernor::with_path(&cpu_dir));
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, None, Some(gov), None, None, vec![], None);
+
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.cpu.online_cores = Some(-1);
+        profile.cpu.scaling_min_frequency = Some(-800000);
+        profile.cpu.scaling_max_frequency = Some(-3500000);
+
+        applier.apply(&profile).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(cpu_dir.join("cpu1/online"))
+                .unwrap()
+                .trim(),
+            "1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cpu_dir.join("cpu0/cpufreq/scaling_min_freq"))
+                .unwrap()
+                .trim(),
+            "400000"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cpu_dir.join("cpu0/cpufreq/scaling_max_freq"))
+                .unwrap()
+                .trim(),
+            "2000000"
+        );
+    }
+
+    #[test]
+    fn apply_cpu_invalid_min_max_range_is_ignored() {
+        use crate::cpu::governor::CpuGovernor;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cpu_dir = tmp.path().join("cpu");
+
+        for i in 0..2 {
+            let cpu_i_dir = cpu_dir.join(format!("cpu{i}"));
+            let cpufreq = cpu_i_dir.join("cpufreq");
+            std::fs::create_dir_all(&cpufreq).unwrap();
+            std::fs::write(cpufreq.join("scaling_governor"), "powersave\n").unwrap();
+            std::fs::write(
+                cpufreq.join("scaling_available_governors"),
+                "performance powersave\n",
+            )
+            .unwrap();
+            std::fs::write(
+                cpufreq.join("energy_performance_preference"),
+                "balance_performance\n",
+            )
+            .unwrap();
+            std::fs::write(cpufreq.join("scaling_min_freq"), "600000\n").unwrap();
+            std::fs::write(cpufreq.join("scaling_max_freq"), "2200000\n").unwrap();
+
+            if i > 0 {
+                std::fs::write(cpu_i_dir.join("online"), "1\n").unwrap();
+            }
+        }
+
+        let intel = cpu_dir.join("intel_pstate");
+        std::fs::create_dir_all(&intel).unwrap();
+        std::fs::write(intel.join("no_turbo"), "0\n").unwrap();
+
+        let gov = Arc::new(CpuGovernor::with_path(&cpu_dir));
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, None, Some(gov), None, None, vec![], None);
+
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.cpu.scaling_min_frequency = Some(3_500_000);
+        profile.cpu.scaling_max_frequency = Some(800_000);
+
+        applier.apply(&profile).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(cpu_dir.join("cpu0/cpufreq/scaling_min_freq"))
+                .unwrap()
+                .trim(),
+            "600000"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cpu_dir.join("cpu0/cpufreq/scaling_max_freq"))
+                .unwrap()
+                .trim(),
+            "2200000"
+        );
     }
 
     #[test]

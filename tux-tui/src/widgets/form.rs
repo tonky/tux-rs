@@ -102,6 +102,7 @@ fn render_field_line(
             }
         }
         FieldType::Number { value, .. } => format!("[{value:>5}]"),
+        FieldType::FreqMhz { value, .. } => format!("[{:.1} GHz]", *value as f64 / 1_000.0),
         FieldType::Bool(b) => {
             if *b {
                 "[✓]".to_string()

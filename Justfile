@@ -50,9 +50,9 @@ daemon-debug:
     sudo systemctl stop tux-daemon || true
     sudo ./target/release/tux-daemon --debug
 
-# Run the TUI
-tui:
-    cargo run -p tux-tui
+# Run the TUI (e.g. just tui --tab profiles, just tui --help)
+tui *ARGS:
+    cargo run -p tux-tui -- {{ARGS}}
 
 # Record TUI demo interactively (daemon must be running, navigate freely, Ctrl-D to stop)
 demo-record:
@@ -138,11 +138,14 @@ runit-smoke-repeat:
     docker run --rm --name tux-rs-runit-smoke-1 tux-rs-runit-smoke
     docker run --rm --name tux-rs-runit-smoke-2 tux-rs-runit-smoke
 
-# Run live regression test against a running daemon (requires tux-daemon on system or session bus)
+# Run focused regression tests (includes live checks; requires daemon for ignored live test)
 live-test:
     cargo test -p tux-daemon keyboard_state_roundtrip
     cargo test -p tux-daemon set_keyboard_state_forwards_color_and_mode_to_hardware
     cargo test -p tux-daemon apply_scales_profile_keyboard_brightness_to_hardware
+    cargo test -p tux-daemon set_online_cores_works
+    cargo test -p tux-daemon set_scaling_min_max_freq_works
+    cargo test -p tux-daemon apply_cpu_governor_and_tdp
     cargo test -p tux-tui --test live_regression -- --ignored --nocapture
 
 # Run all checks (fmt, clippy, test)

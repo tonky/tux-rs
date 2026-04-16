@@ -639,6 +639,9 @@ min_speed_percent = 10
 
 [cpu]
 governor = "powersave"
+online_cores = 2
+scaling_min_frequency = 800000
+scaling_max_frequency = 3500000
 "#;
     let scratch_id = client
         .create_profile(create_toml)
@@ -676,7 +679,7 @@ governor = "powersave"
     // Clean up stale profile from a previously failed test run.
     let _ = client.delete_profile("live-test-curve").await;
 
-    let test_curve = vec![
+    let test_curve = [
         FanCurvePoint {
             temp: 30,
             speed: 20,
@@ -699,8 +702,7 @@ governor = "powersave"
         },
     ];
 
-    let curve_profile_toml = format!(
-        r#"
+    let curve_profile_toml = r#"
 id = "live-test-curve"
 name = "Curve Persistence Test"
 
@@ -730,8 +732,11 @@ speed = 100
 
 [cpu]
 governor = "powersave"
+online_cores = 2
+scaling_min_frequency = 800000
+scaling_max_frequency = 3500000
 "#
-    );
+    .to_string();
     let curve_profile_id = client
         .create_profile(&curve_profile_toml)
         .await
@@ -825,8 +830,7 @@ governor = "powersave"
     // Step 3: Update profile (change name only) and verify curve survives.
     // This tests the partial-update scenario where the TUI might send
     // incomplete TOML that drops the curve.
-    let update_with_curve_toml = format!(
-        r#"
+    let update_with_curve_toml = r#"
 id = "live-test-curve"
 name = "Curve Persistence UPDATED"
 
@@ -856,8 +860,11 @@ speed = 100
 
 [cpu]
 governor = "powersave"
+online_cores = 2
+scaling_min_frequency = 800000
+scaling_max_frequency = 3500000
 "#
-    );
+    .to_string();
     client
         .update_profile(&curve_profile_id, &update_with_curve_toml)
         .await

@@ -389,6 +389,39 @@ impl ProfilesState {
                 field_type: FieldType::Bool(profile.cpu.no_turbo),
                 enabled: !read_only,
             },
+            FormField {
+                label: "Online Cores (0=Auto)".into(),
+                key: None,
+                field_type: FieldType::Number {
+                    value: profile.cpu.online_cores.unwrap_or(0) as i64,
+                    min: 0,
+                    max: 256,
+                    step: 1,
+                },
+                enabled: !read_only,
+            },
+            FormField {
+                label: "Min Freq GHz (0=Unset)".into(),
+                key: None,
+                field_type: FieldType::FreqMhz {
+                    value: profile.cpu.scaling_min_frequency.unwrap_or(0) as i64 / 1_000,
+                    min: 0,
+                    max: 10_000,
+                    step: 100,
+                },
+                enabled: !read_only,
+            },
+            FormField {
+                label: "Max Freq GHz (0=Unset)".into(),
+                key: None,
+                field_type: FieldType::FreqMhz {
+                    value: profile.cpu.scaling_max_frequency.unwrap_or(0) as i64 / 1_000,
+                    min: 0,
+                    max: 10_000,
+                    step: 100,
+                },
+                enabled: !read_only,
+            },
             // ── Keyboard ──
             FormField {
                 label: "KB Brightness (%)".into(),
@@ -501,6 +534,33 @@ impl ProfilesState {
                 "No Turbo" => {
                     if let FieldType::Bool(v) = &field.field_type {
                         profile.cpu.no_turbo = *v;
+                    }
+                }
+                "Online Cores (0=Auto)" => {
+                    if let FieldType::Number { value, .. } = &field.field_type {
+                        profile.cpu.online_cores = if *value == 0 {
+                            None
+                        } else {
+                            Some(*value as i32)
+                        };
+                    }
+                }
+                "Min Freq GHz (0=Unset)" => {
+                    if let FieldType::FreqMhz { value, .. } = &field.field_type {
+                        profile.cpu.scaling_min_frequency = if *value == 0 {
+                            None
+                        } else {
+                            Some(*value as i32 * 1_000)
+                        };
+                    }
+                }
+                "Max Freq GHz (0=Unset)" => {
+                    if let FieldType::FreqMhz { value, .. } = &field.field_type {
+                        profile.cpu.scaling_max_frequency = if *value == 0 {
+                            None
+                        } else {
+                            Some(*value as i32 * 1_000)
+                        };
                     }
                 }
                 "KB Brightness (%)" => {
@@ -959,6 +1019,13 @@ pub enum FieldType {
         max: i64,
         step: i64,
     },
+    /// Frequency stored as MHz; displayed as GHz with one decimal.
+    FreqMhz {
+        value: i64,
+        min: i64,
+        max: i64,
+        step: i64,
+    },
     Bool(bool),
     Select {
         options: Vec<String>,
@@ -1036,6 +1103,16 @@ impl Form {
                         *selected = ((*selected as i64 + delta).rem_euclid(len)) as usize;
                         self.dirty = true;
                     }
+                }
+                FieldType::FreqMhz {
+                    value,
+                    min,
+                    max,
+                    step,
+                } => {
+                    let increment = delta.saturating_mul(*step);
+                    *value = value.saturating_add(increment).clamp(*min, *max);
+                    self.dirty = true;
                 }
                 FieldType::Text(_) => {} // Text editing via Enter (not arrow keys).
             }
@@ -1688,5 +1765,78 @@ mod tests {
         assert_eq!(result.name, profile.name);
         assert_eq!(result.fan.enabled, profile.fan.enabled);
         assert_eq!(result.cpu.governor, profile.cpu.governor);
+    }
+    #[test]
+    fn profiles_build_editor_form_has_cpu_fields() {
+        let profile = tux_core::profile::builtin_profiles()[0].clone();
+        let form = ProfilesState::build_editor_form(&profile);
+        let labels: Vec<&str> = form.fields.iter().map(|f| f.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Online Cores (0=Auto)"),
+            "missing Online Cores field"
+        );
+        assert!(
+            labels.contains(&"Min Freq GHz (0=Unset)"),
+            "missing Min Freq field"
+        );
+        assert!(
+            labels.contains(&"Max Freq GHz (0=Unset)"),
+            "missing Max Freq field"
+        );
+    }
+
+    #[test]
+    fn profiles_apply_form_cpu_fields_roundtrip() {
+        let mut profile = tux_core::profile::builtin_profiles()[2].clone();
+        profile.is_default = false;
+        profile.cpu.online_cores = Some(8);
+        profile.cpu.scaling_min_frequency = Some(800_000);
+        profile.cpu.scaling_max_frequency = Some(3_500_000);
+
+        let mut form = ProfilesState::build_editor_form(&profile);
+
+        for field in &mut form.fields {
+            match field.label.as_str() {
+                "Online Cores (0=Auto)" => {
+                    if let FieldType::Number { value, .. } = &mut field.field_type {
+                        *value = 6;
+                    }
+                }
+                "Min Freq GHz (0=Unset)" => {
+                    if let FieldType::FreqMhz { value, .. } = &mut field.field_type {
+                        *value = 1_200;
+                    }
+                }
+                "Max Freq GHz (0=Unset)" => {
+                    if let FieldType::FreqMhz { value, .. } = &mut field.field_type {
+                        *value = 3_700;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let result = ProfilesState::apply_form_to_profile(&form, &profile);
+        assert_eq!(result.cpu.online_cores, Some(6));
+        assert_eq!(result.cpu.scaling_min_frequency, Some(1_200_000));
+        assert_eq!(result.cpu.scaling_max_frequency, Some(3_700_000));
+
+        // zero means None
+        for field in &mut form.fields {
+            if matches!(
+                field.label.as_str(),
+                "Online Cores (0=Auto)" | "Min Freq GHz (0=Unset)" | "Max Freq GHz (0=Unset)"
+            ) {
+                if let FieldType::Number { value, .. } | FieldType::FreqMhz { value, .. } =
+                    &mut field.field_type
+                {
+                    *value = 0;
+                }
+            }
+        }
+        let result_none = ProfilesState::apply_form_to_profile(&form, &profile);
+        assert_eq!(result_none.cpu.online_cores, None);
+        assert_eq!(result_none.cpu.scaling_min_frequency, None);
+        assert_eq!(result_none.cpu.scaling_max_frequency, None);
     }
 }

@@ -197,10 +197,7 @@ impl MockTuxedoIo {
 impl TuxedoIo for MockTuxedoIo {
     fn read_i32(&self, cmd: u64) -> io::Result<i32> {
         if self.fail_reads.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "simulated read failure",
-            ));
+            return Err(io::Error::other("simulated read failure"));
         }
         self.reads.get(&cmd).copied().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, format!("no mock for cmd {cmd:#x}"))
@@ -209,10 +206,7 @@ impl TuxedoIo for MockTuxedoIo {
 
     fn write_i32(&self, cmd: u64, val: i32) -> io::Result<()> {
         if self.fail_writes.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "simulated write failure",
-            ));
+            return Err(io::Error::other("simulated write failure"));
         }
         self.writes.lock().unwrap().push((cmd, val));
         Ok(())
@@ -220,10 +214,7 @@ impl TuxedoIo for MockTuxedoIo {
 
     fn ioctl_noarg(&self, cmd: u64) -> io::Result<()> {
         if self.fail_writes.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "simulated write failure",
-            ));
+            return Err(io::Error::other("simulated write failure"));
         }
         self.noarg_calls.lock().unwrap().push(cmd);
         Ok(())

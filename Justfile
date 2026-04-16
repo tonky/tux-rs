@@ -1,43 +1,60 @@
 # tux-rs development recipes
 
+OS := `uname -s`
+
 list:
     just --list
+
+# Internal helper to run a command in Linux environment (native or Docker)
+_linux command:
+    @if [ "{{OS}}" = "Darwin" ]; then \
+        docker run --rm -v $(pwd):/work -v tux-rs-linux-target:/work/target -w /work rust:bookworm bash -c "apt-get update -qq && apt-get install -y -qq dbus && rustup component add rustfmt clippy >/dev/null 2>&1 && dbus-run-session -- {{command}}"; \
+    else \
+        if command -v dbus-run-session >/dev/null 2>&1; then \
+            dbus-run-session -- {{command}}; \
+        else \
+            {{command}}; \
+        fi \
+    fi
 
 # Build all workspace crates
 build:
     cargo build --workspace
 
-# Run all tests
+# Run all workspace tests (with Linux dispatch on macOS)
 test:
-    cargo test --workspace
+    just _linux "cargo test --workspace --tests"
 
-# Validate driver-daemon fixture schema (Stage 1 reliability suite)
-fixture-validate:
-    cargo test -p tux-daemon --test fixture_schema
-
-# Validate fixture schema + deterministic replay contracts
-fixture-contract-test:
-    cargo test -p tux-daemon --test fixture_schema --test contract_replay
-
-# Driver-daemon reliability suite (deterministic, CI-safe)
-reliability-test:
-    dbus-run-session -- cargo test -p tux-daemon --test fixture_schema --test contract_replay --test integration
-
-# Capture a Uniwill driver-daemon contract fixture into tmp/
-fixture-capture-uniwill:
-    ./tools/capture-uniwill-contract-fixture.sh
-
-# Run clippy with warnings as errors
+# Run clippy (with Linux dispatch on macOS)
 clippy:
-    cargo clippy --workspace -- -D warnings
+    just _linux "cargo clippy --workspace --tests -- -D warnings"
 
-# Check formatting
+# Check formatting (with Linux dispatch on macOS)
 fmt:
-    cargo fmt --all -- --check
+    just _linux "cargo fmt --all -- --check"
 
 # Fix formatting
 fmt-fix:
     cargo fmt --all
+
+# Run all checks (fmt, clippy, test)
+check: fmt clippy test
+
+# Validate driver-daemon fixture schema (Stage 1 reliability suite)
+fixture-validate:
+    just _linux "cargo test -p tux-daemon --test fixture_schema"
+
+# Validate fixture schema + deterministic replay contracts
+fixture-contract-test:
+    just _linux "cargo test -p tux-daemon --test fixture_schema --test contract_replay"
+
+# Driver-daemon reliability suite (deterministic, CI-safe)
+reliability-test:
+    just _linux "cargo test -p tux-daemon --test fixture_schema --test contract_replay --test integration"
+
+# Capture a Uniwill driver-daemon contract fixture into tmp/
+fixture-capture-uniwill:
+    ./tools/capture-uniwill-contract-fixture.sh
 
 # Run the daemon
 run-daemon:
@@ -148,14 +165,11 @@ live-test:
     cargo test -p tux-daemon apply_cpu_governor_and_tdp
     cargo test -p tux-tui --test live_regression -- --ignored --nocapture
 
-# Run all checks (fmt, clippy, test)
-check: fmt clippy test
-
 # CI: run all checks under dbus-run-session (for environments without a session bus)
 ci:
     cargo fmt --all -- --check
-    cargo clippy --workspace -- -D warnings
+    cargo clippy --workspace --tests -- -D warnings
     cargo check -p tux-daemon --no-default-features --features tcc-compat
     cargo clippy -p tux-daemon --no-default-features --features tcc-compat -- -D warnings
     dbus-run-session -- cargo test -p tux-daemon --test fixture_schema --test contract_replay --test integration
-    dbus-run-session -- cargo test --workspace
+    dbus-run-session -- cargo test --workspace --tests

@@ -1,0 +1,15 @@
+# Follow-up tasks for TUI State Improvements
+
+[[tasks]]
+description = "Apply BoundedIndex to FieldType::Select selected index"
+status = "todo"
+priority = "low"
+context = "Identified during Stage 1 review as a potential cleanup area."
+reasoning = "Reduces remaining manual modulo logic in model.rs"
+
+[[tasks]]
+description = "Unify log_commands index usage with BoundedIndex"
+status = "todo"
+priority = "low"
+context = "Identified during Stage 1 review."
+reasoning = "Improves consistency across the codebase"

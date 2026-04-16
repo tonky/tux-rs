@@ -162,10 +162,29 @@ pub struct ChargingSettings {
 }
 
 /// TDP (Thermal Design Power) settings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TdpSettings {
     pub pl1: Option<u32>,
     pub pl2: Option<u32>,
+}
+
+impl Default for TuxProfile {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: "New Profile".to_string(),
+            description: String::new(),
+            is_default: false,
+            fan: FanProfileSettings::default(),
+            cpu: CpuSettings::default(),
+            keyboard: KeyboardSettings::default(),
+            display: DisplaySettings::default(),
+            charging: ChargingSettings::default(),
+            odm_profile: None,
+            tdp: None,
+            gpu: None,
+        }
+    }
 }
 
 /// GPU power settings (NB02 NVIDIA cTGP control).

@@ -1,5 +1,6 @@
 //! tux-tui: Terminal UI for TUXEDO laptop control.
 
+mod bounded_index;
 mod cli;
 mod command;
 mod dbus_task;
@@ -375,7 +376,7 @@ mod tests {
             );
         }
         // non-help args should not trigger
-        let no_help = vec![
+        let no_help = [
             "tux-tui".to_string(),
             "--tab".to_string(),
             "profiles".to_string(),

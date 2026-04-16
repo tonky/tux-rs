@@ -469,10 +469,13 @@ pub async fn execute_save_fan_curve(
     points: Vec<tux_core::fan_curve::FanCurvePoint>,
     tx: &mpsc::Sender<AppEvent>,
 ) {
-    let config = tux_core::fan_curve::FanConfig {
-        curve: points,
-        ..Default::default()
-    };
+    let mut config: tux_core::fan_curve::FanConfig = client
+        .get_active_fan_curve()
+        .await
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default();
+    config.curve = points;
     if let Ok(toml_str) = toml::to_string_pretty(&config)
         && client.set_fan_curve(&toml_str).await.is_ok()
     {

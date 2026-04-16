@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &WebcamState) {
 fn render_device_selector(frame: &mut Frame, area: Rect, state: &WebcamState) {
     let mut spans: Vec<Span> = vec![Span::raw(" Devices: ")];
     for (i, name) in state.devices.iter().enumerate() {
-        let is_selected = i == state.selected_device;
+        let is_selected = i == state.selected_device.get();
         let style = if is_selected {
             Style::default()
                 .fg(Color::Cyan)
@@ -74,19 +74,19 @@ mod tests {
     fn webcam_device_switching() {
         let mut state = WebcamState::new();
         state.devices = vec!["Camera 1".into(), "Camera 2".into(), "Camera 3".into()];
-        assert_eq!(state.selected_device, 0);
+        assert_eq!(state.selected_device.get(), 0);
 
         state.select_next_device();
-        assert_eq!(state.selected_device, 1);
+        assert_eq!(state.selected_device.get(), 1);
 
         state.select_next_device();
-        assert_eq!(state.selected_device, 2);
+        assert_eq!(state.selected_device.get(), 2);
 
         state.select_next_device();
-        assert_eq!(state.selected_device, 0); // Wraps.
+        assert_eq!(state.selected_device.get(), 0); // Wraps.
 
         state.select_prev_device();
-        assert_eq!(state.selected_device, 2); // Wraps back.
+        assert_eq!(state.selected_device.get(), 2); // Wraps back.
     }
 
     #[test]
@@ -95,6 +95,6 @@ mod tests {
         state.devices = vec![];
         state.select_next_device(); // Should not panic.
         state.select_prev_device(); // Should not panic.
-        assert_eq!(state.selected_device, 0);
+        assert_eq!(state.selected_device.get(), 0);
     }
 }

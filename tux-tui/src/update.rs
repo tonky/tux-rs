@@ -1519,7 +1519,10 @@ mod tests {
             freq_max_mhz: 5200,
         };
         handle_data(&mut model, DbusUpdate::CpuHwLimits(limits.clone()));
-        let stored = model.profiles.cpu_hw_limits.expect("hw limits should be stored");
+        let stored = model
+            .profiles
+            .cpu_hw_limits
+            .expect("hw limits should be stored");
         assert_eq!(stored.core_count, 12);
         assert_eq!(stored.freq_min_mhz, 400);
         assert_eq!(stored.freq_max_mhz, 5200);

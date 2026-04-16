@@ -639,6 +639,9 @@ min_speed_percent = 10
 
 [cpu]
 governor = "powersave"
+online_cores = 2
+scaling_min_frequency = 800000
+scaling_max_frequency = 3500000
 "#;
     let scratch_id = client
         .create_profile(create_toml)
@@ -729,6 +732,9 @@ speed = 100
 
 [cpu]
 governor = "powersave"
+online_cores = 2
+scaling_min_frequency = 800000
+scaling_max_frequency = 3500000
 "#
     .to_string();
     let curve_profile_id = client
@@ -854,6 +860,9 @@ speed = 100
 
 [cpu]
 governor = "powersave"
+online_cores = 2
+scaling_min_frequency = 800000
+scaling_max_frequency = 3500000
 "#
     .to_string();
     client

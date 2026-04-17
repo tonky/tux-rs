@@ -254,6 +254,8 @@ pub struct ProfilesState {
     pub status_message: Option<String>,
     /// Hardware CPU limits fetched from daemon at startup (if available).
     pub cpu_hw_limits: Option<tux_core::dbus_types::CpuHwLimits>,
+    /// TDP bounds fetched from daemon at startup (if available).
+    pub tdp_bounds: Option<tux_core::device::TdpBounds>,
 }
 
 /// Whether we're in list view or editing a profile.
@@ -271,6 +273,7 @@ impl ProfilesState {
             mode: ProfilesMode::List,
             status_message: None,
             cpu_hw_limits: None,
+            tdp_bounds: None,
         }
     }
 
@@ -293,9 +296,10 @@ impl ProfilesState {
     pub fn build_editor_form(
         profile: &TuxProfile,
         hw: Option<&tux_core::dbus_types::CpuHwLimits>,
+        tdp: Option<&tux_core::device::TdpBounds>,
     ) -> Form {
         let read_only = profile.is_default;
-        let fields = vec![
+        let mut fields = vec![
             FormField {
                 label: "Name".into(),
                 key: "name".into(),
@@ -427,6 +431,35 @@ impl ProfilesState {
                 },
                 enabled: !read_only,
             },
+        ];
+
+        // ── TDP fields (only shown when daemon reports TDP bounds) ──
+        if let Some(b) = tdp {
+            fields.push(FormField {
+                label: "PL1 W (0=Unset)".into(),
+                key: "tdp_pl1".into(),
+                field_type: FieldType::Number {
+                    value: profile.tdp.as_ref().and_then(|t| t.pl1).unwrap_or(0) as i64,
+                    min: 0,
+                    max: b.pl1_max as i64,
+                    step: 1,
+                },
+                enabled: !read_only,
+            });
+            fields.push(FormField {
+                label: "PL2 W (0=Unset)".into(),
+                key: "tdp_pl2".into(),
+                field_type: FieldType::Number {
+                    value: profile.tdp.as_ref().and_then(|t| t.pl2).unwrap_or(0) as i64,
+                    min: 0,
+                    max: b.pl2_max as i64,
+                    step: 1,
+                },
+                enabled: !read_only,
+            });
+        }
+
+        fields.extend([
             // ── Keyboard ──
             FormField {
                 label: "KB Brightness (%)".into(),
@@ -476,7 +509,7 @@ impl ProfilesState {
                 },
                 enabled: !read_only,
             },
-        ];
+        ]);
         Form::new(fields)
     }
 
@@ -583,6 +616,26 @@ impl ProfilesState {
                         && let Some(mode) = options.get(*selected)
                     {
                         profile.keyboard.mode = mode.clone();
+                    }
+                }
+                "tdp_pl1" => {
+                    if let FieldType::Number { value, .. } = &field.field_type {
+                        let tdp = profile.tdp.get_or_insert_with(Default::default);
+                        tdp.pl1 = if *value == 0 {
+                            None
+                        } else {
+                            Some(*value as u32)
+                        };
+                    }
+                }
+                "tdp_pl2" => {
+                    if let FieldType::Number { value, .. } = &field.field_type {
+                        let tdp = profile.tdp.get_or_insert_with(Default::default);
+                        tdp.pl2 = if *value == 0 {
+                            None
+                        } else {
+                            Some(*value as u32)
+                        };
                     }
                 }
                 "display_brightness_percent" => {
@@ -1724,7 +1777,7 @@ mod tests {
     #[test]
     fn profiles_build_editor_form_default_readonly() {
         let profiles = tux_core::profile::builtin_profiles();
-        let form = ProfilesState::build_editor_form(&profiles[0], None);
+        let form = ProfilesState::build_editor_form(&profiles[0], None, None);
         // All fields disabled for default profiles.
         for field in &form.fields {
             assert!(!field.enabled, "field '{}' should be disabled", field.label);
@@ -1735,7 +1788,7 @@ mod tests {
     fn profiles_build_editor_form_custom_editable() {
         let mut profile = tux_core::profile::builtin_profiles()[0].clone();
         profile.is_default = false;
-        let form = ProfilesState::build_editor_form(&profile, None);
+        let form = ProfilesState::build_editor_form(&profile, None, None);
         for field in &form.fields {
             assert!(field.enabled, "field '{}' should be enabled", field.label);
         }
@@ -1745,7 +1798,7 @@ mod tests {
     fn profiles_apply_form_roundtrip() {
         let profiles = tux_core::profile::builtin_profiles();
         let profile = &profiles[2]; // Office
-        let form = ProfilesState::build_editor_form(profile, None);
+        let form = ProfilesState::build_editor_form(profile, None, None);
         let result = ProfilesState::apply_form_to_profile(&form, profile);
         assert_eq!(result.name, profile.name);
         assert_eq!(result.fan.enabled, profile.fan.enabled);
@@ -1754,7 +1807,7 @@ mod tests {
     #[test]
     fn profiles_build_editor_form_has_cpu_fields() {
         let profile = tux_core::profile::builtin_profiles()[0].clone();
-        let form = ProfilesState::build_editor_form(&profile, None);
+        let form = ProfilesState::build_editor_form(&profile, None, None);
         let labels: Vec<&str> = form.fields.iter().map(|f| f.label.as_str()).collect();
         assert!(
             labels.contains(&"Online Cores (0=Auto)"),
@@ -1778,7 +1831,7 @@ mod tests {
         profile.cpu.scaling_min_frequency = Some(800_000);
         profile.cpu.scaling_max_frequency = Some(3_500_000);
 
-        let mut form = ProfilesState::build_editor_form(&profile, None);
+        let mut form = ProfilesState::build_editor_form(&profile, None, None);
 
         for field in &mut form.fields {
             match field.label.as_str() {
@@ -1831,7 +1884,7 @@ mod tests {
             freq_min_mhz: 400,
             freq_max_mhz: 5200,
         };
-        let form = ProfilesState::build_editor_form(&profile, Some(&hw));
+        let form = ProfilesState::build_editor_form(&profile, Some(&hw), None);
 
         for field in &form.fields {
             match field.label.as_str() {
@@ -1853,7 +1906,7 @@ mod tests {
     #[test]
     fn build_editor_form_falls_back_to_defaults_without_hw_limits() {
         let profile = tux_core::profile::builtin_profiles()[0].clone();
-        let form = ProfilesState::build_editor_form(&profile, None);
+        let form = ProfilesState::build_editor_form(&profile, None, None);
 
         for field in &form.fields {
             match field.label.as_str() {
@@ -1870,5 +1923,108 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    #[test]
+    fn tdp_fields_hidden_without_bounds() {
+        let profile = tux_core::profile::builtin_profiles()[0].clone();
+        let form = ProfilesState::build_editor_form(&profile, None, None);
+        let labels: Vec<&str> = form.fields.iter().map(|f| f.label.as_str()).collect();
+        assert!(!labels.contains(&"PL1 W (0=Unset)"));
+        assert!(!labels.contains(&"PL2 W (0=Unset)"));
+    }
+
+    #[test]
+    fn tdp_fields_shown_with_bounds() {
+        let profile = tux_core::profile::builtin_profiles()[0].clone();
+        let bounds = tux_core::device::TdpBounds {
+            pl1_min: 5,
+            pl1_max: 28,
+            pl2_min: 10,
+            pl2_max: 40,
+            pl4_min: None,
+            pl4_max: None,
+        };
+        let form = ProfilesState::build_editor_form(&profile, None, Some(&bounds));
+        let labels: Vec<&str> = form.fields.iter().map(|f| f.label.as_str()).collect();
+        assert!(labels.contains(&"PL1 W (0=Unset)"));
+        assert!(labels.contains(&"PL2 W (0=Unset)"));
+
+        // Bounds should be respected.
+        for field in &form.fields {
+            match field.label.as_str() {
+                "PL1 W (0=Unset)" => {
+                    if let FieldType::Number { max, .. } = field.field_type {
+                        assert_eq!(max, 28);
+                    }
+                }
+                "PL2 W (0=Unset)" => {
+                    if let FieldType::Number { max, .. } = field.field_type {
+                        assert_eq!(max, 40);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn tdp_fields_roundtrip() {
+        use tux_core::profile::TdpSettings;
+
+        let mut profile = tux_core::profile::builtin_profiles()[2].clone();
+        profile.is_default = false;
+        profile.tdp = Some(TdpSettings {
+            pl1: Some(20),
+            pl2: Some(35),
+        });
+
+        let bounds = tux_core::device::TdpBounds {
+            pl1_min: 5,
+            pl1_max: 28,
+            pl2_min: 10,
+            pl2_max: 40,
+            pl4_min: None,
+            pl4_max: None,
+        };
+        let form = ProfilesState::build_editor_form(&profile, None, Some(&bounds));
+        let result = ProfilesState::apply_form_to_profile(&form, &profile);
+        assert_eq!(result.tdp.as_ref().unwrap().pl1, Some(20));
+        assert_eq!(result.tdp.as_ref().unwrap().pl2, Some(35));
+    }
+
+    #[test]
+    fn tdp_zero_maps_to_none() {
+        use tux_core::profile::TdpSettings;
+
+        let mut profile = tux_core::profile::builtin_profiles()[2].clone();
+        profile.is_default = false;
+        profile.tdp = Some(TdpSettings {
+            pl1: Some(15),
+            pl2: Some(30),
+        });
+
+        let bounds = tux_core::device::TdpBounds {
+            pl1_min: 5,
+            pl1_max: 28,
+            pl2_min: 10,
+            pl2_max: 40,
+            pl4_min: None,
+            pl4_max: None,
+        };
+        let mut form = ProfilesState::build_editor_form(&profile, None, Some(&bounds));
+
+        // Set both to 0.
+        for field in &mut form.fields {
+            if matches!(field.label.as_str(), "PL1 W (0=Unset)" | "PL2 W (0=Unset)")
+                && let FieldType::Number { value, .. } = &mut field.field_type
+            {
+                *value = 0;
+            }
+        }
+
+        let result = ProfilesState::apply_form_to_profile(&form, &profile);
+        assert_eq!(result.tdp.as_ref().unwrap().pl1, None);
+        assert_eq!(result.tdp.as_ref().unwrap().pl2, None);
     }
 }

@@ -12,6 +12,7 @@ pub struct DaemonClient {
 const BUS_NAME: &str = "com.tuxedocomputers.tccd";
 const OBJECT_PATH: &str = "/com/tuxedocomputers/tccd";
 const FAN_IFACE: &str = "com.tuxedocomputers.tccd.Fan";
+const CPU_IFACE: &str = "com.tuxedocomputers.tccd.Cpu";
 const DEVICE_IFACE: &str = "com.tuxedocomputers.tccd.Device";
 const SETTINGS_IFACE: &str = "com.tuxedocomputers.tccd.Settings";
 const SYSTEM_IFACE: &str = "com.tuxedocomputers.tccd.System";
@@ -120,6 +121,13 @@ impl DaemonClient {
     /// Get hardware CPU limits (core count, min/max freq in MHz) as TOML string.
     pub async fn get_cpu_hw_limits(&self) -> Result<String, zbus::Error> {
         self.call_method(SYSTEM_IFACE, "GetCpuHwLimits", &()).await
+    }
+
+    // ── CPU Interface ─────────────────────────────────────────
+
+    /// Get TDP bounds as TOML string. Returns empty string if TDP is unavailable.
+    pub async fn get_tdp_bounds(&self) -> Result<String, zbus::Error> {
+        self.call_method(CPU_IFACE, "GetTdpBounds", &()).await
     }
 
     /// Get CPU load (overall + per-core) as TOML string.

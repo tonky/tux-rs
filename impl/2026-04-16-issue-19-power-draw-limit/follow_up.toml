@@ -1,0 +1,55 @@
+[[task]]
+description = "Add a non-root-gated hermetic test that set_pl{1,2} propagates ErrorKind::PermissionDenied when the sysfs attribute is 0o444. Under root (CI and production daemon) DAC is bypassed; gate via geteuid() or use a NotFound-based analog."
+status = "pending"
+priority = "medium"
+context = "tux-daemon/src/cpu/tdp.rs (stage-1 review A, M1)"
+reasoning = "Firmware-locked RAPL domains reject writes with EPERM. io::Result already enforces caller handling, but a regression test would lock in the contract."
+
+[[task]]
+description = "Verify profile_apply() treats TdpSettings { pl1: None } as a no-write (does not pass 0 to set_pl1/set_pl2) and add a dedicated unit test."
+status = "pending"
+priority = "medium"
+context = "tux-daemon/src/profile_apply.rs (stage-1 review B, M3). TUI convention '0=Unset' must not leak into the backend as a silent 1 W clamp."
+reasoning = "Silent clamping in set_pl{1,2} mirrors EcTdp. If the profile-apply layer ever forwards 0 instead of skipping, RAPL would quietly write 1 W and mislead the user."
+
+[[task]]
+description = "Surface RAPL firmware-lock status in the TUI Power tab (one-time warning banner) rather than relying on the daemon log."
+status = "pending"
+priority = "low"
+context = "tux-tui Power tab; ties to Stage 3 design (stage-1 review B, M3)"
+reasoning = "If MSR_PKG_POWER_LIMIT bit 63 is set, set_pl{1,2} returns PermissionDenied every time. Users need visible feedback, not silent failure."
+
+[[task]]
+description = "Honour firmware-published minimums (constraint_0_min_power_uw / constraint_1_min_power_uw) in RaplTdp::read_bounds when present; fall back to the 1 W floor only if absent."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/cpu/tdp.rs (stage-1 plan + review)"
+reasoning = "Kernel exposes these on some Intel generations. Using the published minimum gives better UX than a hard-coded 1 W floor."
+
+[[task]]
+description = "Consider logging a debug! trace inside set_pl{1,2} when the clamped value differs from the requested value."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/cpu/tdp.rs (stage-1 review B, M3)"
+reasoning = "Silent clamping can mask operator error or firmware lockouts. A debug log keeps the user-facing signature unchanged while giving forensic visibility."
+
+[[task]]
+description = "Stage 4 live-test additions: assert RaplTdp set/get round-trip on IBP16G8 MK2 under a real daemon; capture PermissionDenied path if the firmware happens to be locked."
+status = "pending"
+priority = "medium"
+context = "Stage 4, just live-test(-tdp)"
+reasoning = "Mirrors the cpu-core-freq-control Stage 4 live-test pattern."
+
+[[task]]
+description = "Decide whether intel-rapl-mmio fallback is in scope for laptops (none observed on Tuxedo targets); document exclusion if not."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/cpu/tdp.rs RAPL_BASE comment (stage-1 review B, L9)"
+reasoning = "Laptops always expose intel-rapl:0. Servers sometimes only have intel-rapl-mmio:0. Out of project scope today; document so future maintainers know."
+
+[[task]]
+description = "Tidy signature asymmetry: consider unifying probe_at(&Path) and with_path(impl Into<PathBuf>) once the factory (Stage 2) calls into RaplTdp from production code."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/cpu/tdp.rs (stage-1 review A, M2/M3)"
+reasoning = "Cosmetic. No behavioural impact."

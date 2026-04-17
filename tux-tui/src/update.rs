@@ -436,6 +436,7 @@ fn handle_profiles_list_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, 
                 let form = ProfilesState::build_editor_form(
                     &profile,
                     model.profiles.cpu_hw_limits.as_ref(),
+                    model.profiles.tdp_bounds.as_ref(),
                 );
                 model.profiles.mode = ProfilesMode::Editor {
                     form,
@@ -905,6 +906,9 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
         }
         DbusUpdate::CpuHwLimits(limits) => {
             model.profiles.cpu_hw_limits = Some(limits);
+        }
+        DbusUpdate::TdpBounds(bounds) => {
+            model.profiles.tdp_bounds = Some(bounds);
         }
         DbusUpdate::DeviceName(name) => {
             model.info.device_name = name;
@@ -2406,7 +2410,7 @@ end_threshold = 80"#;
         };
         model.current_tab = Tab::Profiles;
         model.profiles.mode = crate::model::ProfilesMode::Editor {
-            form: crate::model::ProfilesState::build_editor_form(&profile, None),
+            form: crate::model::ProfilesState::build_editor_form(&profile, None, None),
             profile_id: profile.id.clone(),
         };
         // Select first field ("Name", which is Text).

@@ -422,6 +422,16 @@ async fn fetch_info_data(client: &DaemonClient, tx: &mpsc::Sender<AppEvent>) -> 
             .await;
     }
 
+    // TDP bounds (one-time) — empty string means TDP unavailable.
+    if let Ok(toml_str) = client.get_tdp_bounds().await
+        && !toml_str.is_empty()
+        && let Ok(bounds) = toml::from_str::<tux_core::device::TdpBounds>(&toml_str)
+    {
+        let _ = tx
+            .send(AppEvent::DbusData(DbusUpdate::TdpBounds(bounds)))
+            .await;
+    }
+
     // Fan curve.
     if let Ok(toml_str) = client.get_active_fan_curve().await
         && let Ok(config) = toml::from_str::<tux_core::fan_curve::FanConfig>(&toml_str)

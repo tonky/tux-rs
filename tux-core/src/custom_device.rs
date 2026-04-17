@@ -17,6 +17,7 @@ pub struct CustomDeviceDescriptor {
     pub sensors: CustomSensorSet,
     pub charging: ChargingCapability,
     pub tdp: Option<TdpBounds>,
+    pub tdp_source: TdpSource,
     pub gpu_power: GpuPowerCapability,
     pub registers: CustomPlatformRegisters,
 }
@@ -68,6 +69,7 @@ impl CustomDeviceDescriptor {
             sensors,
             charging: self.charging,
             tdp: self.tdp,
+            tdp_source: self.tdp_source,
             gpu_power: self.gpu_power,
             registers,
         };

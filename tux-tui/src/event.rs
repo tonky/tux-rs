@@ -43,6 +43,8 @@ pub enum DbusUpdate {
     CpuCoreCount(u32),
     /// Hardware CPU limits (core count + hw min/max freq in MHz, one-time).
     CpuHwLimits(tux_core::dbus_types::CpuHwLimits),
+    /// TDP bounds from the daemon (one-time, None if TDP unavailable).
+    TdpBounds(tux_core::device::TdpBounds),
     /// Device name (one-time).
     DeviceName(String),
     /// Platform name (one-time).

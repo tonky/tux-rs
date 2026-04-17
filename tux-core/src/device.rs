@@ -17,6 +17,7 @@ pub struct DeviceDescriptor {
     pub sensors: SensorSet,
     pub charging: ChargingCapability,
     pub tdp: Option<TdpBounds>,
+    pub tdp_source: TdpSource,
     pub gpu_power: GpuPowerCapability,
     pub registers: PlatformRegisters,
 }
@@ -96,6 +97,20 @@ pub enum ChargingCapability {
     EcProfilePriority,
 }
 
+/// Which TDP backend a device uses.
+///
+/// Selection is strictly opt-in per device row — we never probe RAPL blindly
+/// on laptops whose vendor drivers don't sanction TDP control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TdpSource {
+    /// No TDP control (default; existing behaviour).
+    None,
+    /// EC RAM (NB05 platforms: Pulse, InfinityFlex).
+    Ec,
+    /// Intel RAPL via `/sys/class/powercap/intel-rapl:0/`.
+    Rapl,
+}
+
 /// TDP (Thermal Design Power) bounds per power level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +157,7 @@ mod tests {
             },
             charging: ChargingCapability::EcProfilePriority,
             tdp: None,
+            tdp_source: TdpSource::None,
             gpu_power: GpuPowerCapability::None,
             registers: PlatformRegisters::Uniwill,
         };
@@ -180,6 +196,7 @@ mod tests {
                 pl4_min: None,
                 pl4_max: None,
             }),
+            tdp_source: TdpSource::Ec,
             gpu_power: GpuPowerCapability::None,
             registers: PlatformRegisters::Nb05,
         };
@@ -210,6 +227,7 @@ mod tests {
             },
             charging: ChargingCapability::None,
             tdp: None,
+            tdp_source: TdpSource::None,
             gpu_power: GpuPowerCapability::None,
             registers: PlatformRegisters::Nb04,
         };
@@ -238,6 +256,7 @@ mod tests {
             },
             charging: ChargingCapability::Flexicharger,
             tdp: None,
+            tdp_source: TdpSource::None,
             gpu_power: GpuPowerCapability::None,
             registers: PlatformRegisters::Clevo,
         };
@@ -266,6 +285,7 @@ mod tests {
             },
             charging: ChargingCapability::None,
             tdp: None,
+            tdp_source: TdpSource::None,
             gpu_power: GpuPowerCapability::None,
             registers: PlatformRegisters::Tuxi,
         };

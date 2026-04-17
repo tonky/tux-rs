@@ -360,6 +360,7 @@ mod tests {
             },
             charging: ChargingCapability::Flexicharger,
             tdp: None,
+            tdp_source: tux_core::device::TdpSource::None,
             gpu_power: GpuPowerCapability::None,
             registers: PlatformRegisters::Uniwill,
         }));

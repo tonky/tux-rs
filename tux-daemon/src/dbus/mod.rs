@@ -158,6 +158,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         cpu_governor.clone(),
         display,
         charging.is_some(),
+        tdp_backend.is_some(),
     );
 
     // Clone before SystemInterface consumes them by value
@@ -211,10 +212,18 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         );
     }
 
-    if let Some(governor) = cpu_governor {
-        let cpu_iface = CpuInterface::new(governor, tdp_backend);
-        builder = builder.serve_at(OBJECT_PATH, cpu_iface)?;
-        info!("CPU governor/TDP interface registered");
+    match (cpu_governor, tdp_backend) {
+        (Some(governor), tdp) => {
+            let cpu_iface = CpuInterface::new(governor, tdp);
+            builder = builder.serve_at(OBJECT_PATH, cpu_iface)?;
+            info!("CPU governor/TDP interface registered");
+        }
+        (None, Some(tdp)) => {
+            let cpu_iface = CpuInterface::tdp_only(tdp);
+            builder = builder.serve_at(OBJECT_PATH, cpu_iface)?;
+            info!("CPU TDP-only interface registered (no governor)");
+        }
+        (None, None) => {}
     }
 
     if let Some(gpu) = gpu_backend.clone() {

@@ -991,4 +991,69 @@ mod tests {
         // Should not panic with no GPU backend.
         applier.apply(&profile).unwrap();
     }
+
+    #[test]
+    fn apply_rapl_tdp_roundtrip() {
+        use crate::cpu::tdp::RaplTdp;
+        use tux_core::profile::TdpSettings;
+
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Set up a minimal RAPL sysfs tree.
+        std::fs::write(tmp.path().join("name"), "package-0\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_0_name"), "long_term\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_0_power_limit_uw"), "15000000\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_0_max_power_uw"), "45000000\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_1_name"), "short_term\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_1_power_limit_uw"), "28000000\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_1_max_power_uw"), "60000000\n").unwrap();
+
+        let tdp: Arc<dyn crate::cpu::tdp::TdpBackend> =
+            Arc::new(RaplTdp::probe_at(tmp.path()).expect("RAPL probe should succeed"));
+
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, None, None, Some(tdp.clone()), None, vec![], None);
+
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.tdp = Some(TdpSettings {
+            pl1: Some(25),
+            pl2: Some(40),
+        });
+
+        applier.apply(&profile).unwrap();
+
+        assert_eq!(tdp.get_pl1().unwrap(), 25);
+        assert_eq!(tdp.get_pl2().unwrap(), 40);
+    }
+
+    #[test]
+    fn apply_rapl_tdp_none_is_noop() {
+        use crate::cpu::tdp::RaplTdp;
+
+        let tmp = tempfile::tempdir().unwrap();
+
+        std::fs::write(tmp.path().join("name"), "package-0\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_0_name"), "long_term\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_0_power_limit_uw"), "15000000\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_0_max_power_uw"), "45000000\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_1_name"), "short_term\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_1_power_limit_uw"), "28000000\n").unwrap();
+        std::fs::write(tmp.path().join("constraint_1_max_power_uw"), "60000000\n").unwrap();
+
+        let tdp: Arc<dyn crate::cpu::tdp::TdpBackend> =
+            Arc::new(RaplTdp::probe_at(tmp.path()).expect("RAPL probe should succeed"));
+
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, None, None, Some(tdp.clone()), None, vec![], None);
+
+        // Profile with tdp: None must not touch the backend values.
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.tdp = None;
+
+        applier.apply(&profile).unwrap();
+
+        // Backend should still hold the original sysfs values.
+        assert_eq!(tdp.get_pl1().unwrap(), 15);
+        assert_eq!(tdp.get_pl2().unwrap(), 28);
+    }
 }

@@ -135,6 +135,12 @@ impl DaemonClient {
         self.call_method(SYSTEM_IFACE, "GetCpuLoad", &()).await
     }
 
+    /// Get current package power draw in watts (RAPL). Returns 0.0 if unavailable.
+    pub async fn get_package_power_w(&self) -> Result<f64, zbus::Error> {
+        self.call_method(SYSTEM_IFACE, "GetPackagePowerW", &())
+            .await
+    }
+
     /// Get per-core CPU frequencies as TOML string.
     pub async fn get_per_core_frequencies(&self) -> Result<String, zbus::Error> {
         self.call_method(SYSTEM_IFACE, "GetPerCoreFrequencies", &())

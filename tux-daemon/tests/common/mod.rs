@@ -132,6 +132,7 @@ pub struct TestDaemonBuilder<'a> {
     device: &'a DetectedDevice,
     profile_dir: &'a std::path::Path,
     charging: Option<Arc<dyn ChargingBackend>>,
+    tdp: Option<Arc<dyn tux_daemon::cpu::tdp::TdpBackend>>,
 }
 
 #[allow(dead_code)]
@@ -141,6 +142,7 @@ impl<'a> TestDaemonBuilder<'a> {
             device,
             profile_dir,
             charging: None,
+            tdp: None,
         }
     }
 
@@ -149,8 +151,14 @@ impl<'a> TestDaemonBuilder<'a> {
         self
     }
 
+    pub fn with_tdp(mut self, backend: Arc<dyn tux_daemon::cpu::tdp::TdpBackend>) -> Self {
+        self.tdp = Some(backend);
+        self
+    }
+
     pub async fn build(self) -> TestDaemon {
-        TestDaemon::start_with_options(self.device, self.profile_dir, self.charging).await
+        TestDaemon::start_with_options(self.device, self.profile_dir, self.charging, self.tdp)
+            .await
     }
 }
 
@@ -161,7 +169,7 @@ impl TestDaemon {
     /// all D-Bus interfaces on the session bus.
     #[allow(dead_code)]
     pub async fn start(device: &DetectedDevice, profile_dir: &std::path::Path) -> Self {
-        Self::start_with_options(device, profile_dir, None).await
+        Self::start_with_options(device, profile_dir, None, None).await
     }
 
     /// Start with optional additional backends.
@@ -169,6 +177,7 @@ impl TestDaemon {
         device: &DetectedDevice,
         profile_dir: &std::path::Path,
         charging: Option<Arc<dyn ChargingBackend>>,
+        tdp_backend: Option<Arc<dyn tux_daemon::cpu::tdp::TdpBackend>>,
     ) -> Self {
         let num_fans = device.descriptor.fans.count;
         let fan_backend = Arc::new(MockFanBackend::new(num_fans));
@@ -232,7 +241,7 @@ impl TestDaemon {
             keyboards,
             charging,
             cpu_governor: None,
-            tdp_backend: None,
+            tdp_backend,
             gpu_backend: None,
             display: None,
             config_tx: config_tx.clone(),

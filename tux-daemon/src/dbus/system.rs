@@ -23,6 +23,7 @@ pub struct SystemInterface {
     assignments_rx: watch::Receiver<ProfileAssignments>,
     store: Arc<RwLock<ProfileStore>>,
     cpu_sampler: Mutex<CpuSampler>,
+    energy_sampler: Mutex<EnergySampler>,
 }
 
 impl SystemInterface {
@@ -36,6 +37,7 @@ impl SystemInterface {
             assignments_rx,
             store,
             cpu_sampler: Mutex::new(CpuSampler::system()),
+            energy_sampler: Mutex::new(EnergySampler::new(RAPL_ENERGY_PATH)),
         }
     }
 }
@@ -173,6 +175,67 @@ impl SystemInterface {
     /// Set the Fn Lock status (true = locked).
     fn set_fn_lock_status(&self, locked: bool) -> zbus::fdo::Result<()> {
         fn_lock_write(FN_LOCK_PATH, locked).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
+    /// Get current package power draw in watts (from RAPL energy counter).
+    /// Returns 0.0 on the first call (no delta yet) or if RAPL is unavailable.
+    fn get_package_power_w(&self) -> f64 {
+        self.energy_sampler
+            .lock()
+            .ok()
+            .and_then(|mut s| s.sample())
+            .unwrap_or(0.0)
+    }
+}
+
+/// RAPL package energy counter (root-readable, microjoules).
+const RAPL_ENERGY_PATH: &str = "/sys/class/powercap/intel-rapl:0/energy_uj";
+
+/// Samples RAPL `energy_uj` and computes instantaneous power in watts.
+struct EnergySampler {
+    path: &'static str,
+    last_uj: Option<u64>,
+    last_time: Option<std::time::Instant>,
+}
+
+impl EnergySampler {
+    fn new(path: &'static str) -> Self {
+        Self {
+            path,
+            last_uj: None,
+            last_time: None,
+        }
+    }
+
+    /// Returns watts since last call, or `None` on first call / read failure.
+    fn sample(&mut self) -> Option<f64> {
+        let uj: u64 = std::fs::read_to_string(self.path)
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        let now = std::time::Instant::now();
+
+        let result = if let (Some(prev_uj), Some(prev_time)) = (self.last_uj, self.last_time) {
+            let dt = now.duration_since(prev_time).as_secs_f64();
+            if dt > 0.0 {
+                // Handle counter wraparound (energy_uj is typically 32-bit range).
+                let delta = if uj >= prev_uj {
+                    uj - prev_uj
+                } else {
+                    uj + (u32::MAX as u64 - prev_uj)
+                };
+                Some(delta as f64 / (dt * 1_000_000.0))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        self.last_uj = Some(uj);
+        self.last_time = Some(now);
+        result
     }
 }
 

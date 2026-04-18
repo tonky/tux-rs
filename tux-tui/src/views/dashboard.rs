@@ -197,6 +197,11 @@ fn render_status_block(frame: &mut Frame, area: Rect, state: &DashboardState) {
 
     let profile_str = state.active_profile.as_deref().unwrap_or("—");
 
+    let power_draw_str = state
+        .power_draw_w
+        .map(|w| format!("{w:.1} W"))
+        .unwrap_or_else(|| "—".to_string());
+
     let block = Block::default().borders(Borders::ALL).title("Status");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -212,6 +217,9 @@ fn render_status_block(frame: &mut Frame, area: Rect, state: &DashboardState) {
         Span::raw(" / "),
         Span::raw(&freq_str),
         Span::raw(format!(" ({cores_str} cores)")),
+        Span::raw("  "),
+        Span::styled("Pkg: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(&power_draw_str),
         Span::raw("  "),
         Span::styled("Power: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(power_icon),

@@ -722,6 +722,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             cpu_load_overall,
             cpu_load_per_core,
             cpu_freq_per_core,
+            power_draw_w,
         } => {
             let prev_temp = model.dashboard.cpu_temp;
             let prev_profile = model.dashboard.active_profile.clone();
@@ -797,6 +798,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             if let Some(freqs) = cpu_freq_per_core {
                 model.dashboard.cpu_freq_per_core = freqs;
             }
+            model.dashboard.power_draw_w = power_draw_w;
 
             if let (Some(prev), Some(now)) = (prev_temp, model.dashboard.cpu_temp)
                 && (now - prev).abs() >= 5.0
@@ -1457,6 +1459,7 @@ mod tests {
                 cpu_load_overall: Some(45.0),
                 cpu_load_per_core: Some(vec![30.0, 60.0]),
                 cpu_freq_per_core: Some(vec![3200, 3100]),
+                power_draw_w: None,
             },
         );
         assert_eq!(model.dashboard.cpu_temp, Some(68.5));
@@ -1493,6 +1496,7 @@ mod tests {
                 cpu_load_overall: Some(22.0),
                 cpu_load_per_core: Some(vec![20.0, 24.0]),
                 cpu_freq_per_core: Some(vec![2800, 2750]),
+                power_draw_w: None,
             },
         );
 
@@ -1576,6 +1580,7 @@ mod tests {
                 cpu_load_overall: None,
                 cpu_load_per_core: None,
                 cpu_freq_per_core: None,
+                power_draw_w: None,
             },
         );
         assert!(model.dashboard.fan_data.is_empty());
@@ -1601,6 +1606,7 @@ mod tests {
                 cpu_load_overall: None,
                 cpu_load_per_core: None,
                 cpu_freq_per_core: None,
+                power_draw_w: None,
             },
         );
         assert_eq!(model.dashboard.fan_data[0].speed_percent, 100);

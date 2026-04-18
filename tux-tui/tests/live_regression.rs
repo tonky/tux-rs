@@ -190,8 +190,9 @@ async fn ibp_gen8_live_regression() {
     assert!(caps.fan_control, "IBP Gen8 must have fan_control");
     assert_eq!(caps.fan_count, 2, "IBP Gen8 has 2 fans");
     assert!(caps.power_profiles, "IBP Gen8 must have power profiles");
-    // TDP and GPU control are NOT available on this model.
-    assert!(!caps.tdp_control, "IBP Gen8 should not have TDP control");
+    // GPU control is not available on this model.
+    // TDP control is available via Intel RAPL on IBP1XI08MK1.
+    assert!(caps.tdp_control, "IBP Gen8 MK1 should have RAPL TDP control");
     assert!(!caps.gpu_control, "IBP Gen8 should not have GPU control");
 
     println!(
@@ -1393,6 +1394,26 @@ scaling_max_frequency = 3500000
             println!("  display brightness not available: {e} (non-fatal)");
         }
     }
+
+    // ── TDP (RAPL) — bounds fetch + round-trip ─────────────────
+    section("TDP (RAPL)");
+
+    let bounds_toml = client
+        .get_tdp_bounds()
+        .await
+        .expect("get_tdp_bounds failed");
+    assert!(
+        !bounds_toml.is_empty(),
+        "TDP bounds must be non-empty on IBP Gen8 MK1 (RAPL enabled)"
+    );
+    let bounds: tux_core::device::TdpBounds =
+        toml::from_str(&bounds_toml).expect("TDP bounds TOML must deserialize into TdpBounds");
+    println!(
+        "  PL1: {}-{} W, PL2: {}-{} W",
+        bounds.pl1_min, bounds.pl1_max, bounds.pl2_min, bounds.pl2_max
+    );
+    assert!(bounds.pl1_max >= 15, "PL1 max should be at least 15 W");
+    assert!(bounds.pl2_max >= 15, "PL2 max should be at least 15 W");
 
     // ── Done ───────────────────────────────────────────────────
     section("PASSED — IBP Gen8 Live Regression");

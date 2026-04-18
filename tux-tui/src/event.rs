@@ -34,6 +34,7 @@ pub enum DbusUpdate {
         cpu_load_overall: Option<f32>,
         cpu_load_per_core: Option<Vec<f32>>,
         cpu_freq_per_core: Option<Vec<u32>>,
+        power_draw_w: Option<f32>,
     },
     /// Fan engine health status (TOML-encoded `FanHealthResponse`).
     FanHealth(String),

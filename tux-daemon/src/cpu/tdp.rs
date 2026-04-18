@@ -204,7 +204,7 @@ impl RaplTdp {
 
     /// Probe a RAPL sysfs tree rooted at `base`. Extracted so tests can
     /// point at a hermetic tempdir.
-    fn probe_at(base: &Path) -> Option<Self> {
+    pub fn probe_at(base: &Path) -> Option<Self> {
         let sysfs = SysfsReader::new(base);
         if !sysfs.available() || !sysfs.exists(RAPL_NAME_ATTR) {
             debug!("RAPL probe: no intel-rapl:0 at {base:?}");
@@ -268,11 +268,18 @@ impl RaplTdp {
         // Intentional floor division: a firmware-advertised 28.5 W bound becomes
         // 28 W. This keeps the user-facing unit at integer watts and errs on
         // the conservative side — RAPL itself still enforces the real limit.
+        let pl1_max = (pl1_max_uw / UW_PER_W).max(RAPL_FLOOR_W);
+        // Some firmware (e.g. IBP1XI08MK1) reports 0 for constraint_1_max_power_uw.
+        // Fall back to pl1_max so the TUI field remains usable.
+        let pl2_max = match pl2_max_uw / UW_PER_W {
+            0 => pl1_max,
+            w => w,
+        };
         Ok(TdpBounds {
             pl1_min: RAPL_FLOOR_W,
-            pl1_max: (pl1_max_uw / UW_PER_W).max(RAPL_FLOOR_W),
+            pl1_max,
             pl2_min: RAPL_FLOOR_W,
-            pl2_max: (pl2_max_uw / UW_PER_W).max(RAPL_FLOOR_W),
+            pl2_max,
             pl4_min: None,
             pl4_max: None,
         })
@@ -602,8 +609,11 @@ mod tests {
     }
 
     #[test]
+    // build_backend calls the real RAPL sysfs path; on Linux hardware that path
+    // exists, so this test cannot be hermetic. The absent-path contract is covered
+    // by the dedicated `rapl_probe_missing_dir_returns_none` test above.
+    #[cfg_attr(target_os = "linux", ignore)]
     fn factory_rapl_without_sysfs_returns_none() {
-        // No RAPL sysfs tree on macOS/CI — probe must fail gracefully.
         let desc = test_descriptor(TdpSource::Rapl, None);
         assert!(build_backend(&desc).is_none());
     }

@@ -209,6 +209,8 @@ pub struct DashboardState {
     pub cpu_freq_per_core: Vec<u32>,
     /// Fan engine health: "ok", "degraded", or "failed".
     pub fan_health: Option<String>,
+    /// Current package power draw in watts (RAPL).
+    pub power_draw_w: Option<f32>,
 }
 
 /// Per-fan live data.
@@ -1318,6 +1320,7 @@ impl DashboardState {
             cpu_load_per_core: Vec::new(),
             cpu_freq_per_core: Vec::new(),
             fan_health: None,
+            power_draw_w: None,
         }
     }
 

@@ -156,6 +156,14 @@ async fn poll_dashboard_checked(
         None
     };
 
+    // Package power draw (RAPL).
+    let power_draw_w = client
+        .get_package_power_w()
+        .await
+        .ok()
+        .filter(|&w| w > 0.0)
+        .map(|w| w as f32);
+
     let _ = tx
         .send(AppEvent::DbusData(DbusUpdate::DashboardTelemetry {
             cpu_temp: temp,
@@ -168,6 +176,7 @@ async fn poll_dashboard_checked(
             cpu_load_overall,
             cpu_load_per_core,
             cpu_freq_per_core,
+            power_draw_w,
         }))
         .await;
 
@@ -419,6 +428,16 @@ async fn fetch_info_data(client: &DaemonClient, tx: &mpsc::Sender<AppEvent>) -> 
     {
         let _ = tx
             .send(AppEvent::DbusData(DbusUpdate::CpuHwLimits(limits)))
+            .await;
+    }
+
+    // TDP bounds (one-time) — empty string means TDP unavailable.
+    if let Ok(toml_str) = client.get_tdp_bounds().await
+        && !toml_str.is_empty()
+        && let Ok(bounds) = toml::from_str::<tux_core::device::TdpBounds>(&toml_str)
+    {
+        let _ = tx
+            .send(AppEvent::DbusData(DbusUpdate::TdpBounds(bounds)))
             .await;
     }
 

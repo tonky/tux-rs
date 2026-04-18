@@ -299,26 +299,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // 6b-iii. Create TDP backend (NB05 platforms with EC RAM + tdp bounds).
+    // 6b-iii. Create TDP backend (selected per device via tdp_source).
     let tdp_backend: Option<Arc<dyn cpu::tdp::TdpBackend>> =
-        if let Some(bounds) = device.descriptor.tdp {
-            match cpu::tdp::EcTdp::new(bounds) {
-                Some(b) => {
-                    info!(
-                        "EC TDP backend available (PL1: {}-{}W, PL2: {}-{}W)",
-                        bounds.pl1_min, bounds.pl1_max, bounds.pl2_min, bounds.pl2_max
-                    );
-                    Some(Arc::new(b))
-                }
-                None => {
-                    info!("EC TDP sysfs not available");
-                    None
-                }
-            }
-        } else {
-            info!("no TDP control for this platform");
-            None
-        };
+        cpu::tdp::build_backend(device.descriptor);
 
     // 6b-iv. Create GPU power backend (NB02 Uniwill platforms with NVIDIA).
     let gpu_backend: Option<Arc<dyn gpu::GpuPowerBackend>> = match device.descriptor.gpu_power {

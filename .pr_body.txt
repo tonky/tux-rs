@@ -1,0 +1,5 @@
+This PR fixes two regression bugs related to configuration persistence:
+- **Profile Assignments**: Previously, active profiles assigned to AC or Battery states were only kept in memory, causing them to revert to defaults after a reboot. I've updated `ProfileInterface` to save these assignments to `config.toml` upon every change.
+- **Fan Configuration**: `tux-tui` was overwriting the entire `FanConfig` with default values (except for the curve points) when saving a custom fan curve. This caused settings like `min_speed_percent` to be lost. The TUI now fetches the current configuration before applying curve updates.
+
+Fixes #14

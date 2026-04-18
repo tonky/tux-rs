@@ -11,13 +11,23 @@ use crate::cpu::tdp::TdpBackend;
 
 /// D-Bus object for CPU governor + TDP control.
 pub struct CpuInterface {
-    governor: Arc<CpuGovernor>,
+    governor: Option<Arc<CpuGovernor>>,
     tdp: Option<Arc<dyn TdpBackend>>,
 }
 
 impl CpuInterface {
     pub fn new(governor: Arc<CpuGovernor>, tdp: Option<Arc<dyn TdpBackend>>) -> Self {
-        Self { governor, tdp }
+        Self {
+            governor: Some(governor),
+            tdp,
+        }
+    }
+
+    pub fn tdp_only(tdp: Arc<dyn TdpBackend>) -> Self {
+        Self {
+            governor: None,
+            tdp: Some(tdp),
+        }
     }
 }
 
@@ -26,6 +36,8 @@ impl CpuInterface {
     /// Get the current CPU governor.
     fn get_governor(&self) -> zbus::fdo::Result<String> {
         self.governor
+            .as_ref()
+            .ok_or_else(|| zbus::fdo::Error::NotSupported("CPU governor not available".into()))?
             .get_governor()
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
@@ -33,13 +45,19 @@ impl CpuInterface {
     /// Set the CPU governor for all CPUs.
     fn set_governor(&self, governor: &str) -> zbus::fdo::Result<()> {
         self.governor
+            .as_ref()
+            .ok_or_else(|| zbus::fdo::Error::NotSupported("CPU governor not available".into()))?
             .set_governor(governor)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// Get the current energy performance preference. Returns empty string if unavailable.
     fn get_epp(&self) -> zbus::fdo::Result<String> {
-        match self.governor.get_epp() {
+        let gov = self
+            .governor
+            .as_ref()
+            .ok_or_else(|| zbus::fdo::Error::NotSupported("CPU governor not available".into()))?;
+        match gov.get_epp() {
             Ok(Some(epp)) => Ok(epp),
             Ok(None) => Ok(String::new()),
             Err(e) => Err(zbus::fdo::Error::Failed(e.to_string())),
@@ -49,6 +67,8 @@ impl CpuInterface {
     /// Set the energy performance preference for all CPUs.
     fn set_epp(&self, epp: &str) -> zbus::fdo::Result<()> {
         self.governor
+            .as_ref()
+            .ok_or_else(|| zbus::fdo::Error::NotSupported("CPU governor not available".into()))?
             .set_epp(epp)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
@@ -56,6 +76,8 @@ impl CpuInterface {
     /// Get whether turbo boost is disabled.
     fn get_no_turbo(&self) -> zbus::fdo::Result<bool> {
         self.governor
+            .as_ref()
+            .ok_or_else(|| zbus::fdo::Error::NotSupported("CPU governor not available".into()))?
             .get_no_turbo()
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
@@ -63,6 +85,8 @@ impl CpuInterface {
     /// Set the turbo boost disable flag.
     fn set_no_turbo(&self, no_turbo: bool) -> zbus::fdo::Result<()> {
         self.governor
+            .as_ref()
+            .ok_or_else(|| zbus::fdo::Error::NotSupported("CPU governor not available".into()))?
             .set_no_turbo(no_turbo)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
@@ -70,6 +94,8 @@ impl CpuInterface {
     /// Get available CPU governors.
     fn available_governors(&self) -> zbus::fdo::Result<Vec<String>> {
         self.governor
+            .as_ref()
+            .ok_or_else(|| zbus::fdo::Error::NotSupported("CPU governor not available".into()))?
             .available_governors()
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
@@ -122,12 +148,7 @@ impl CpuInterface {
     fn get_tdp_bounds(&self) -> zbus::fdo::Result<String> {
         match &self.tdp {
             Some(tdp) => {
-                let b = tdp.bounds();
-                let toml = format!(
-                    "pl1_min = {}\npl1_max = {}\npl2_min = {}\npl2_max = {}\n",
-                    b.pl1_min, b.pl1_max, b.pl2_min, b.pl2_max
-                );
-                Ok(toml)
+                toml::to_string(&tdp.bounds()).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
             }
             None => Ok(String::new()),
         }
@@ -200,7 +221,8 @@ mod tests {
         let iface = CpuInterface::new(gov, Some(Arc::new(tdp)));
 
         let toml = iface.get_tdp_bounds().unwrap();
-        assert!(toml.contains("pl1_min = 5"));
-        assert!(toml.contains("pl1_max = 28"));
+        // TdpBounds serializes with camelCase keys (serde rename_all = "camelCase").
+        assert!(toml.contains("pl1Min = 5"));
+        assert!(toml.contains("pl1Max = 28"));
     }
 }

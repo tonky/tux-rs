@@ -23,6 +23,7 @@ pub struct SystemInterface {
     assignments_rx: watch::Receiver<ProfileAssignments>,
     store: Arc<RwLock<ProfileStore>>,
     cpu_sampler: Mutex<CpuSampler>,
+    energy_sampler: Mutex<EnergySampler>,
 }
 
 impl SystemInterface {
@@ -36,6 +37,7 @@ impl SystemInterface {
             assignments_rx,
             store,
             cpu_sampler: Mutex::new(CpuSampler::system()),
+            energy_sampler: Mutex::new(EnergySampler::new(RAPL_ENERGY_PATH)),
         }
     }
 }
@@ -83,9 +85,9 @@ impl SystemInterface {
         toml::to_string(&gpus).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
-    /// Get average CPU frequency in MHz across all online cores.
+    /// Get the maximum CPU frequency in MHz across all online cores.
     fn get_cpu_frequency(&self) -> zbus::fdo::Result<u32> {
-        cpu_frequency_mhz(Path::new("/sys/devices/system/cpu"))
+        cpu_max_frequency_mhz(Path::new("/sys/devices/system/cpu"))
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
@@ -174,6 +176,67 @@ impl SystemInterface {
     fn set_fn_lock_status(&self, locked: bool) -> zbus::fdo::Result<()> {
         fn_lock_write(FN_LOCK_PATH, locked).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
+
+    /// Get current package power draw in watts (from RAPL energy counter).
+    /// Returns 0.0 on the first call (no delta yet) or if RAPL is unavailable.
+    fn get_package_power_w(&self) -> f64 {
+        self.energy_sampler
+            .lock()
+            .ok()
+            .and_then(|mut s| s.sample())
+            .unwrap_or(0.0)
+    }
+}
+
+/// RAPL package energy counter (root-readable, microjoules).
+const RAPL_ENERGY_PATH: &str = "/sys/class/powercap/intel-rapl:0/energy_uj";
+
+/// Samples RAPL `energy_uj` and computes instantaneous power in watts.
+struct EnergySampler {
+    path: &'static str,
+    last_uj: Option<u64>,
+    last_time: Option<std::time::Instant>,
+}
+
+impl EnergySampler {
+    fn new(path: &'static str) -> Self {
+        Self {
+            path,
+            last_uj: None,
+            last_time: None,
+        }
+    }
+
+    /// Returns watts since last call, or `None` on first call / read failure.
+    fn sample(&mut self) -> Option<f64> {
+        let uj: u64 = std::fs::read_to_string(self.path)
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        let now = std::time::Instant::now();
+
+        let result = if let (Some(prev_uj), Some(prev_time)) = (self.last_uj, self.last_time) {
+            let dt = now.duration_since(prev_time).as_secs_f64();
+            if dt > 0.0 {
+                // Handle counter wraparound (energy_uj is typically 32-bit range).
+                let delta = if uj >= prev_uj {
+                    uj - prev_uj
+                } else {
+                    uj + (u32::MAX as u64 - prev_uj)
+                };
+                Some(delta as f64 / (dt * 1_000_000.0))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        self.last_uj = Some(uj);
+        self.last_time = Some(now);
+        result
+    }
 }
 
 /// Sysfs path for Fn Lock attribute (from tuxedo_keyboard driver).
@@ -195,10 +258,10 @@ fn fn_lock_write(path: &str, locked: bool) -> std::io::Result<()> {
     std::fs::write(path, if locked { "1" } else { "0" })
 }
 
-/// Read average CPU frequency in MHz from sysfs.
-fn cpu_frequency_mhz(cpu_base: &Path) -> std::io::Result<u32> {
-    let mut total_khz: u64 = 0;
-    let mut count: u64 = 0;
+/// Read maximum CPU frequency in MHz from sysfs.
+fn cpu_max_frequency_mhz(cpu_base: &Path) -> std::io::Result<u32> {
+    let mut max_khz: u64 = 0;
+    let mut found = false;
     for entry in std::fs::read_dir(cpu_base)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -208,18 +271,20 @@ fn cpu_frequency_mhz(cpu_base: &Path) -> std::io::Result<u32> {
             if let Ok(val) = std::fs::read_to_string(&freq_path)
                 && let Ok(khz) = val.trim().parse::<u64>()
             {
-                total_khz += khz;
-                count += 1;
+                if khz > max_khz {
+                    max_khz = khz;
+                }
+                found = true;
             }
         }
     }
-    if count == 0 {
+    if !found {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "no CPU frequency data found",
         ));
     }
-    Ok((total_khz / count / 1000) as u32)
+    Ok((max_khz / 1000) as u32)
 }
 
 /// Read per-core CPU frequencies in MHz from sysfs, sorted by core index.
@@ -458,7 +523,7 @@ mod tests {
             // 2400 MHz = 2400000 kHz
             fs::write(cpufreq.join("scaling_cur_freq"), "2400000\n").unwrap();
         }
-        let freq = cpu_frequency_mhz(base).unwrap();
+        let freq = cpu_max_frequency_mhz(base).unwrap();
         assert_eq!(freq, 2400);
     }
 
@@ -466,20 +531,20 @@ mod tests {
     fn cpu_frequency_mixed_speeds() {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
-        let freqs = [1000000u64, 3000000]; // 1000 + 3000 avg = 2000
+        let freqs = [1000000u64, 3000000]; // 1000 and 3000 -> max 3000
         for (i, khz) in freqs.iter().enumerate() {
             let cpufreq = base.join(format!("cpu{i}/cpufreq"));
             fs::create_dir_all(&cpufreq).unwrap();
             fs::write(cpufreq.join("scaling_cur_freq"), format!("{khz}\n")).unwrap();
         }
-        let freq = cpu_frequency_mhz(base).unwrap();
-        assert_eq!(freq, 2000);
+        let freq = cpu_max_frequency_mhz(base).unwrap();
+        assert_eq!(freq, 3000);
     }
 
     #[test]
     fn cpu_frequency_no_cpus() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(cpu_frequency_mhz(tmp.path()).is_err());
+        assert!(cpu_max_frequency_mhz(tmp.path()).is_err());
     }
 
     #[test]

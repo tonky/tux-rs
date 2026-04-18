@@ -12,6 +12,7 @@ pub struct DaemonClient {
 const BUS_NAME: &str = "com.tuxedocomputers.tccd";
 const OBJECT_PATH: &str = "/com/tuxedocomputers/tccd";
 const FAN_IFACE: &str = "com.tuxedocomputers.tccd.Fan";
+const CPU_IFACE: &str = "com.tuxedocomputers.tccd.Cpu";
 const DEVICE_IFACE: &str = "com.tuxedocomputers.tccd.Device";
 const SETTINGS_IFACE: &str = "com.tuxedocomputers.tccd.Settings";
 const SYSTEM_IFACE: &str = "com.tuxedocomputers.tccd.System";
@@ -107,7 +108,7 @@ impl DaemonClient {
         self.call_method(SYSTEM_IFACE, "GetBatteryInfo", &()).await
     }
 
-    /// Get average CPU frequency in MHz.
+    /// Get maximum CPU frequency in MHz.
     pub async fn get_cpu_frequency(&self) -> Result<u32, zbus::Error> {
         self.call_method(SYSTEM_IFACE, "GetCpuFrequency", &()).await
     }
@@ -122,9 +123,22 @@ impl DaemonClient {
         self.call_method(SYSTEM_IFACE, "GetCpuHwLimits", &()).await
     }
 
+    // ── CPU Interface ─────────────────────────────────────────
+
+    /// Get TDP bounds as TOML string. Returns empty string if TDP is unavailable.
+    pub async fn get_tdp_bounds(&self) -> Result<String, zbus::Error> {
+        self.call_method(CPU_IFACE, "GetTdpBounds", &()).await
+    }
+
     /// Get CPU load (overall + per-core) as TOML string.
     pub async fn get_cpu_load(&self) -> Result<String, zbus::Error> {
         self.call_method(SYSTEM_IFACE, "GetCpuLoad", &()).await
+    }
+
+    /// Get current package power draw in watts (RAPL). Returns 0.0 if unavailable.
+    pub async fn get_package_power_w(&self) -> Result<f64, zbus::Error> {
+        self.call_method(SYSTEM_IFACE, "GetPackagePowerW", &())
+            .await
     }
 
     /// Get per-core CPU frequencies as TOML string.

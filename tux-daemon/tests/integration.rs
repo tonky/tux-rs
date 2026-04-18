@@ -83,6 +83,16 @@ trait Settings {
     fn get_capabilities(&self) -> zbus::Result<String>;
 }
 
+/// D-Bus proxy for the CPU interface.
+#[proxy(
+    interface = "com.tuxedocomputers.tccd.Cpu",
+    default_service = "com.tuxedocomputers.tccd",
+    default_path = "/com/tuxedocomputers/tccd"
+)]
+trait Cpu {
+    fn get_tdp_bounds(&self) -> zbus::Result<String>;
+}
+
 fn test_device() -> DetectedDevice {
     DetectedDevice {
         descriptor: device_table::fallback_for_platform(Platform::Uniwill),
@@ -475,5 +485,102 @@ speed = 100
 
     // Clean up.
     profile_proxy.delete_profile(&profile_id).await.unwrap();
+    daemon.stop().await;
+}
+
+// ── TDP capability contract ───────────────────────────────────────────────────
+
+/// When the daemon is started with a TDP backend, capabilities must report
+/// `tdp_control = true` and `GetTdpBounds` must return parseable bounds.
+///
+/// This test exists to prevent regressions where `tdp_control` is derived from
+/// the wrong source of truth (e.g. `descriptor.tdp.is_some()` instead of
+/// `tdp_backend.is_some()`), which caused the TUI to hide PL1/PL2 fields even
+/// when the daemon had a working RAPL backend.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn capabilities_reflect_tdp_backend() {
+    use std::sync::Arc;
+    use tux_core::device::TdpBounds;
+    use tux_daemon::cpu::tdp::RaplTdp;
+
+    let profile_dir = tempfile::tempdir().unwrap();
+    let rapl_dir = tempfile::tempdir().unwrap();
+
+    // Build a minimal RAPL sysfs tree.
+    std::fs::write(rapl_dir.path().join("name"), "package-0\n").unwrap();
+    std::fs::write(rapl_dir.path().join("constraint_0_name"), "long_term\n").unwrap();
+    std::fs::write(
+        rapl_dir.path().join("constraint_0_power_limit_uw"),
+        "15000000\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rapl_dir.path().join("constraint_0_max_power_uw"),
+        "45000000\n",
+    )
+    .unwrap();
+    std::fs::write(rapl_dir.path().join("constraint_1_name"), "short_term\n").unwrap();
+    std::fs::write(
+        rapl_dir.path().join("constraint_1_power_limit_uw"),
+        "28000000\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rapl_dir.path().join("constraint_1_max_power_uw"),
+        "60000000\n",
+    )
+    .unwrap();
+
+    let rapl = RaplTdp::probe_at(rapl_dir.path()).expect("probe should succeed");
+    let tdp: Arc<dyn tux_daemon::cpu::tdp::TdpBackend> = Arc::new(rapl);
+
+    let device = test_device();
+    let daemon = common::TestDaemonBuilder::new(&device, profile_dir.path())
+        .with_tdp(tdp)
+        .build()
+        .await;
+
+    // Capabilities must report TDP as available.
+    let settings_proxy = SettingsProxy::new(&daemon.connection).await.unwrap();
+    let caps_toml = settings_proxy.get_capabilities().await.unwrap();
+    let caps: tux_core::dbus_types::CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
+    assert!(
+        caps.tdp_control,
+        "capabilities must report tdp_control=true when a TDP backend is active"
+    );
+
+    // GetTdpBounds must return non-empty, parseable TOML.
+    let cpu_proxy = CpuProxy::new(&daemon.connection).await.unwrap();
+    let bounds_toml = cpu_proxy.get_tdp_bounds().await.unwrap();
+    assert!(
+        !bounds_toml.is_empty(),
+        "get_tdp_bounds must return non-empty TOML"
+    );
+    let bounds: TdpBounds = toml::from_str(&bounds_toml).expect("bounds must be valid TOML");
+    assert_eq!(bounds.pl1_max, 45, "PL1 max should be 45 W");
+    assert_eq!(bounds.pl2_max, 60, "PL2 max should be 60 W");
+
+    daemon.stop().await;
+}
+
+/// When the daemon has no TDP backend, capabilities must report `tdp_control = false`.
+/// The Cpu interface is not registered in this case (no governor, no TDP), so we
+/// only check the capability flag — not the Cpu interface directly.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn capabilities_no_tdp_when_no_backend() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = test_device();
+    let daemon = common::TestDaemon::start(&device, profile_dir.path()).await;
+
+    let settings_proxy = SettingsProxy::new(&daemon.connection).await.unwrap();
+    let caps_toml = settings_proxy.get_capabilities().await.unwrap();
+    let caps: tux_core::dbus_types::CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
+    assert!(
+        !caps.tdp_control,
+        "capabilities must report tdp_control=false when no TDP backend is present"
+    );
+
     daemon.stop().await;
 }

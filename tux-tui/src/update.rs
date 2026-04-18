@@ -398,11 +398,9 @@ fn handle_fan_curve_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool
         KeyCode::Char('r') => {
             model.fan_curve.reset();
         }
-        KeyCode::Char('s') => {
-            if model.fan_curve.dirty {
-                let points = model.fan_curve.points.clone();
-                return (vec![Command::SaveFanCurve(points)], false);
-            }
+        KeyCode::Char('s') if model.fan_curve.dirty => {
+            let points = model.fan_curve.points.clone();
+            return (vec![Command::SaveFanCurve(points)], false);
         }
         KeyCode::Esc => {
             model.fan_curve.revert();
@@ -436,6 +434,7 @@ fn handle_profiles_list_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, 
                 let form = ProfilesState::build_editor_form(
                     &profile,
                     model.profiles.cpu_hw_limits.as_ref(),
+                    model.profiles.tdp_bounds.as_ref(),
                 );
                 model.profiles.mode = ProfilesMode::Editor {
                     form,
@@ -609,12 +608,10 @@ fn handle_form_tab_key(
         KeyCode::Char(' ') => state.form.toggle(),
         KeyCode::Enter => state.form.start_text_edit(),
         KeyCode::Esc => state.form.discard(),
-        KeyCode::Char('s') => {
-            if state.form.dirty {
-                // Serialize form fields as a simple TOML table.
-                let toml_str = serialize_form_to_toml(&state.form);
-                return (vec![save_cmd(toml_str)], false);
-            }
+        KeyCode::Char('s') if state.form.dirty => {
+            // Serialize form fields as a simple TOML table.
+            let toml_str = serialize_form_to_toml(&state.form);
+            return (vec![save_cmd(toml_str)], false);
         }
         _ => {}
     }
@@ -653,23 +650,21 @@ fn handle_webcam_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool) {
         }
         KeyCode::Char(' ') => model.webcam.form_tab.form.toggle(),
         KeyCode::Esc => model.webcam.form_tab.form.discard(),
-        KeyCode::Char('s') => {
-            if model.webcam.form_tab.form.dirty {
-                let device = model
-                    .webcam
-                    .devices
-                    .get(model.webcam.selected_device.get())
-                    .cloned()
-                    .unwrap_or_default();
-                let toml_str = serialize_form_to_toml(&model.webcam.form_tab.form);
-                return (
-                    vec![Command::SaveWebcam {
-                        device,
-                        toml: toml_str,
-                    }],
-                    false,
-                );
-            }
+        KeyCode::Char('s') if model.webcam.form_tab.form.dirty => {
+            let device = model
+                .webcam
+                .devices
+                .get(model.webcam.selected_device.get())
+                .cloned()
+                .unwrap_or_default();
+            let toml_str = serialize_form_to_toml(&model.webcam.form_tab.form);
+            return (
+                vec![Command::SaveWebcam {
+                    device,
+                    toml: toml_str,
+                }],
+                false,
+            );
         }
         _ => {}
     }
@@ -721,6 +716,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             cpu_load_overall,
             cpu_load_per_core,
             cpu_freq_per_core,
+            power_draw_w,
         } => {
             let prev_temp = model.dashboard.cpu_temp;
             let prev_profile = model.dashboard.active_profile.clone();
@@ -796,6 +792,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             if let Some(freqs) = cpu_freq_per_core {
                 model.dashboard.cpu_freq_per_core = freqs;
             }
+            model.dashboard.power_draw_w = power_draw_w;
 
             if let (Some(prev), Some(now)) = (prev_temp, model.dashboard.cpu_temp)
                 && (now - prev).abs() >= 5.0
@@ -905,6 +902,9 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
         }
         DbusUpdate::CpuHwLimits(limits) => {
             model.profiles.cpu_hw_limits = Some(limits);
+        }
+        DbusUpdate::TdpBounds(bounds) => {
+            model.profiles.tdp_bounds = Some(bounds);
         }
         DbusUpdate::DeviceName(name) => {
             model.info.device_name = name;
@@ -1453,6 +1453,7 @@ mod tests {
                 cpu_load_overall: Some(45.0),
                 cpu_load_per_core: Some(vec![30.0, 60.0]),
                 cpu_freq_per_core: Some(vec![3200, 3100]),
+                power_draw_w: None,
             },
         );
         assert_eq!(model.dashboard.cpu_temp, Some(68.5));
@@ -1489,6 +1490,7 @@ mod tests {
                 cpu_load_overall: Some(22.0),
                 cpu_load_per_core: Some(vec![20.0, 24.0]),
                 cpu_freq_per_core: Some(vec![2800, 2750]),
+                power_draw_w: None,
             },
         );
 
@@ -1572,6 +1574,7 @@ mod tests {
                 cpu_load_overall: None,
                 cpu_load_per_core: None,
                 cpu_freq_per_core: None,
+                power_draw_w: None,
             },
         );
         assert!(model.dashboard.fan_data.is_empty());
@@ -1597,6 +1600,7 @@ mod tests {
                 cpu_load_overall: None,
                 cpu_load_per_core: None,
                 cpu_freq_per_core: None,
+                power_draw_w: None,
             },
         );
         assert_eq!(model.dashboard.fan_data[0].speed_percent, 100);
@@ -2406,7 +2410,7 @@ end_threshold = 80"#;
         };
         model.current_tab = Tab::Profiles;
         model.profiles.mode = crate::model::ProfilesMode::Editor {
-            form: crate::model::ProfilesState::build_editor_form(&profile, None),
+            form: crate::model::ProfilesState::build_editor_form(&profile, None, None),
             profile_id: profile.id.clone(),
         };
         // Select first field ("Name", which is Text).

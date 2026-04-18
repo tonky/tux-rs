@@ -398,11 +398,9 @@ fn handle_fan_curve_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool
         KeyCode::Char('r') => {
             model.fan_curve.reset();
         }
-        KeyCode::Char('s') => {
-            if model.fan_curve.dirty {
-                let points = model.fan_curve.points.clone();
-                return (vec![Command::SaveFanCurve(points)], false);
-            }
+        KeyCode::Char('s') if model.fan_curve.dirty => {
+            let points = model.fan_curve.points.clone();
+            return (vec![Command::SaveFanCurve(points)], false);
         }
         KeyCode::Esc => {
             model.fan_curve.revert();
@@ -610,12 +608,10 @@ fn handle_form_tab_key(
         KeyCode::Char(' ') => state.form.toggle(),
         KeyCode::Enter => state.form.start_text_edit(),
         KeyCode::Esc => state.form.discard(),
-        KeyCode::Char('s') => {
-            if state.form.dirty {
-                // Serialize form fields as a simple TOML table.
-                let toml_str = serialize_form_to_toml(&state.form);
-                return (vec![save_cmd(toml_str)], false);
-            }
+        KeyCode::Char('s') if state.form.dirty => {
+            // Serialize form fields as a simple TOML table.
+            let toml_str = serialize_form_to_toml(&state.form);
+            return (vec![save_cmd(toml_str)], false);
         }
         _ => {}
     }
@@ -654,23 +650,21 @@ fn handle_webcam_key(model: &mut Model, key: KeyEvent) -> (Vec<Command>, bool) {
         }
         KeyCode::Char(' ') => model.webcam.form_tab.form.toggle(),
         KeyCode::Esc => model.webcam.form_tab.form.discard(),
-        KeyCode::Char('s') => {
-            if model.webcam.form_tab.form.dirty {
-                let device = model
-                    .webcam
-                    .devices
-                    .get(model.webcam.selected_device.get())
-                    .cloned()
-                    .unwrap_or_default();
-                let toml_str = serialize_form_to_toml(&model.webcam.form_tab.form);
-                return (
-                    vec![Command::SaveWebcam {
-                        device,
-                        toml: toml_str,
-                    }],
-                    false,
-                );
-            }
+        KeyCode::Char('s') if model.webcam.form_tab.form.dirty => {
+            let device = model
+                .webcam
+                .devices
+                .get(model.webcam.selected_device.get())
+                .cloned()
+                .unwrap_or_default();
+            let toml_str = serialize_form_to_toml(&model.webcam.form_tab.form);
+            return (
+                vec![Command::SaveWebcam {
+                    device,
+                    toml: toml_str,
+                }],
+                false,
+            );
         }
         _ => {}
     }

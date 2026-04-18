@@ -1169,11 +1169,9 @@ impl Form {
                     *b = !*b;
                     self.dirty = true;
                 }
-                FieldType::Select { options, selected } => {
-                    if !options.is_empty() {
-                        *selected = (*selected + 1) % options.len();
-                        self.dirty = true;
-                    }
+                FieldType::Select { options, selected } if !options.is_empty() => {
+                    *selected = (*selected + 1) % options.len();
+                    self.dirty = true;
                 }
                 _ => {}
             }

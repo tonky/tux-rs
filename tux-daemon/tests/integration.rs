@@ -510,11 +510,27 @@ async fn capabilities_reflect_tdp_backend() {
     // Build a minimal RAPL sysfs tree.
     std::fs::write(rapl_dir.path().join("name"), "package-0\n").unwrap();
     std::fs::write(rapl_dir.path().join("constraint_0_name"), "long_term\n").unwrap();
-    std::fs::write(rapl_dir.path().join("constraint_0_power_limit_uw"), "15000000\n").unwrap();
-    std::fs::write(rapl_dir.path().join("constraint_0_max_power_uw"), "45000000\n").unwrap();
+    std::fs::write(
+        rapl_dir.path().join("constraint_0_power_limit_uw"),
+        "15000000\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rapl_dir.path().join("constraint_0_max_power_uw"),
+        "45000000\n",
+    )
+    .unwrap();
     std::fs::write(rapl_dir.path().join("constraint_1_name"), "short_term\n").unwrap();
-    std::fs::write(rapl_dir.path().join("constraint_1_power_limit_uw"), "28000000\n").unwrap();
-    std::fs::write(rapl_dir.path().join("constraint_1_max_power_uw"), "60000000\n").unwrap();
+    std::fs::write(
+        rapl_dir.path().join("constraint_1_power_limit_uw"),
+        "28000000\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rapl_dir.path().join("constraint_1_max_power_uw"),
+        "60000000\n",
+    )
+    .unwrap();
 
     let rapl = RaplTdp::probe_at(rapl_dir.path()).expect("probe should succeed");
     let tdp: Arc<dyn tux_daemon::cpu::tdp::TdpBackend> = Arc::new(rapl);
@@ -528,8 +544,7 @@ async fn capabilities_reflect_tdp_backend() {
     // Capabilities must report TDP as available.
     let settings_proxy = SettingsProxy::new(&daemon.connection).await.unwrap();
     let caps_toml = settings_proxy.get_capabilities().await.unwrap();
-    let caps: tux_core::dbus_types::CapabilitiesResponse =
-        toml::from_str(&caps_toml).unwrap();
+    let caps: tux_core::dbus_types::CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
     assert!(
         caps.tdp_control,
         "capabilities must report tdp_control=true when a TDP backend is active"
@@ -538,7 +553,10 @@ async fn capabilities_reflect_tdp_backend() {
     // GetTdpBounds must return non-empty, parseable TOML.
     let cpu_proxy = CpuProxy::new(&daemon.connection).await.unwrap();
     let bounds_toml = cpu_proxy.get_tdp_bounds().await.unwrap();
-    assert!(!bounds_toml.is_empty(), "get_tdp_bounds must return non-empty TOML");
+    assert!(
+        !bounds_toml.is_empty(),
+        "get_tdp_bounds must return non-empty TOML"
+    );
     let bounds: TdpBounds = toml::from_str(&bounds_toml).expect("bounds must be valid TOML");
     assert_eq!(bounds.pl1_max, 45, "PL1 max should be 45 W");
     assert_eq!(bounds.pl2_max, 60, "PL2 max should be 60 W");
@@ -558,8 +576,7 @@ async fn capabilities_no_tdp_when_no_backend() {
 
     let settings_proxy = SettingsProxy::new(&daemon.connection).await.unwrap();
     let caps_toml = settings_proxy.get_capabilities().await.unwrap();
-    let caps: tux_core::dbus_types::CapabilitiesResponse =
-        toml::from_str(&caps_toml).unwrap();
+    let caps: tux_core::dbus_types::CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
     assert!(
         !caps.tdp_control,
         "capabilities must report tdp_control=false when no TDP backend is present"

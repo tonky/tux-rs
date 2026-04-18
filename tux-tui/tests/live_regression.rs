@@ -192,7 +192,10 @@ async fn ibp_gen8_live_regression() {
     assert!(caps.power_profiles, "IBP Gen8 must have power profiles");
     // GPU control is not available on this model.
     // TDP control is available via Intel RAPL on IBP1XI08MK1.
-    assert!(caps.tdp_control, "IBP Gen8 MK1 should have RAPL TDP control");
+    assert!(
+        caps.tdp_control,
+        "IBP Gen8 MK1 should have RAPL TDP control"
+    );
     assert!(!caps.gpu_control, "IBP Gen8 should not have GPU control");
 
     println!(

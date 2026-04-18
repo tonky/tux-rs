@@ -157,8 +157,7 @@ impl<'a> TestDaemonBuilder<'a> {
     }
 
     pub async fn build(self) -> TestDaemon {
-        TestDaemon::start_with_options(self.device, self.profile_dir, self.charging, self.tdp)
-            .await
+        TestDaemon::start_with_options(self.device, self.profile_dir, self.charging, self.tdp).await
     }
 }
 

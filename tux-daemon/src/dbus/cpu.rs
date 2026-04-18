@@ -147,8 +147,9 @@ impl CpuInterface {
     /// Get TDP bounds as TOML.
     fn get_tdp_bounds(&self) -> zbus::fdo::Result<String> {
         match &self.tdp {
-            Some(tdp) => toml::to_string(&tdp.bounds())
-                .map_err(|e| zbus::fdo::Error::Failed(e.to_string())),
+            Some(tdp) => {
+                toml::to_string(&tdp.bounds()).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+            }
             None => Ok(String::new()),
         }
     }

@@ -4,18 +4,33 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   # The flake is a thin wrapper around ./default.nix so classic (non-flake)
   # Nix consumers share the exact same packaging code.
-  outputs = { self, nixpkgs, flake-utils, ... }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        overlays = [ (import rust-overlay) ];
+        pkgs = import nixpkgs { inherit system overlays; };
+
+        rustToolchain = pkgs.rust-bin.stable."1.95.0".default.override {
+          extensions = [ "rustfmt" "clippy" "rust-src" ];
+        };
 
         # Delegate all package building to ./default.nix so there's a single
         # source of truth.
-        tux-rs = import ./. { inherit pkgs; };
+        tux-rs = import ./. {
+          inherit pkgs;
+          rustPlatform = pkgs.makeRustPlatform {
+            cargo = rustToolchain;
+            rustc = rustToolchain;
+          };
+        };
 
         testing = import (nixpkgs + "/nixos/lib/testing-python.nix") {
           inherit system pkgs;
@@ -29,8 +44,7 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = [
-            pkgs.rustc
-            pkgs.cargo
+            rustToolchain
             pkgs.pkg-config
             pkgs.dbus
             pkgs.just

@@ -23,11 +23,9 @@
 { nixpkgs ? <nixpkgs>
 , system ? builtins.currentSystem
 , pkgs ? import nixpkgs { inherit system; }
+, rustPlatform ? pkgs.rustPlatform
 }:
 
-let
-  rustPlatform = pkgs.rustPlatform;
-in
 rec {
   tux-daemon = pkgs.callPackage ./nix/tux-daemon.nix { inherit rustPlatform; };
   tux-tui = pkgs.callPackage ./nix/tux-tui.nix { inherit rustPlatform; };

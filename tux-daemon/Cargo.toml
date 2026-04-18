@@ -2,6 +2,7 @@
 name = "tux-daemon"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "System daemon for TUXEDO laptop hardware control"
 

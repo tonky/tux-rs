@@ -8,7 +8,7 @@ list:
 # Internal helper to run a command in Linux environment (native or Docker)
 _linux command:
     @if [ "{{OS}}" = "Darwin" ]; then \
-        docker run --rm -v $(pwd):/work -v tux-rs-linux-target:/work/target -w /work rust:bookworm bash -c "apt-get update -qq && apt-get install -y -qq dbus && rustup component add rustfmt clippy >/dev/null 2>&1 && dbus-run-session -- {{command}}"; \
+        docker run --rm -v $(pwd):/work -v tux-rs-linux-target:/work/target -w /work rust:1.95.0-bookworm bash -c "apt-get update -qq && apt-get install -y -qq dbus && rustup component add rustfmt clippy >/dev/null 2>&1 && dbus-run-session -- {{command}}"; \
     else \
         if command -v dbus-run-session >/dev/null 2>&1; then \
             dbus-run-session -- {{command}}; \

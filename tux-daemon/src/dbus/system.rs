@@ -85,9 +85,9 @@ impl SystemInterface {
         toml::to_string(&gpus).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
-    /// Get average CPU frequency in MHz across all online cores.
+    /// Get the maximum CPU frequency in MHz across all online cores.
     fn get_cpu_frequency(&self) -> zbus::fdo::Result<u32> {
-        cpu_frequency_mhz(Path::new("/sys/devices/system/cpu"))
+        cpu_max_frequency_mhz(Path::new("/sys/devices/system/cpu"))
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
@@ -258,10 +258,10 @@ fn fn_lock_write(path: &str, locked: bool) -> std::io::Result<()> {
     std::fs::write(path, if locked { "1" } else { "0" })
 }
 
-/// Read average CPU frequency in MHz from sysfs.
-fn cpu_frequency_mhz(cpu_base: &Path) -> std::io::Result<u32> {
-    let mut total_khz: u64 = 0;
-    let mut count: u64 = 0;
+/// Read maximum CPU frequency in MHz from sysfs.
+fn cpu_max_frequency_mhz(cpu_base: &Path) -> std::io::Result<u32> {
+    let mut max_khz: u64 = 0;
+    let mut found = false;
     for entry in std::fs::read_dir(cpu_base)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -271,18 +271,20 @@ fn cpu_frequency_mhz(cpu_base: &Path) -> std::io::Result<u32> {
             if let Ok(val) = std::fs::read_to_string(&freq_path)
                 && let Ok(khz) = val.trim().parse::<u64>()
             {
-                total_khz += khz;
-                count += 1;
+                if khz > max_khz {
+                    max_khz = khz;
+                }
+                found = true;
             }
         }
     }
-    if count == 0 {
+    if !found {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "no CPU frequency data found",
         ));
     }
-    Ok((total_khz / count / 1000) as u32)
+    Ok((max_khz / 1000) as u32)
 }
 
 /// Read per-core CPU frequencies in MHz from sysfs, sorted by core index.
@@ -521,7 +523,7 @@ mod tests {
             // 2400 MHz = 2400000 kHz
             fs::write(cpufreq.join("scaling_cur_freq"), "2400000\n").unwrap();
         }
-        let freq = cpu_frequency_mhz(base).unwrap();
+        let freq = cpu_max_frequency_mhz(base).unwrap();
         assert_eq!(freq, 2400);
     }
 
@@ -529,20 +531,20 @@ mod tests {
     fn cpu_frequency_mixed_speeds() {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
-        let freqs = [1000000u64, 3000000]; // 1000 + 3000 avg = 2000
+        let freqs = [1000000u64, 3000000]; // 1000 and 3000 -> max 3000
         for (i, khz) in freqs.iter().enumerate() {
             let cpufreq = base.join(format!("cpu{i}/cpufreq"));
             fs::create_dir_all(&cpufreq).unwrap();
             fs::write(cpufreq.join("scaling_cur_freq"), format!("{khz}\n")).unwrap();
         }
-        let freq = cpu_frequency_mhz(base).unwrap();
-        assert_eq!(freq, 2000);
+        let freq = cpu_max_frequency_mhz(base).unwrap();
+        assert_eq!(freq, 3000);
     }
 
     #[test]
     fn cpu_frequency_no_cpus() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(cpu_frequency_mhz(tmp.path()).is_err());
+        assert!(cpu_max_frequency_mhz(tmp.path()).is_err());
     }
 
     #[test]

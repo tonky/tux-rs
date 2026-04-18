@@ -187,7 +187,7 @@ fn render_status_block(frame: &mut Frame, area: Rect, state: &DashboardState) {
 
     let freq_str = state
         .cpu_freq_mhz
-        .map(|f| format!("{f} MHz"))
+        .map(|f| format!("{f} MHz (Peak)"))
         .unwrap_or_else(|| "—".to_string());
 
     let cores_str = state

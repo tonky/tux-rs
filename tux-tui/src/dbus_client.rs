@@ -108,7 +108,7 @@ impl DaemonClient {
         self.call_method(SYSTEM_IFACE, "GetBatteryInfo", &()).await
     }
 
-    /// Get average CPU frequency in MHz.
+    /// Get maximum CPU frequency in MHz.
     pub async fn get_cpu_frequency(&self) -> Result<u32, zbus::Error> {
         self.call_method(SYSTEM_IFACE, "GetCpuFrequency", &()).await
     }

@@ -814,18 +814,21 @@ pub struct PowerState {
 
 impl PowerState {
     pub fn new() -> Self {
+        let mut form_tab = FormTabState::new(vec![FormField {
+            label: "TGP Offset".into(),
+            key: "tgp_offset".into(),
+            field_type: FieldType::Number {
+                value: 0,
+                min: -15,
+                max: 15,
+                step: 1,
+            },
+            enabled: false,
+        }]);
+        // Enabled from the daemon's Capabilities frame (gpu_control / tdp_control).
+        form_tab.supported = false;
         Self {
-            form_tab: FormTabState::new(vec![FormField {
-                label: "TGP Offset".into(),
-                key: "tgp_offset".into(),
-                field_type: FieldType::Number {
-                    value: 0,
-                    min: -15,
-                    max: 15,
-                    step: 1,
-                },
-                enabled: true,
-            }]),
+            form_tab,
             dgpu_name: String::new(),
             dgpu_temp: None,
             dgpu_usage: None,

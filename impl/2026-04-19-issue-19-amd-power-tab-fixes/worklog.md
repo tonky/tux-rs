@@ -23,6 +23,9 @@
   `worklog-1.md`.
 - Stage-2 drafted, confirmed, implemented (commit follows). Per-stage
   details in `worklog-2.md`.
+- Stage-3 drafted, implemented autonomously (user authorized batch).
+  TUI capability gating + conditional GPU panel layout. Per-stage
+  details in `worklog-3.md`.
 - **Discovery during stage-1 prep**: pre-existing two-bug pipeline failure
   found that explains the user-visible "iGPU not detected" symptom even
   beyond the classification issue.

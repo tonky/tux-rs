@@ -32,23 +32,47 @@ pub fn render(frame: &mut Frame, area: Rect, state: &PowerState) {
 }
 
 fn render_gpu_info(frame: &mut Frame, area: Rect, state: &PowerState) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    let has_d = !state.dgpu_name.is_empty();
+    let has_i = !state.igpu_name.is_empty();
 
-    // dGPU info.
+    match (has_d, has_i) {
+        (true, true) => {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+            frame.render_widget(build_dgpu_paragraph(state), chunks[0]);
+            frame.render_widget(build_igpu_paragraph(state), chunks[1]);
+        }
+        (true, false) => {
+            frame.render_widget(build_dgpu_paragraph(state), area);
+        }
+        (false, true) => {
+            frame.render_widget(build_igpu_paragraph(state), area);
+        }
+        (false, false) => {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+            frame.render_widget(build_dgpu_paragraph(state), chunks[0]);
+            frame.render_widget(build_igpu_paragraph(state), chunks[1]);
+        }
+    }
+}
+
+fn build_dgpu_paragraph(state: &PowerState) -> Paragraph<'_> {
     let dgpu_name = if state.dgpu_name.is_empty() {
         "No dGPU detected"
     } else {
         &state.dgpu_name
     };
-    let mut dgpu_lines = vec![Line::from(Span::styled(
+    let mut lines = vec![Line::from(Span::styled(
         dgpu_name,
         Style::default().add_modifier(Modifier::BOLD),
     ))];
     if let Some(temp) = state.dgpu_temp {
-        dgpu_lines.push(Line::from(format!("Temp: {temp:.0}°C")));
+        lines.push(Line::from(format!("Temp: {temp:.0}°C")));
     }
     let mut usage_power = String::new();
     if let Some(usage) = state.dgpu_usage {
@@ -61,41 +85,103 @@ fn render_gpu_info(frame: &mut Frame, area: Rect, state: &PowerState) {
         usage_power.push_str(&format!("Power: {power:.0}W"));
     }
     if !usage_power.is_empty() {
-        dgpu_lines.push(Line::from(usage_power));
+        lines.push(Line::from(usage_power));
     }
+    Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" dGPU "))
+}
 
-    let dgpu_block = Block::default().borders(Borders::ALL).title(" dGPU ");
-    let dgpu_paragraph = Paragraph::new(dgpu_lines).block(dgpu_block);
-    frame.render_widget(dgpu_paragraph, chunks[0]);
-
-    // iGPU info.
+fn build_igpu_paragraph(state: &PowerState) -> Paragraph<'_> {
     let igpu_name = if state.igpu_name.is_empty() {
         "No iGPU detected"
     } else {
         &state.igpu_name
     };
-    let mut igpu_lines = vec![Line::from(Span::styled(
+    let mut lines = vec![Line::from(Span::styled(
         igpu_name,
         Style::default().add_modifier(Modifier::BOLD),
     ))];
     if let Some(usage) = state.igpu_usage {
-        igpu_lines.push(Line::from(format!("Usage: {usage}%")));
+        lines.push(Line::from(format!("Usage: {usage}%")));
     }
-
-    let igpu_block = Block::default().borders(Borders::ALL).title(" iGPU ");
-    let igpu_paragraph = Paragraph::new(igpu_lines).block(igpu_block);
-    frame.render_widget(igpu_paragraph, chunks[1]);
+    Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" iGPU "))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn power_state_renders_without_gpu_data() {
         let state = PowerState::new();
         assert!(state.dgpu_name.is_empty());
         assert!(state.igpu_name.is_empty());
-        assert!(state.form_tab.supported);
+        // Fresh PowerState starts unsupported with the tgp_offset field
+        // disabled; update.rs flips both on when the daemon reports
+        // gpu_control.
+        assert!(!state.form_tab.supported);
+        let tgp = state
+            .form_tab
+            .form
+            .fields
+            .iter()
+            .find(|f| f.key == "tgp_offset")
+            .expect("tgp_offset field should always exist in the model");
+        assert!(!tgp.enabled);
+    }
+
+    #[test]
+    fn power_view_collapses_dgpu_panel_when_apu_only() {
+        let mut state = PowerState::new();
+        state.form_tab.supported = true;
+        state.igpu_name = "amdgpu".into();
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, f.area(), &state)).unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let rendered: String = buf
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            !rendered.contains("No dGPU detected"),
+            "dGPU panel should not render on APU-only layout, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("amdgpu"),
+            "iGPU name should appear in full-width layout, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn power_view_collapses_igpu_panel_when_dgpu_only() {
+        let mut state = PowerState::new();
+        state.form_tab.supported = true;
+        state.dgpu_name = "RTX 4060".into();
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, f.area(), &state)).unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let rendered: String = buf
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            !rendered.contains("No iGPU detected"),
+            "iGPU panel should not render on dGPU-only layout, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("RTX 4060"),
+            "dGPU name should appear in full-width layout, got: {rendered}"
+        );
     }
 }

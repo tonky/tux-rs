@@ -981,6 +981,14 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                 if !caps.display_brightness {
                     model.display.supported = false;
                 }
+                // Power tab gating: the daemon is the source of truth for
+                // which controls can actually change hardware state.
+                model.power.form_tab.supported = caps.gpu_control || caps.tdp_control;
+                for field in &mut model.power.form_tab.form.fields {
+                    if field.key == "tgp_offset" {
+                        field.enabled = caps.gpu_control;
+                    }
+                }
             }
         }
         DbusUpdate::FanCurve(points) => {
@@ -2195,6 +2203,13 @@ mod tests {
     fn power_form_save_returns_command() {
         let mut model = Model::new();
         model.current_tab = Tab::Power;
+        // Simulate the daemon reporting gpu_control so the Power tab's
+        // tgp_offset field is editable. Without this, adjust() is a no-op
+        // on the disabled field and the form never goes dirty.
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
         handle_key(&mut model, key(KeyCode::Right)); // Make dirty.
         let cmds = handle_key(&mut model, key(KeyCode::Char('s')));
         assert!(cmds.iter().any(|c| matches!(c, Command::SavePower(_))));
@@ -2469,6 +2484,78 @@ gpu_type = "integrated"
     }
 
     #[test]
+    fn capabilities_enable_power_when_gpu_control() {
+        let mut model = Model::new();
+        assert!(!model.power.form_tab.supported);
+        let tgp_enabled_before = model
+            .power
+            .form_tab
+            .form
+            .fields
+            .iter()
+            .find(|f| f.key == "tgp_offset")
+            .map(|f| f.enabled)
+            .expect("tgp_offset field must exist");
+        assert!(!tgp_enabled_before);
+
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
+
+        assert!(
+            model.power.form_tab.supported,
+            "Power tab must be supported when gpu_control is reported"
+        );
+        let tgp = model
+            .power
+            .form_tab
+            .form
+            .fields
+            .iter()
+            .find(|f| f.key == "tgp_offset")
+            .expect("tgp_offset field must exist");
+        assert!(
+            tgp.enabled,
+            "tgp_offset field must be enabled when gpu_control is reported"
+        );
+    }
+
+    #[test]
+    fn capabilities_leave_power_disabled_when_no_gpu_or_tdp() {
+        let mut model = Model::new();
+        // First flip it on, then confirm a capability update without the flag
+        // clears it back to disabled (prevents a stale enabled state).
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
+        assert!(model.power.form_tab.supported);
+
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = false\ntdp_control = false".to_string()),
+        );
+
+        assert!(
+            !model.power.form_tab.supported,
+            "Power tab must be unsupported when neither gpu_control nor tdp_control is reported"
+        );
+        let tgp = model
+            .power
+            .form_tab
+            .form
+            .fields
+            .iter()
+            .find(|f| f.key == "tgp_offset")
+            .expect("tgp_offset field must exist");
+        assert!(
+            !tgp.enabled,
+            "tgp_offset field must be disabled when gpu_control is not reported"
+        );
+    }
+
+    #[test]
     fn charging_form_loads_from_toml_keys() {
         let mut model = Model::new();
         let toml = r#"profile = "stationary"
@@ -2592,7 +2679,12 @@ end_threshold = 80"#;
             assert_eq!(*selected, 2);
         }
 
-        // 4. Power: change offset to 1 locally, daemon sends 10.
+        // 4. Power: enable the tab (gpu_control), change offset to 1 locally,
+        //    daemon sends 10.
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
         model.power.form_tab.form.adjust(1); // 0 -> 1
         handle_data(&mut model, DbusUpdate::PowerData("tgp_offset = 10".into()));
         assert!(

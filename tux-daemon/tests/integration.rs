@@ -620,3 +620,56 @@ async fn capabilities_no_tdp_when_no_backend() {
 
     daemon.stop().await;
 }
+
+// ── GPU capability contract ──────────────────────────────────────────────────
+
+/// When the daemon is started with a GPU power backend, capabilities must
+/// report `gpu_control = true`.
+///
+/// Regression for the pre-Stage-2 bug where `gpu_control` was hardcoded
+/// `false` in `SettingsInterface::new`, so the TUI had no honest signal to
+/// gate the cTGP-offset slider on. Mirrors the `tdp_control` pair above.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn capabilities_reflect_gpu_backend() {
+    use std::sync::Arc;
+
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = test_device();
+    let gpu: Arc<dyn tux_daemon::gpu::GpuPowerBackend> =
+        Arc::new(common::MockGpuPowerBackend::new(0));
+    let daemon = common::TestDaemonBuilder::new(&device, profile_dir.path())
+        .with_gpu(gpu)
+        .build()
+        .await;
+
+    let settings_proxy = SettingsProxy::new(&daemon.connection).await.unwrap();
+    let caps_toml = settings_proxy.get_capabilities().await.unwrap();
+    let caps: tux_core::dbus_types::CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
+    assert!(
+        caps.gpu_control,
+        "capabilities must report gpu_control=true when a GPU backend is active"
+    );
+
+    daemon.stop().await;
+}
+
+/// When the daemon has no GPU backend, capabilities must report
+/// `gpu_control = false`.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn capabilities_no_gpu_when_no_backend() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = test_device();
+    let daemon = common::TestDaemon::start(&device, profile_dir.path()).await;
+
+    let settings_proxy = SettingsProxy::new(&daemon.connection).await.unwrap();
+    let caps_toml = settings_proxy.get_capabilities().await.unwrap();
+    let caps: tux_core::dbus_types::CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
+    assert!(
+        !caps.gpu_control,
+        "capabilities must report gpu_control=false when no GPU backend is present"
+    );
+
+    daemon.stop().await;
+}

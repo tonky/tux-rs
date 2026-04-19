@@ -16,6 +16,7 @@ use tux_core::mock::fan::MockFanBackend;
 
 use tux_daemon::charging::ChargingBackend;
 use tux_daemon::fan_engine::FanCurveEngine;
+use tux_daemon::gpu::GpuPowerBackend;
 use tux_daemon::hid::{KeyboardLed, Rgb, SharedKeyboard};
 
 struct MockKeyboard;
@@ -126,6 +127,31 @@ impl ChargingBackend for MockChargingBackend {
     }
 }
 
+/// A mock GPU power backend for E2E testing.
+#[allow(dead_code)]
+pub struct MockGpuPowerBackend {
+    value: std::sync::Mutex<u8>,
+}
+
+#[allow(dead_code)]
+impl MockGpuPowerBackend {
+    pub fn new(initial: u8) -> Self {
+        Self {
+            value: std::sync::Mutex::new(initial),
+        }
+    }
+}
+
+impl GpuPowerBackend for MockGpuPowerBackend {
+    fn get_ctgp_offset(&self) -> std::io::Result<u8> {
+        Ok(*self.value.lock().unwrap())
+    }
+    fn set_ctgp_offset(&self, watts: u8) -> std::io::Result<()> {
+        *self.value.lock().unwrap() = watts;
+        Ok(())
+    }
+}
+
 /// Builder for configuring a TestDaemon with optional backends.
 #[allow(dead_code)]
 pub struct TestDaemonBuilder<'a> {
@@ -133,6 +159,7 @@ pub struct TestDaemonBuilder<'a> {
     profile_dir: &'a std::path::Path,
     charging: Option<Arc<dyn ChargingBackend>>,
     tdp: Option<Arc<dyn tux_daemon::cpu::tdp::TdpBackend>>,
+    gpu: Option<Arc<dyn GpuPowerBackend>>,
 }
 
 #[allow(dead_code)]
@@ -143,6 +170,7 @@ impl<'a> TestDaemonBuilder<'a> {
             profile_dir,
             charging: None,
             tdp: None,
+            gpu: None,
         }
     }
 
@@ -156,8 +184,20 @@ impl<'a> TestDaemonBuilder<'a> {
         self
     }
 
+    pub fn with_gpu(mut self, backend: Arc<dyn GpuPowerBackend>) -> Self {
+        self.gpu = Some(backend);
+        self
+    }
+
     pub async fn build(self) -> TestDaemon {
-        TestDaemon::start_with_options(self.device, self.profile_dir, self.charging, self.tdp).await
+        TestDaemon::start_with_options(
+            self.device,
+            self.profile_dir,
+            self.charging,
+            self.tdp,
+            self.gpu,
+        )
+        .await
     }
 }
 
@@ -168,7 +208,7 @@ impl TestDaemon {
     /// all D-Bus interfaces on the session bus.
     #[allow(dead_code)]
     pub async fn start(device: &DetectedDevice, profile_dir: &std::path::Path) -> Self {
-        Self::start_with_options(device, profile_dir, None, None).await
+        Self::start_with_options(device, profile_dir, None, None, None).await
     }
 
     /// Start with optional additional backends.
@@ -177,6 +217,7 @@ impl TestDaemon {
         profile_dir: &std::path::Path,
         charging: Option<Arc<dyn ChargingBackend>>,
         tdp_backend: Option<Arc<dyn tux_daemon::cpu::tdp::TdpBackend>>,
+        gpu_backend: Option<Arc<dyn GpuPowerBackend>>,
     ) -> Self {
         let num_fans = device.descriptor.fans.count;
         let fan_backend = Arc::new(MockFanBackend::new(num_fans));
@@ -241,7 +282,7 @@ impl TestDaemon {
             charging,
             cpu_governor: None,
             tdp_backend,
-            gpu_backend: None,
+            gpu_backend,
             display: None,
             config_tx: config_tx.clone(),
             config_rx: config_rx.clone(),

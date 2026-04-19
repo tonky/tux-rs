@@ -30,6 +30,13 @@
   hwmon fallback for the dashboard package-power line; wire shape
   kept as `f64` since the TUI already filters `0.0 → "—"` honestly.
   Per-stage details in `worklog-4.md`.
+- Stage-5 (docs + branch wrap) implemented autonomously. Updated
+  `docs/hardware_support.md`, `docs/feature_support_matrix.md`, and
+  `README.md` to reflect AMD APU iGPU detection, `amd_energy`
+  package-power fallback, and runtime capability gating. Reviewed
+  `follow_up.toml` — all four entries still correct, no new
+  follow-ups. Per-stage details in `worklog-5.md`. Branch is closed
+  pending user PR.
 - **Discovery during stage-1 prep**: pre-existing two-bug pipeline failure
   found that explains the user-visible "iGPU not detected" symptom even
   beyond the classification issue.

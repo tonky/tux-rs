@@ -10,7 +10,7 @@ I did quite a lot of planning, steering and testing, though(you can check the `i
 # tux-rs
 
 Unified Rust implementation of TUXEDO laptop support and Tuxedo Control Center as a TUI app.
-Hardware support is currently only for a single machine that i own, rest are untested(although a brave soul confirmed it working on IBP14G9!).
+Hardware support is currently only for a single machine that i own, rest are untested(although a brave soul confirmed it working on IBP14G9!). AMD APU detection (iGPU name in the Power tab, package power via `amd_energy`) and runtime-capability-gated Power controls also work on IBP14G9 — AMD TDP control itself is not yet wired (see `impl/.../follow_up.toml`).
 
 See [docs/architecture.md](docs/architecture.md) for the architecture deep dive, and [docs/hardware_support.md](docs/hardware_support.md) for the supported hardware list.
 

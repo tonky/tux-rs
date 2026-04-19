@@ -124,6 +124,9 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 | GPU temp (Stellaris/Polaris Uniwill) | ✅ | ✅ | ✅ `gpu/hwmon.rs` |
 | GPU temp (NB04) | ✅ `tuxedo_nb04_sensors` | ✅ | ✅ |
 | GPU temp (NB05/Clevo/Tuxi) | — no dGPU on these models | — | — |
+| AMD APU iGPU detection | ✅ `amdgpu` hwmon | — | ✅ classified via `device/boot_vga` kernel flag (`gpu/hwmon.rs`) |
+| Package power draw (Intel RAPL) | ✅ `/sys/class/powercap/intel-rapl:0` | ✅ | ✅ `dbus/system.rs::EnergySampler` |
+| Package power draw (AMD `amd_energy`) | ✅ `amd_energy` hwmon | — | ✅ fallback probe when intel-rapl absent |
 
 ### Charging control
 
@@ -173,6 +176,7 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 |---------|---------------|------------|--------|
 | cTGP offset read/write (Stellaris/Polaris Uniwill) | ✅ `tuxedo_nb02_nvidia_power_ctrl` | ✅ | ✅ `gpu/nb02.rs` |
 | GPU power on other platforms | — | — | — |
+| Runtime capability gating of TGP Offset UI | — | ⚠️ device-table gated | ✅ slider hidden when no NB02 backend; Power tab placeholder when neither `gpu_control` nor `tdp_control` is present |
 
 ### Display / Screen
 

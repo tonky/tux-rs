@@ -71,6 +71,7 @@ trait Device {
 )]
 trait System {
     fn get_power_state(&self) -> zbus::Result<String>;
+    fn get_gpu_info(&self) -> zbus::Result<String>;
 }
 
 /// D-Bus proxy for the Settings interface.
@@ -560,6 +561,41 @@ async fn capabilities_reflect_tdp_backend() {
     let bounds: TdpBounds = toml::from_str(&bounds_toml).expect("bounds must be valid TOML");
     assert_eq!(bounds.pl1_max, 45, "PL1 max should be 45 W");
     assert_eq!(bounds.pl2_max, 60, "PL2 max should be 60 W");
+
+    daemon.stop().await;
+}
+
+// ── GpuInfo D-Bus contract ───────────────────────────────────────────────────
+
+/// Regression: `GetGpuInfo` previously did `toml::to_string(&Vec<GpuInfo>)`,
+/// which the `toml` crate rejects with "unsupported rust type" because TOML
+/// requires a table at the root. Every call returned an error and the TUI
+/// silently dropped it, leaving the Power tab's iGPU/dGPU panels empty even
+/// on hardware where GPUs were present.
+///
+/// The contract is `GpuInfoResponse { gpus: Vec<GpuData> }`. On a CI host
+/// the gpus list will typically be empty, but the response must still parse.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn gpu_info_returns_parseable_response() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = test_device();
+    let daemon = common::TestDaemon::start(&device, profile_dir.path()).await;
+
+    let proxy = SystemProxy::new(&daemon.connection).await.unwrap();
+    let toml_str = proxy
+        .get_gpu_info()
+        .await
+        .expect("GetGpuInfo must not return a D-Bus error");
+    let resp: tux_core::dbus_types::GpuInfoResponse =
+        toml::from_str(&toml_str).expect("GetGpuInfo must return a parseable GpuInfoResponse");
+    for gpu in &resp.gpus {
+        assert!(
+            gpu.gpu_type == "discrete" || gpu.gpu_type == "integrated",
+            "gpu_type must be 'discrete' or 'integrated', got {:?}",
+            gpu.gpu_type
+        );
+    }
 
     daemon.stop().await;
 }

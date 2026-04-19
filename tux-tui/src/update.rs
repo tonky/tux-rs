@@ -1097,24 +1097,58 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             }
         }
         DbusUpdate::GpuInfo(toml_str) => {
-            if let Ok(table) = toml_str.parse::<toml::Table>() {
-                if let Some(name) = table.get("dgpu_name").and_then(|v| v.as_str()) {
-                    model.power.dgpu_name = name.to_string();
+            // Daemon ships `GpuInfoResponse { gpus: Vec<GpuData> }`. Reset
+            // model fields so a GPU that disappeared between polls doesn't
+            // leave stale state behind.
+            model.power.dgpu_name.clear();
+            model.power.dgpu_temp = None;
+            model.power.dgpu_usage = None;
+            model.power.dgpu_power = None;
+            model.power.igpu_name.clear();
+            model.power.igpu_usage = None;
+
+            match toml::from_str::<tux_core::dbus_types::GpuInfoResponse>(&toml_str) {
+                Ok(resp) => {
+                    let mut dgpu_seen = false;
+                    let mut igpu_seen = false;
+                    for gpu in resp.gpus {
+                        if gpu.gpu_type.eq_ignore_ascii_case("integrated") {
+                            if igpu_seen {
+                                model.log_debug_event(
+                                    EventSource::Daemon,
+                                    "extra iGPU ignored",
+                                    Some(gpu.name),
+                                );
+                                continue;
+                            }
+                            igpu_seen = true;
+                            model.power.igpu_name = gpu.name;
+                            model.power.igpu_usage = gpu.usage_percent;
+                        } else {
+                            // Treat anything not "integrated" as discrete
+                            // (covers "discrete" and any unexpected value).
+                            if dgpu_seen {
+                                model.log_debug_event(
+                                    EventSource::Daemon,
+                                    "extra dGPU ignored",
+                                    Some(gpu.name),
+                                );
+                                continue;
+                            }
+                            dgpu_seen = true;
+                            model.power.dgpu_name = gpu.name;
+                            model.power.dgpu_temp = gpu.temperature;
+                            model.power.dgpu_power = gpu.power_draw_w;
+                            model.power.dgpu_usage = gpu.usage_percent;
+                        }
+                    }
                 }
-                if let Some(name) = table.get("igpu_name").and_then(|v| v.as_str()) {
-                    model.power.igpu_name = name.to_string();
-                }
-                if let Some(temp) = table.get("dgpu_temp").and_then(|v| v.as_float()) {
-                    model.power.dgpu_temp = Some(temp as f32);
-                }
-                if let Some(usage) = table.get("dgpu_usage").and_then(|v| v.as_integer()) {
-                    model.power.dgpu_usage = Some(usage as u8);
-                }
-                if let Some(power) = table.get("dgpu_power").and_then(|v| v.as_float()) {
-                    model.power.dgpu_power = Some(power as f32);
-                }
-                if let Some(usage) = table.get("igpu_usage").and_then(|v| v.as_integer()) {
-                    model.power.igpu_usage = Some(usage as u8);
+                Err(e) => {
+                    model.log_debug_event(
+                        EventSource::Daemon,
+                        "GpuInfo parse failed",
+                        Some(e.to_string()),
+                    );
                 }
             }
         }
@@ -2278,16 +2312,69 @@ mod tests {
     #[test]
     fn gpu_info_updates_power_state() {
         let mut model = Model::new();
-        handle_data(
-            &mut model,
-            DbusUpdate::GpuInfo(
-                "dgpu_name = \"RTX 4060\"\ndgpu_temp = 45.0\ndgpu_usage = 3\ndgpu_power = 15.0\nigpu_name = \"Iris Xe\"\nigpu_usage = 12".to_string(),
-            ),
-        );
+        let toml = r#"
+[[gpus]]
+name = "RTX 4060"
+temperature = 45.0
+power_draw_w = 15.0
+usage_percent = 3
+gpu_type = "discrete"
+
+[[gpus]]
+name = "Iris Xe"
+usage_percent = 12
+gpu_type = "integrated"
+"#;
+        handle_data(&mut model, DbusUpdate::GpuInfo(toml.to_string()));
         assert_eq!(model.power.dgpu_name, "RTX 4060");
         assert_eq!(model.power.dgpu_temp, Some(45.0));
+        assert_eq!(model.power.dgpu_power, Some(15.0));
         assert_eq!(model.power.dgpu_usage, Some(3));
         assert_eq!(model.power.igpu_name, "Iris Xe");
+        assert_eq!(model.power.igpu_usage, Some(12));
+    }
+
+    #[test]
+    fn gpu_info_apu_only_populates_igpu_only() {
+        // Regression: AMD APU laptop (e.g. IBP14G9 / Ryzen 7 8845HS) reports
+        // a single `amdgpu` device with `gpu_type = "integrated"`. The iGPU
+        // panel must light up; the dGPU side stays blank.
+        let mut model = Model::new();
+        let toml = r#"
+[[gpus]]
+name = "amdgpu"
+temperature = 55.0
+gpu_type = "integrated"
+"#;
+        handle_data(&mut model, DbusUpdate::GpuInfo(toml.to_string()));
+        assert_eq!(model.power.igpu_name, "amdgpu");
+        assert!(model.power.dgpu_name.is_empty());
+        assert!(model.power.dgpu_temp.is_none());
+    }
+
+    #[test]
+    fn gpu_info_clears_stale_state_between_polls() {
+        let mut model = Model::new();
+        // Seed state from a discrete-GPU poll.
+        let first = r#"
+[[gpus]]
+name = "RTX 4060"
+temperature = 50.0
+gpu_type = "discrete"
+"#;
+        handle_data(&mut model, DbusUpdate::GpuInfo(first.to_string()));
+        assert_eq!(model.power.dgpu_name, "RTX 4060");
+
+        // Subsequent poll reports only an iGPU; dGPU fields must reset.
+        let second = r#"
+[[gpus]]
+name = "amdgpu"
+gpu_type = "integrated"
+"#;
+        handle_data(&mut model, DbusUpdate::GpuInfo(second.to_string()));
+        assert!(model.power.dgpu_name.is_empty());
+        assert!(model.power.dgpu_temp.is_none());
+        assert_eq!(model.power.igpu_name, "amdgpu");
     }
 
     #[test]

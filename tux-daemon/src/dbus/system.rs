@@ -12,7 +12,8 @@ use crate::gpu::hwmon;
 use crate::power_monitor::PowerState;
 use crate::profile_store::ProfileStore;
 use tux_core::dbus_types::{
-    BatteryInfoResponse, CpuFreqResponse, CpuHwLimits, CpuLoadResponse, SystemInfoResponse,
+    BatteryInfoResponse, CpuFreqResponse, CpuHwLimits, CpuLoadResponse, GpuInfoResponse,
+    SystemInfoResponse,
 };
 
 use crate::cpu::governor::CpuGovernor;
@@ -80,9 +81,17 @@ impl SystemInterface {
     }
 
     /// Get GPU telemetry info as TOML.
+    ///
+    /// Wire shape is `GpuInfoResponse { gpus: Vec<GpuData> }`. The previous
+    /// implementation serialized `Vec<GpuInfo>` directly, which the toml
+    /// crate rejects with "unsupported rust type" because TOML requires a
+    /// table at the root — so this method had been failing on every call.
     fn get_gpu_info(&self) -> zbus::fdo::Result<String> {
         let gpus = hwmon::discover_gpus(Path::new("/sys/class/hwmon"));
-        toml::to_string(&gpus).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+        let resp = GpuInfoResponse {
+            gpus: gpus.into_iter().map(Into::into).collect(),
+        };
+        toml::to_string(&resp).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// Get the maximum CPU frequency in MHz across all online cores.

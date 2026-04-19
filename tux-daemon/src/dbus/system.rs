@@ -1,6 +1,6 @@
 //! D-Bus System interface: `com.tuxedocomputers.tccd.System`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use tokio::sync::watch;
@@ -33,12 +33,16 @@ impl SystemInterface {
         assignments_rx: watch::Receiver<ProfileAssignments>,
         store: Arc<RwLock<ProfileStore>>,
     ) -> Self {
+        let source = discover_energy_source(
+            Path::new("/sys/class/powercap"),
+            Path::new("/sys/class/hwmon"),
+        );
         Self {
             power_rx,
             assignments_rx,
             store,
             cpu_sampler: Mutex::new(CpuSampler::system()),
-            energy_sampler: Mutex::new(EnergySampler::new(RAPL_ENERGY_PATH)),
+            energy_sampler: Mutex::new(EnergySampler::new(source)),
         }
     }
 }
@@ -197,18 +201,70 @@ impl SystemInterface {
     }
 }
 
-/// RAPL package energy counter (root-readable, microjoules).
-const RAPL_ENERGY_PATH: &str = "/sys/class/powercap/intel-rapl:0/energy_uj";
+/// Source of package-energy microjoule samples.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EnergySource {
+    /// File reads return microjoule counter values (monotonic, may wrap).
+    File(PathBuf),
+    /// No package-energy source available on this system.
+    None,
+}
 
-/// Samples RAPL `energy_uj` and computes instantaneous power in watts.
+/// Locate the first available package-energy counter.
+///
+/// Order: Intel RAPL `intel-rapl:0/energy_uj`, then AMD `amd_energy`
+/// hwmon (`energy*_input`, sorted — typically `energy1_input` is the
+/// socket counter; subsequent entries are per-core).
+fn discover_energy_source(powercap_root: &Path, hwmon_root: &Path) -> EnergySource {
+    let rapl = powercap_root.join("intel-rapl:0/energy_uj");
+    if rapl.exists() {
+        return EnergySource::File(rapl);
+    }
+    if let Ok(entries) = std::fs::read_dir(hwmon_root) {
+        for entry in entries.flatten() {
+            let name = match std::fs::read_to_string(entry.path().join("name")) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if name.trim() != "amd_energy" {
+                continue;
+            }
+            let Ok(files) = std::fs::read_dir(entry.path()) else {
+                continue;
+            };
+            let mut candidates: Vec<PathBuf> = files
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with("energy") && n.ends_with("_input"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            candidates.sort();
+            if let Some(first) = candidates.into_iter().next() {
+                return EnergySource::File(first);
+            }
+        }
+    }
+    EnergySource::None
+}
+
+/// Samples a package-energy `_uj` counter and computes instantaneous
+/// power in watts. Source is resolved once at daemon startup.
 struct EnergySampler {
-    path: &'static str,
+    path: Option<PathBuf>,
     last_uj: Option<u64>,
     last_time: Option<std::time::Instant>,
 }
 
 impl EnergySampler {
-    fn new(path: &'static str) -> Self {
+    fn new(source: EnergySource) -> Self {
+        let path = match source {
+            EnergySource::File(p) => Some(p),
+            EnergySource::None => None,
+        };
         Self {
             path,
             last_uj: None,
@@ -216,19 +272,18 @@ impl EnergySampler {
         }
     }
 
-    /// Returns watts since last call, or `None` on first call / read failure.
+    /// Returns watts since last call, or `None` on first call /
+    /// read failure / no source.
     fn sample(&mut self) -> Option<f64> {
-        let uj: u64 = std::fs::read_to_string(self.path)
-            .ok()?
-            .trim()
-            .parse()
-            .ok()?;
+        let path = self.path.as_ref()?;
+        let uj: u64 = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
         let now = std::time::Instant::now();
 
         let result = if let (Some(prev_uj), Some(prev_time)) = (self.last_uj, self.last_time) {
             let dt = now.duration_since(prev_time).as_secs_f64();
             if dt > 0.0 {
-                // Handle counter wraparound (energy_uj is typically 32-bit range).
+                // Handle Intel RAPL 32-bit wraparound. amd_energy uses
+                // 64-bit counters where this branch never fires.
                 let delta = if uj >= prev_uj {
                     uj - prev_uj
                 } else {
@@ -760,6 +815,114 @@ mod tests {
 
         let info = read_battery_info(tmp.path());
         assert_eq!(info.cycle_count, 36);
+    }
+
+    #[test]
+    fn discover_energy_source_prefers_intel_rapl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let powercap = tmp.path().join("powercap");
+        let hwmon = tmp.path().join("hwmon");
+        let intel = powercap.join("intel-rapl:0");
+        fs::create_dir_all(&intel).unwrap();
+        fs::write(intel.join("energy_uj"), "1000\n").unwrap();
+        let amd = hwmon.join("hwmon0");
+        fs::create_dir_all(&amd).unwrap();
+        fs::write(amd.join("name"), "amd_energy\n").unwrap();
+        fs::write(amd.join("energy1_input"), "5000\n").unwrap();
+
+        let src = discover_energy_source(&powercap, &hwmon);
+        assert_eq!(src, EnergySource::File(intel.join("energy_uj")));
+    }
+
+    #[test]
+    fn discover_energy_source_falls_back_to_amd_energy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let powercap = tmp.path().join("powercap");
+        let hwmon = tmp.path().join("hwmon");
+        fs::create_dir_all(&powercap).unwrap();
+        let amd = hwmon.join("hwmon0");
+        fs::create_dir_all(&amd).unwrap();
+        fs::write(amd.join("name"), "amd_energy\n").unwrap();
+        fs::write(amd.join("energy1_input"), "5000\n").unwrap();
+
+        let src = discover_energy_source(&powercap, &hwmon);
+        assert_eq!(src, EnergySource::File(amd.join("energy1_input")));
+    }
+
+    #[test]
+    fn discover_energy_source_picks_first_energy_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let powercap = tmp.path().join("powercap");
+        let hwmon = tmp.path().join("hwmon");
+        fs::create_dir_all(&powercap).unwrap();
+        let amd = hwmon.join("hwmon0");
+        fs::create_dir_all(&amd).unwrap();
+        fs::write(amd.join("name"), "amd_energy\n").unwrap();
+        fs::write(amd.join("energy3_input"), "3000\n").unwrap();
+        fs::write(amd.join("energy1_input"), "1000\n").unwrap();
+        fs::write(amd.join("energy2_input"), "2000\n").unwrap();
+
+        let src = discover_energy_source(&powercap, &hwmon);
+        let EnergySource::File(p) = src else {
+            panic!("expected File variant")
+        };
+        assert!(
+            p.ends_with("energy1_input"),
+            "got {p:?}, expected energy1_input"
+        );
+    }
+
+    #[test]
+    fn discover_energy_source_skips_unrelated_hwmon() {
+        let tmp = tempfile::tempdir().unwrap();
+        let powercap = tmp.path().join("powercap");
+        let hwmon = tmp.path().join("hwmon");
+        fs::create_dir_all(&powercap).unwrap();
+        let other = hwmon.join("hwmon0");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("name"), "k10temp\n").unwrap();
+        fs::write(other.join("temp1_input"), "45000\n").unwrap();
+
+        let src = discover_energy_source(&powercap, &hwmon);
+        assert_eq!(src, EnergySource::None);
+    }
+
+    #[test]
+    fn discover_energy_source_none_when_neither_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let powercap = tmp.path().join("powercap");
+        let hwmon = tmp.path().join("hwmon");
+        fs::create_dir_all(&powercap).unwrap();
+        fs::create_dir_all(&hwmon).unwrap();
+
+        let src = discover_energy_source(&powercap, &hwmon);
+        assert_eq!(src, EnergySource::None);
+    }
+
+    #[test]
+    fn energy_sampler_returns_none_when_source_none() {
+        let mut sampler = EnergySampler::new(EnergySource::None);
+        assert!(sampler.sample().is_none());
+        assert!(sampler.sample().is_none());
+    }
+
+    #[test]
+    fn energy_sampler_computes_watts_from_two_samples() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("energy_uj");
+        fs::write(&path, "1000000\n").unwrap();
+        let mut sampler = EnergySampler::new(EnergySource::File(path.clone()));
+
+        // First call: no previous sample, returns None.
+        assert!(sampler.sample().is_none());
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // 1 J consumed (1_000_000 µJ delta) over ~50ms → ~20 W.
+        fs::write(&path, "2000000\n").unwrap();
+        let watts = sampler
+            .sample()
+            .expect("second call should produce a watt reading");
+        assert!(watts > 0.0, "expected positive watts, got {watts}");
     }
 
     #[test]

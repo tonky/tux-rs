@@ -26,6 +26,10 @@
 - Stage-3 drafted, implemented autonomously (user authorized batch).
   TUI capability gating + conditional GPU panel layout. Per-stage
   details in `worklog-3.md`.
+- Stage-4 drafted, implemented autonomously. Daemon-side `amd_energy`
+  hwmon fallback for the dashboard package-power line; wire shape
+  kept as `f64` since the TUI already filters `0.0 → "—"` honestly.
+  Per-stage details in `worklog-4.md`.
 - **Discovery during stage-1 prep**: pre-existing two-bug pipeline failure
   found that explains the user-visible "iGPU not detected" symptom even
   beyond the classification issue.

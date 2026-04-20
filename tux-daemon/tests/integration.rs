@@ -71,6 +71,7 @@ trait Device {
 )]
 trait System {
     fn get_power_state(&self) -> zbus::Result<String>;
+    fn get_gpu_info(&self) -> zbus::Result<String>;
 }
 
 /// D-Bus proxy for the Settings interface.
@@ -564,6 +565,41 @@ async fn capabilities_reflect_tdp_backend() {
     daemon.stop().await;
 }
 
+// ── GpuInfo D-Bus contract ───────────────────────────────────────────────────
+
+/// Regression: `GetGpuInfo` previously did `toml::to_string(&Vec<GpuInfo>)`,
+/// which the `toml` crate rejects with "unsupported rust type" because TOML
+/// requires a table at the root. Every call returned an error and the TUI
+/// silently dropped it, leaving the Power tab's iGPU/dGPU panels empty even
+/// on hardware where GPUs were present.
+///
+/// The contract is `GpuInfoResponse { gpus: Vec<GpuData> }`. On a CI host
+/// the gpus list will typically be empty, but the response must still parse.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn gpu_info_returns_parseable_response() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = test_device();
+    let daemon = common::TestDaemon::start(&device, profile_dir.path()).await;
+
+    let proxy = SystemProxy::new(&daemon.connection).await.unwrap();
+    let toml_str = proxy
+        .get_gpu_info()
+        .await
+        .expect("GetGpuInfo must not return a D-Bus error");
+    let resp: tux_core::dbus_types::GpuInfoResponse =
+        toml::from_str(&toml_str).expect("GetGpuInfo must return a parseable GpuInfoResponse");
+    for gpu in &resp.gpus {
+        assert!(
+            gpu.gpu_type == "discrete" || gpu.gpu_type == "integrated",
+            "gpu_type must be 'discrete' or 'integrated', got {:?}",
+            gpu.gpu_type
+        );
+    }
+
+    daemon.stop().await;
+}
+
 /// When the daemon has no TDP backend, capabilities must report `tdp_control = false`.
 /// The Cpu interface is not registered in this case (no governor, no TDP), so we
 /// only check the capability flag — not the Cpu interface directly.
@@ -580,6 +616,59 @@ async fn capabilities_no_tdp_when_no_backend() {
     assert!(
         !caps.tdp_control,
         "capabilities must report tdp_control=false when no TDP backend is present"
+    );
+
+    daemon.stop().await;
+}
+
+// ── GPU capability contract ──────────────────────────────────────────────────
+
+/// When the daemon is started with a GPU power backend, capabilities must
+/// report `gpu_control = true`.
+///
+/// Regression for the pre-Stage-2 bug where `gpu_control` was hardcoded
+/// `false` in `SettingsInterface::new`, so the TUI had no honest signal to
+/// gate the cTGP-offset slider on. Mirrors the `tdp_control` pair above.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn capabilities_reflect_gpu_backend() {
+    use std::sync::Arc;
+
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = test_device();
+    let gpu: Arc<dyn tux_daemon::gpu::GpuPowerBackend> =
+        Arc::new(common::MockGpuPowerBackend::new(0));
+    let daemon = common::TestDaemonBuilder::new(&device, profile_dir.path())
+        .with_gpu(gpu)
+        .build()
+        .await;
+
+    let settings_proxy = SettingsProxy::new(&daemon.connection).await.unwrap();
+    let caps_toml = settings_proxy.get_capabilities().await.unwrap();
+    let caps: tux_core::dbus_types::CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
+    assert!(
+        caps.gpu_control,
+        "capabilities must report gpu_control=true when a GPU backend is active"
+    );
+
+    daemon.stop().await;
+}
+
+/// When the daemon has no GPU backend, capabilities must report
+/// `gpu_control = false`.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn capabilities_no_gpu_when_no_backend() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = test_device();
+    let daemon = common::TestDaemon::start(&device, profile_dir.path()).await;
+
+    let settings_proxy = SettingsProxy::new(&daemon.connection).await.unwrap();
+    let caps_toml = settings_proxy.get_capabilities().await.unwrap();
+    let caps: tux_core::dbus_types::CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
+    assert!(
+        !caps.gpu_control,
+        "capabilities must report gpu_control=false when no GPU backend is present"
     );
 
     daemon.stop().await;

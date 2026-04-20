@@ -86,6 +86,7 @@ impl SettingsInterface {
         display: Option<SharedDisplay>,
         charging_available: bool,
         tdp_available: bool,
+        gpu_available: bool,
     ) -> Self {
         let kb = device.descriptor.keyboard;
         // Collect available modes from discovered keyboard hardware.
@@ -136,7 +137,7 @@ impl SettingsInterface {
                 ),
             tdp_control: tdp_available,
             power_profiles: true,
-            gpu_control: false,
+            gpu_control: gpu_available,
             display_brightness: display.as_ref().is_some_and(|d| d.is_available()),
         };
         Self {
@@ -416,7 +417,8 @@ mod tests {
         }
         let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(DummyKb)));
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false);
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false, false);
 
         let caps_toml = iface.get_capabilities().unwrap();
         let caps: CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
@@ -428,12 +430,14 @@ mod tests {
         assert_eq!(caps.keyboard_modes, vec!["static"]);
         assert!(caps.charging_thresholds);
         assert!(!caps.tdp_control);
+        assert!(!caps.gpu_control);
     }
 
     #[test]
     fn get_capabilities_keyboard_unavailable_when_no_backends() {
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None, true, false);
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![], None, None, true, false, false);
         let caps_toml = iface.get_capabilities().unwrap();
         let caps: CapabilitiesResponse = toml::from_str(&caps_toml).unwrap();
         assert!(
@@ -445,7 +449,8 @@ mod tests {
     #[test]
     fn get_global_settings_defaults() {
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None, true, false);
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![], None, None, true, false, false);
 
         let settings_toml = iface.get_global_settings().unwrap();
         let settings: GlobalSettings = toml::from_str(&settings_toml).unwrap();
@@ -457,7 +462,8 @@ mod tests {
     #[test]
     fn keyboard_state_roundtrip() {
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None, true, false);
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![], None, None, true, false, false);
 
         let input = "brightness = 75\ncolor = \"#ff0000\"\nmode = \"breathing\"";
         iface.set_keyboard_state(input).unwrap();
@@ -525,7 +531,8 @@ mod tests {
         let calls = Arc::new(Mutex::new(Calls::default()));
         let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(MockKb(calls.clone()))));
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false);
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false, false);
 
         // Verify keyboard_modes comes from hardware.
         let caps_toml = iface.get_capabilities().unwrap();
@@ -598,7 +605,8 @@ mod tests {
         let calls = Arc::new(Mutex::new(Calls::default()));
         let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(MockKb(calls.clone()))));
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false);
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false, false);
 
         let input = "brightness = 0\ncolor = \"#ffffff\"\nmode = \"static\"";
         iface.set_keyboard_state(input).unwrap();
@@ -647,7 +655,8 @@ mod tests {
 
         let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(FailingKb)));
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false);
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false, false);
 
         let input = "brightness = 50\ncolor = \"#ffffff\"\nmode = \"static\"";
         let err = iface
@@ -676,7 +685,8 @@ mod tests {
     #[test]
     fn power_settings_returns_defaults_without_governor() {
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], None, None, true, false);
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![], None, None, true, false, false);
 
         let power_toml = iface.get_power_settings().unwrap();
         let settings: PowerSettings = toml::from_str(&power_toml).unwrap();
@@ -709,7 +719,17 @@ mod tests {
 
         let gov = Arc::new(CpuGovernor::with_path(base));
         let device = make_test_device();
-        let iface = SettingsInterface::new(&device, true, 2, vec![], Some(gov), None, true, false);
+        let iface = SettingsInterface::new(
+            &device,
+            true,
+            2,
+            vec![],
+            Some(gov),
+            None,
+            true,
+            false,
+            false,
+        );
 
         let power_toml = iface.get_power_settings().unwrap();
         let settings: PowerSettings = toml::from_str(&power_toml).unwrap();

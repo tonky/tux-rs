@@ -159,6 +159,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         display,
         charging.is_some(),
         tdp_backend.is_some(),
+        gpu_backend.is_some(),
     );
 
     // Clone before SystemInterface consumes them by value

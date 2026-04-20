@@ -10,6 +10,8 @@
 | Charging control    | ACPI flexicharger  | EC (profile + priority) | —             | —                  | —            |
 | TDP control         | —                  | EC (PL1/PL2/PL4) or Intel RAPL (PL1/PL2) | —     | —                  | —            |
 | NVIDIA GPU power    | —                  | EC (cTGP, DB) NB02 only | —             | —                  | —            |
+| GPU detection       | hwmon + kernel `boot_vga` (AMD APU iGPU, NVIDIA/Intel dGPU) | same | same | same | same |
+| Package power draw  | Intel RAPL (`intel-rapl:0`) with AMD `amd_energy` hwmon fallback | same | same | same | same |
 | ITE keyboard LEDs   | USB HID (hidraw)   | USB HID (hidraw)   | USB HID (hidraw)   | —                  | —            |
 
 40 named SKUs are directly supported out of the box (Pulse, InfinityBook, Polaris, Stellaris, Sirius, InfinityFlex, Aura, Omnia) plus 5 platform fallback descriptors.
@@ -25,5 +27,10 @@ Intel RAPL TDP control (PL1/PL2 via `/sys/class/powercap/intel-rapl:0/`) is enab
 | IBP14I08MK2   | TUXEDO InfinityBook Pro 14 Gen8 MK2     | Intel RAPL  |                              |
 
 All other devices remain at `TdpSource::None`. In particular, Gen9 AMD SKUs (`IBP14A09MK1`, `IBP15A09MK1`) are **not** supported — vendor drivers do not sanction TDP control for those platforms.
+
+AMD laptops still get:
+- iGPU detection in the Power tab (via `boot_vga` kernel flag applied to `amdgpu` hwmon entries).
+- Dashboard package-power reading (via `amd_energy` hwmon driver, falling back from the Intel-specific `intel-rapl:0` counter).
+- Capability-gated Power form: the `TGP Offset` slider is hidden on platforms without an NB02 backend, and the whole Power tab shows a "not available" placeholder when neither `gpu_control` nor `tdp_control` is present.
 
 For detailed breakdown, please see the `Platform` structs situated under `tux-core/src/platforms`.

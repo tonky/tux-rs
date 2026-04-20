@@ -1,0 +1,27 @@
+[[task]]
+description = "AMD CPU TDP control via ryzen_smu / RyzenAdj-equivalent MSR backend. Would unblock IBP14G9 (Ryzen 7 8845HS) and similar AMD Tuxedo laptops for power-draw capping; original ask from issue #19."
+status = "deferred"
+priority = "medium"
+context = "Follow-up to issue #19 / PR #20. Vendor tuxedo_io.c has no AMD Gen9 entry in uw_id_tdp(), and TCC marks IBP14A09MK1 / IBP15A09MK1 as UnsupportedConfigurableTGPDevice — so any AMD path is an upstream-of-vendor effort using ryzen_smu (https://gitlab.com/leogx9r/ryzen_smu) or a libryzenadj port."
+reasoning = "Explicitly out of scope for the 2026-04-19 branch. Implementing it is a meaningful engineering effort (MSR access, kernel module dependency, platform gating) and should get its own multi-stage feature."
+
+[[task]]
+description = "tgp_offset sign mismatch: TUI exposes Number { min: -15, max: 15, value: 0 } but the daemon backend signature is set_ctgp_offset(u8) and the profile field is ctgp_offset: Option<u8>. Negative values can't actually round-trip through the profile."
+status = "pending"
+priority = "low"
+context = "tux-tui/src/model.rs:819-828 vs tux-daemon/src/gpu/nb02.rs:40 vs tux-core/src/profile.rs:194. Pre-existing bug surfaced while planning the 2026-04-19 branch."
+reasoning = "Either the TUI range should become 0..=15 (u8-safe) or the whole stack should move to i8 with clamp at the boundary. Needs product decision: does the NB02 sysfs accept a signed offset or not? tuxedo_nb02_nvidia_power_ctrl likely takes only unsigned — TCC's NVIDIAPowerCTRLListener.ts writes a non-negative watt value."
+
+[[task]]
+description = "amdgpu classifier misses APU-only laptops on pre-modern kernels that don't export /sys/class/drm/card*/device/boot_vga. Single-amdgpu systems without boot_vga fall back to GpuType::Discrete (legacy behaviour)."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/gpu/hwmon.rs classify_gpu() — accepted limitation on Stage 1 of 2026-04-19-issue-19-amd-power-tab-fixes. boot_vga has been a kernel-side primary-VGA flag since v2.6.19 (2006), so this only affects truly ancient kernels."
+reasoning = "A fallback heuristic (e.g. 'single amdgpu on a root-complex 0000:00: PCI bus') would fix this, but requires a two-pass discovery and PCI-path parsing for a case that should be rare on supported Tuxedo hardware."
+
+[[task]]
+description = "Log a debug event in tux-tui/src/dbus_task.rs when get_gpu_info (or similar GET methods) returns a D-Bus error, rather than silently dropping the result via `if let Ok(s) = ...`."
+status = "pending"
+priority = "low"
+context = "tux-tui/src/dbus_task.rs:472 and sibling blocks. Silent-drop pattern masked the toml::to_string(&Vec<_>) contract bug (Stage 1 Bug B) for the lifetime of that code path."
+reasoning = "Debug-level, so no UI impact, but would surface future contract drift at the event-log filter. Low-risk quality-of-life improvement."

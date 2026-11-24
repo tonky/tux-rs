@@ -1407,10 +1407,16 @@ scaling_max_frequency = 3500000
     // ── 10. GPU info (graceful — no dedicated GPU control) ─────
     section("GPU Info");
 
-    match client.get_gpu_info().await {
-        Ok(gpu) => println!("  {}", gpu.trim().replace('\n', " | ")),
-        Err(e) => println!("  not available: {e}"),
-    }
+    // Regression: the client used to call this on the Settings interface and
+    // always got UnknownMethod. The System interface is always registered.
+    let gpu = client.get_gpu_info().await.expect("get_gpu_info failed");
+    let gpu_info: tux_core::dbus_types::GpuInfoResponse =
+        toml::from_str(&gpu).expect("bad GpuInfoResponse TOML");
+    println!(
+        "  {} GPU(s): {}",
+        gpu_info.gpus.len(),
+        gpu.trim().replace('\n', " | ")
+    );
 
     // ── 10b. NVIDIA cTGP offset (save/restore) ─────────────────
     if exp.gpu_control {

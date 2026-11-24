@@ -255,9 +255,9 @@ impl DaemonClient {
             .await
     }
 
-    /// Get GPU info as TOML.
+    /// Get GPU info as TOML (served by the daemon's System interface).
     pub async fn get_gpu_info(&self) -> Result<String, zbus::Error> {
-        self.call_method(SETTINGS_IFACE, "GetGpuInfo", &()).await
+        self.call_method(SYSTEM_IFACE, "GetGpuInfo", &()).await
     }
 
     /// Get the NVIDIA cTGP offset in watts (NB02 Uniwill only).

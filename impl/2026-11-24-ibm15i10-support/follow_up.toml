@@ -1,0 +1,20 @@
+[[task]]
+description = "Add device rows for IBM15I10 siblings (IBM15A10, IBM16A10; boards X5KK45xS_X5SP45xS, X6KK45xU_X6SP45xU, X6AR55xU) once someone can test them."
+status = "pending"
+priority = "low"
+context = "tuxedo-drivers 4.25.0 uniwill_keyboard.h / tuxedo_io.c list these boards next to X5AR45xS."
+reasoning = "Out of scope: no hardware to validate. TDP bounds differ per board (xxxx45xs: 100/100/105, x6ar55xu/x6xx45xu: separate tables)."
+
+[[task]]
+description = "Expose fn_lock, usb_powershare and ac_auto_boot (tuxedo_keyboard sysfs) through the daemon/TUI."
+status = "pending"
+priority = "low"
+context = "/sys/devices/platform/tuxedo_keyboard/{fn_lock,usb_powershare/usb_powershare,ac_auto_boot/ac_auto_boot} present on IBM15I10."
+reasoning = "Nice-to-have Uniwill features; not required for baseline machine support."
+
+[[task]]
+description = "Note in dmi.rs that the Clevo WMI event GUID ABBC0F6B is also present on Uniwill (IBM15I10), so it is not 'unique to Clevo'; detection order (Uniwill before Clevo) is what keeps it correct."
+status = "pending"
+priority = "low"
+context = "tux-core/src/dmi.rs CLEVO_WMI_EVENT_GUID doc comment; /sys/bus/wmi/devices on IBM15I10 lists ABBC0F6A..ABBC0F72."
+reasoning = "Once WMI probing works (Stage 1.1), the ordering becomes load-bearing; a comment plus test prevents a future reorder from misdetecting Uniwill as Clevo."

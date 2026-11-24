@@ -18,6 +18,7 @@ const SETTINGS_IFACE: &str = "com.tuxedocomputers.tccd.Settings";
 const SYSTEM_IFACE: &str = "com.tuxedocomputers.tccd.System";
 const PROFILE_IFACE: &str = "com.tuxedocomputers.tccd.Profile";
 const CHARGING_IFACE: &str = "com.tuxedocomputers.tccd.Charging";
+const GPU_POWER_IFACE: &str = "com.tuxedocomputers.tccd.GpuPower";
 
 impl DaemonClient {
     /// Connect to the daemon on the system bus (or session bus for development).
@@ -257,6 +258,18 @@ impl DaemonClient {
     /// Get GPU info as TOML.
     pub async fn get_gpu_info(&self) -> Result<String, zbus::Error> {
         self.call_method(SETTINGS_IFACE, "GetGpuInfo", &()).await
+    }
+
+    /// Get the NVIDIA cTGP offset in watts (NB02 Uniwill only).
+    pub async fn get_ctgp_offset(&self) -> Result<u8, zbus::Error> {
+        self.call_method(GPU_POWER_IFACE, "GetCtgpOffset", &())
+            .await
+    }
+
+    /// Set the NVIDIA cTGP offset in watts (NB02 Uniwill only).
+    pub async fn set_ctgp_offset(&self, watts: u8) -> Result<(), zbus::Error> {
+        self.call_method(GPU_POWER_IFACE, "SetCtgpOffset", &(watts,))
+            .await
     }
 
     /// Get power settings as TOML.

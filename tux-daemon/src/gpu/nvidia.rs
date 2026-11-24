@@ -31,6 +31,16 @@ const NVIDIA_VENDOR: &str = "0x10de";
 /// NVIDIA system daemons that keep device nodes open without using the GPU.
 const BACKGROUND_COMMS: &[&str] = &["nvidia-powerd", "nvidia-persistenced"];
 
+/// `/proc/<pid>/comm` holds at most 15 bytes (TASK_COMM_LEN - 1), so e.g.
+/// `nvidia-persistenced` shows up as `nvidia-persiste`.
+const COMM_MAX: usize = 15;
+
+fn is_background_comm(comm: &str) -> bool {
+    BACKGROUND_COMMS
+        .iter()
+        .any(|name| comm == &name[..name.len().min(COMM_MAX)])
+}
+
 /// How often to re-learn background holders while the GPU is suspended.
 const BACKGROUND_REFRESH: Duration = Duration::from_secs(30);
 
@@ -80,6 +90,8 @@ pub struct NvidiaGpu {
     proc_root: PathBuf,
     /// PIDs seen holding a node while the GPU was suspended, and when learned.
     background: Mutex<(HashSet<u32>, Option<Instant>)>,
+    /// Last process counted as a real user (for change-only debug logs).
+    last_user: Mutex<Option<(u32, String)>>,
 }
 
 impl NvidiaGpu {
@@ -119,6 +131,7 @@ impl NvidiaGpu {
             nvml,
             proc_root: PathBuf::from("/proc"),
             background: Mutex::new((HashSet::new(), None)),
+            last_user: Mutex::new(None),
         })
     }
 
@@ -181,9 +194,22 @@ impl NvidiaGpu {
     fn has_real_users(&self) -> bool {
         let self_pid = std::process::id();
         let bg = self.background.lock().unwrap_or_else(|e| e.into_inner());
-        gpu_holders(&self.proc_root).into_iter().any(|(pid, comm)| {
-            pid != self_pid && !bg.0.contains(&pid) && !BACKGROUND_COMMS.contains(&comm.as_str())
-        })
+        let user = gpu_holders(&self.proc_root)
+            .into_iter()
+            .find(|(pid, comm)| {
+                *pid != self_pid && !bg.0.contains(pid) && !is_background_comm(comm)
+            });
+        let mut last = self.last_user.lock().unwrap_or_else(|e| e.into_inner());
+        if *last != user {
+            match &user {
+                Some((pid, comm)) => {
+                    tracing::debug!("dGPU in use by pid {pid} ({comm}); querying NVML")
+                }
+                None => tracing::debug!("dGPU has no users; not querying NVML"),
+            }
+            last.clone_from(&user);
+        }
+        user.is_some()
     }
 }
 
@@ -332,7 +358,8 @@ mod tests {
         // /dev/nvidia0 open permanently; counting them kept the GPU awake.
         let (tmp, gpu, calls) = fixture("active");
         add_named_process(&tmp, 841, "nvidia-powerd", "/dev/nvidia0");
-        add_named_process(&tmp, 848, "nvidia-persistenced", "/dev/nvidia0");
+        // As the kernel reports it: comm is truncated to 15 bytes.
+        add_named_process(&tmp, 848, "nvidia-persiste", "/dev/nvidia0");
         assert_eq!(gpu.sample().power_state.as_deref(), Some("idle"));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }

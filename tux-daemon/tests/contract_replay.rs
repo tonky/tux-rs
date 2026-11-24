@@ -290,10 +290,13 @@ async fn replay_fixture_matches_dbus_outputs() {
             .normalized
             .charging
             .as_ref()
-            .and_then(|c| c.priority.clone())
-            .unwrap_or_else(|| "charge_battery".to_string());
+            .and_then(|c| c.priority.clone());
 
-        let charging = Arc::new(MockChargingBackend::new(0, 0).with_profile(&profile, &priority));
+        let mock_charging = MockChargingBackend::new(0, 0);
+        let charging = Arc::new(match &priority {
+            Some(priority) => mock_charging.with_profile(&profile, priority),
+            None => mock_charging.with_profile_only(&profile),
+        });
         let profile_dir = tempfile::tempdir().expect("failed to create temporary profile dir");
         let device = replay_device_from_fixture(&fixture);
 
@@ -303,13 +306,17 @@ async fn replay_fixture_matches_dbus_outputs() {
             .await;
 
         // Replay fixture values into the mock backend.
-        let temp = fixture
-            .raw
-            .sysfs
-            .get("cpu_temp")
-            .expect("cpu_temp is required")
-            .parse::<u8>()
-            .expect("cpu_temp must be an integer");
+        // Legacy stacks record raw sysfs cpu_temp; tuxedo_io (ioctl) fixtures
+        // only carry the temperature in the D-Bus/normalized fan data.
+        let temp = match fixture.raw.sysfs.get("cpu_temp").map(|t| t.trim()) {
+            Some(t) if !t.is_empty() => t.parse::<u8>().expect("cpu_temp must be an integer"),
+            _ => fixture
+                .normalized
+                .fans
+                .first()
+                .map(|f| f.temp_celsius.round() as u8)
+                .expect("fixture needs cpu_temp or normalized fan temperature"),
+        };
         daemon.fan_backend.set_temp(temp);
 
         let all_rpm_unavailable = fixture.normalized.fans.iter().all(|f| !f.rpm_available);

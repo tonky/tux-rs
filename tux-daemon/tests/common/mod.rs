@@ -94,6 +94,13 @@ impl MockChargingBackend {
         self.priority = std::sync::Mutex::new(Some(priority.to_string()));
         self
     }
+
+    /// Profile-only EC (no `charging_priority` group), e.g. IBM15I10.
+    pub fn with_profile_only(mut self, profile: &str) -> Self {
+        self.profile = std::sync::Mutex::new(Some(profile.to_string()));
+        self.priority = std::sync::Mutex::new(None);
+        self
+    }
 }
 
 impl ChargingBackend for MockChargingBackend {

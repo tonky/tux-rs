@@ -8,18 +8,31 @@
 //! NVML is also initialised per query and shut down right after, so the
 //! daemon holds no handle that could keep the GPU from suspending.
 //!
-//! An *active* GPU is only queried while another process has one of its
-//! device nodes (`/dev/nvidiaN`) open. Right after its last user exits the
-//! GPU stays active for its idle timeout (~20 s on IBM15I10) before
-//! suspending; each NVML query restarts that timer, so polling an otherwise
-//! unused GPU would keep it awake forever. Such a GPU is reported as `idle`.
+//! An *active* GPU is only queried while a real user has one of its device
+//! nodes (`/dev/nvidiaN`) open. Right after its last user exits the GPU stays
+//! active for its idle timeout (~20 s on IBM15I10) before suspending; each
+//! NVML query restarts that timer, so polling an otherwise unused GPU would
+//! keep it awake forever. Such a GPU is reported as `idle`.
+//!
+//! Background holders don't count: NVIDIA's own daemons (`nvidia-powerd`,
+//! `nvidia-persistenced`) and any process seen holding a node while the GPU
+//! was runtime-suspended (so its handle evidently doesn't keep it awake).
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tux_core::dbus_types::GpuData;
 
 const NVIDIA_VENDOR: &str = "0x10de";
+
+/// NVIDIA system daemons that keep device nodes open without using the GPU.
+const BACKGROUND_COMMS: &[&str] = &["nvidia-powerd", "nvidia-persistenced"];
+
+/// How often to re-learn background holders while the GPU is suspended.
+const BACKGROUND_REFRESH: Duration = Duration::from_secs(30);
 
 /// One NVML reading.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -65,6 +78,8 @@ pub struct NvidiaGpu {
     nvml: Box<dyn NvQuery>,
     /// `/proc`, scanned for other holders of `/dev/nvidiaN`.
     proc_root: PathBuf,
+    /// PIDs seen holding a node while the GPU was suspended, and when learned.
+    background: Mutex<(HashSet<u32>, Option<Instant>)>,
 }
 
 impl NvidiaGpu {
@@ -103,6 +118,7 @@ impl NvidiaGpu {
             name,
             nvml,
             proc_root: PathBuf::from("/proc"),
+            background: Mutex::new((HashSet::new(), None)),
         })
     }
 
@@ -122,8 +138,9 @@ impl NvidiaGpu {
     pub fn sample(&self) -> GpuData {
         let mut state = self.runtime_status();
         let s = if state != "active" {
+            self.learn_background_holders();
             NvSample::default()
-        } else if other_gpu_users(&self.proc_root, std::process::id()) {
+        } else if self.has_real_users() {
             self.nvml.query(&self.bdf).unwrap_or_default()
         } else {
             // Coasting towards runtime suspend; a query would keep it awake.
@@ -146,33 +163,53 @@ fn read_trim(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok().map(|s| s.trim().to_string())
 }
 
-/// Whether a process other than `self_pid` has an NVIDIA GPU node
-/// (`/dev/nvidia<N>`, not `nvidiactl`/`nvidia-uvm`/`nvidia-modeset`) open.
-fn other_gpu_users(proc_root: &Path, self_pid: u32) -> bool {
-    let Ok(procs) = fs::read_dir(proc_root) else {
-        return false;
-    };
-    procs.flatten().any(|p| {
-        let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
-            return false;
-        };
-        if pid == self_pid {
-            return false;
+impl NvidiaGpu {
+    /// While suspended, remember who holds GPU nodes (rate-limited).
+    fn learn_background_holders(&self) {
+        let mut bg = self.background.lock().unwrap_or_else(|e| e.into_inner());
+        if bg.1.is_some_and(|t| t.elapsed() < BACKGROUND_REFRESH) {
+            return;
         }
-        let Ok(fds) = fs::read_dir(p.path().join("fd")) else {
-            return false;
-        };
-        fds.flatten().any(|fd| {
-            fs::read_link(fd.path()).is_ok_and(|target| {
-                target
-                    .to_str()
-                    .and_then(|t| t.strip_prefix("/dev/nvidia"))
-                    .is_some_and(|rest| {
-                        !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
-                    })
-            })
+        bg.0 = gpu_holders(&self.proc_root)
+            .into_iter()
+            .map(|(pid, _)| pid)
+            .collect();
+        bg.1 = Some(Instant::now());
+    }
+
+    /// Whether anyone other than us and known background holders uses the GPU.
+    fn has_real_users(&self) -> bool {
+        let self_pid = std::process::id();
+        let bg = self.background.lock().unwrap_or_else(|e| e.into_inner());
+        gpu_holders(&self.proc_root).into_iter().any(|(pid, comm)| {
+            pid != self_pid && !bg.0.contains(&pid) && !BACKGROUND_COMMS.contains(&comm.as_str())
         })
-    })
+    }
+}
+
+/// Processes holding an NVIDIA GPU node (`/dev/nvidia<N>`, not
+/// `nvidiactl`/`nvidia-uvm`/`nvidia-modeset`) open, as `(pid, comm)`.
+fn gpu_holders(proc_root: &Path) -> Vec<(u32, String)> {
+    let Ok(procs) = fs::read_dir(proc_root) else {
+        return Vec::new();
+    };
+    procs
+        .flatten()
+        .filter_map(|p| {
+            let pid = p.file_name().to_str()?.parse::<u32>().ok()?;
+            let holds = fs::read_dir(p.path().join("fd")).ok()?.flatten().any(|fd| {
+                fs::read_link(fd.path()).is_ok_and(|target| {
+                    target
+                        .to_str()
+                        .and_then(|t| t.strip_prefix("/dev/nvidia"))
+                        .is_some_and(|rest| {
+                            !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+                        })
+                })
+            });
+            holds.then(|| (pid, read_trim(&p.path().join("comm")).unwrap_or_default()))
+        })
+        .collect()
 }
 
 /// `Model:` line of `/proc/driver/nvidia/gpus/<bdf>/information` (no GPU wake-up).
@@ -251,6 +288,16 @@ mod tests {
 
     /// Fake process `pid` holding `target` open as fd 3.
     fn add_process(tmp: &tempfile::TempDir, pid: u32, target: &str) {
+        add_named_process(tmp, pid, "app", target);
+    }
+
+    fn add_named_process(tmp: &tempfile::TempDir, pid: u32, comm: &str, target: &str) {
+        fs::create_dir_all(tmp.path().join(format!("procfs/{pid}"))).unwrap();
+        fs::write(
+            tmp.path().join(format!("procfs/{pid}/comm")),
+            format!("{comm}\n"),
+        )
+        .unwrap();
         let fd_dir = tmp.path().join(format!("procfs/{pid}/fd"));
         fs::create_dir_all(&fd_dir).unwrap();
         std::os::unix::fs::symlink(target, fd_dir.join("3")).unwrap();
@@ -269,6 +316,39 @@ mod tests {
             );
         }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    fn set_status(tmp: &tempfile::TempDir, status: &str) {
+        fs::write(
+            tmp.path().join("pci/0000:01:00.0/power/runtime_status"),
+            format!("{status}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn nvidia_daemons_do_not_count_as_users() {
+        // Regression (IBM15I10): nvidia-powerd / nvidia-persistenced keep
+        // /dev/nvidia0 open permanently; counting them kept the GPU awake.
+        let (tmp, gpu, calls) = fixture("active");
+        add_named_process(&tmp, 841, "nvidia-powerd", "/dev/nvidia0");
+        add_named_process(&tmp, 848, "nvidia-persistenced", "/dev/nvidia0");
+        assert_eq!(gpu.sample().power_state.as_deref(), Some("idle"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn holders_seen_while_suspended_are_learned_as_background() {
+        let (tmp, gpu, calls) = fixture("suspended");
+        add_named_process(&tmp, 500, "kwin_wayland", "/dev/nvidia0");
+        gpu.sample(); // learns pid 500 as background
+        set_status(&tmp, "active");
+        assert_eq!(gpu.sample().power_state.as_deref(), Some("idle"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        // A new process that starts using the GPU is a real user.
+        add_named_process(&tmp, 600, "game", "/dev/nvidia0");
+        assert_eq!(gpu.sample().power_state.as_deref(), Some("active"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

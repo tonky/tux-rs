@@ -5,7 +5,7 @@
 //! - `RaplTdp`: Intel RAPL via `/sys/class/powercap/intel-rapl:0/`.
 //! - `UniwillEcTdp`: Uniwill EC via `/dev/tuxedo_io` ioctls (e.g. IBM15I10).
 //!
-//! Both implement [`TdpBackend`]. Selection is driven by
+//! All implement [`TdpBackend`]. Selection is driven by
 //! `DeviceDescriptor::tdp_source` via [`build_backend`].
 
 use std::io;
@@ -415,7 +415,7 @@ impl UniwillEcTdp {
     fn read_watts(io: &dyn TuxedoIo, cmd: u64) -> io::Result<u32> {
         let v = io.read_i32(cmd)?;
         if v < 0 {
-            Err(io::Error::from_raw_os_error(-v))
+            Err(io::Error::from_raw_os_error(v.saturating_neg()))
         } else {
             Ok(v as u32)
         }
@@ -756,8 +756,11 @@ mod tests {
             Some(Arc::new(UniwillEcSim::x5ar45xs()) as Arc<dyn TuxedoIo>)
         })
         .expect("backend");
-        assert_eq!(backend.bounds().pl1_max, 90);
-        assert_eq!(backend.get_pl1().unwrap(), 90);
+        let b = backend.bounds();
+        assert_eq!(
+            (b.pl1_min, b.pl1_max, b.pl2_min, b.pl2_max),
+            (10, 90, 10, 90)
+        );
     }
 
     #[test]
@@ -780,7 +783,9 @@ mod tests {
     fn factory_non_uniwill_sources_never_open_tuxedo_io() {
         for source in [TdpSource::None, TdpSource::Ec] {
             let desc = test_descriptor(source, None);
-            let _ = build_backend_with(&desc, || panic!("{source:?} must not open tuxedo_io"));
+            let backend =
+                build_backend_with(&desc, || panic!("{source:?} must not open tuxedo_io"));
+            assert!(backend.is_none());
         }
     }
 
@@ -803,6 +808,10 @@ mod tests {
         current: std::sync::Mutex<[i32; 3]>,
         /// When set, writes are dropped even if in range (EC refuses).
         drop_writes: bool,
+        /// Commands whose read returns this raw value (e.g. a negative errno).
+        raw_reads: Vec<(u64, i32)>,
+        /// Commands that fail at the ioctl layer (read or write).
+        err_cmds: Vec<u64>,
     }
 
     const ENODEV: i32 = 19;
@@ -813,12 +822,27 @@ mod tests {
                 table: Some([(10, 90), (10, 90), (10, 230)]),
                 current: std::sync::Mutex::new([90, 90, 230]),
                 drop_writes: false,
+                raw_reads: vec![],
+                err_cmds: vec![],
+            }
+        }
+
+        fn at(pl1: i32, pl2: i32) -> Self {
+            Self {
+                current: std::sync::Mutex::new([pl1, pl2, 230]),
+                ..Self::x5ar45xs()
             }
         }
     }
 
     impl TuxedoIo for UniwillEcSim {
         fn read_i32(&self, cmd: u64) -> io::Result<i32> {
+            if self.err_cmds.contains(&cmd) {
+                return Err(io::Error::other("simulated ioctl failure"));
+            }
+            if let Some(&(_, raw)) = self.raw_reads.iter().find(|(c, _)| *c == cmd) {
+                return Ok(raw);
+            }
             let idx = |base: u64| (cmd - base) as usize;
             let Some(table) = self.table else {
                 return Ok(-ENODEV);
@@ -834,6 +858,9 @@ mod tests {
         }
 
         fn write_i32(&self, cmd: u64, val: i32) -> io::Result<()> {
+            if self.err_cmds.contains(&cmd) {
+                return Err(io::Error::other("simulated ioctl failure"));
+            }
             let i = (cmd - W_UW_TDP0) as usize;
             if let Some(table) = self.table {
                 // Driver: out-of-range → -EINVAL internally, ioctl still Ok.
@@ -882,7 +909,8 @@ mod tests {
     #[test]
     fn uniwill_ec_set_clamps_to_driver_bounds() {
         // The driver would silently drop 5 W / 200 W; we clamp instead.
-        let tdp = UniwillEcTdp::probe(Arc::new(UniwillEcSim::x5ar45xs())).unwrap();
+        // Start mid-range so a dropped write would be visible as "unchanged".
+        let tdp = UniwillEcTdp::probe(Arc::new(UniwillEcSim::at(50, 50))).unwrap();
         tdp.set_pl1(5).unwrap();
         assert_eq!(tdp.get_pl1().unwrap(), 10);
         tdp.set_pl2(200).unwrap();
@@ -898,6 +926,71 @@ mod tests {
         let tdp = UniwillEcTdp::probe(Arc::new(sim)).unwrap();
         let err = tdp.set_pl1(45).unwrap_err();
         assert!(err.to_string().contains("did not accept PL1=45"), "{err}");
+    }
+
+    #[test]
+    fn uniwill_ec_probe_rejects_inconsistent_bounds() {
+        let sim = UniwillEcSim {
+            table: Some([(90, 10), (10, 90), (10, 230)]),
+            ..UniwillEcSim::x5ar45xs()
+        };
+        assert!(UniwillEcTdp::probe(Arc::new(sim)).is_none());
+    }
+
+    #[test]
+    fn uniwill_ec_probe_tolerates_missing_pl4() {
+        let sim = UniwillEcSim {
+            raw_reads: vec![(R_UW_TDP2_MIN, -ENODEV), (R_UW_TDP2_MAX, -ENODEV)],
+            ..UniwillEcSim::x5ar45xs()
+        };
+        let tdp = UniwillEcTdp::probe(Arc::new(sim)).unwrap();
+        assert_eq!((tdp.bounds().pl4_min, tdp.bounds().pl4_max), (None, None));
+        assert_eq!(tdp.bounds().pl1_max, 90);
+    }
+
+    #[test]
+    fn uniwill_ec_probe_requires_readable_pl1() {
+        let negative = UniwillEcSim {
+            raw_reads: vec![(R_UW_TDP0, -5)],
+            ..UniwillEcSim::x5ar45xs()
+        };
+        assert!(UniwillEcTdp::probe(Arc::new(negative)).is_none());
+        let io_error = UniwillEcSim {
+            err_cmds: vec![R_UW_TDP0],
+            ..UniwillEcSim::x5ar45xs()
+        };
+        assert!(UniwillEcTdp::probe(Arc::new(io_error)).is_none());
+    }
+
+    #[test]
+    fn uniwill_ec_probe_fails_on_bounds_io_error() {
+        let sim = UniwillEcSim {
+            err_cmds: vec![R_UW_TDP1_MAX],
+            ..UniwillEcSim::x5ar45xs()
+        };
+        assert!(UniwillEcTdp::probe(Arc::new(sim)).is_none());
+    }
+
+    #[test]
+    fn uniwill_ec_set_propagates_write_error() {
+        let sim = UniwillEcSim {
+            err_cmds: vec![W_UW_TDP1],
+            ..UniwillEcSim::at(50, 50)
+        };
+        let tdp = UniwillEcTdp::probe(Arc::new(sim)).unwrap();
+        assert!(tdp.set_pl2(60).is_err());
+        assert_eq!(tdp.get_pl2().unwrap(), 50);
+        tdp.set_pl1(60).unwrap();
+    }
+
+    #[test]
+    fn uniwill_ec_read_watts_handles_i32_min() {
+        let sim = UniwillEcSim {
+            raw_reads: vec![(R_UW_TDP0, i32::MIN)],
+            ..UniwillEcSim::x5ar45xs()
+        };
+        // -i32::MIN would overflow; must not panic.
+        assert!(UniwillEcTdp::read_watts(&sim, R_UW_TDP0).is_err());
     }
 
     #[test]

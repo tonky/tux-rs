@@ -28,14 +28,14 @@ reasoning = "Fallback detection for unknown SKUs now depends on WMI GUID sets th
 
 [[task]]
 description = "Fall back to a valid governor when a profile asks for one the cpufreq driver lacks (built-in profiles request 'schedutil'; intel_pstate active mode only offers performance/powersave). Mirror TCC findDefaultGovernor: powersave for intel_pstate/amd-pstate-epp."
-status = "pending"
+status = "done"
 priority = "medium"
 context = "tux-daemon/src/profile_apply.rs; WARN 'governor schedutil not available' on every profile apply on IBM15I10 (and any intel_pstate machine)."
 reasoning = "Harmless today (governor stays powersave) but noisy and misleading; generic, not IBM15I10-specific, so kept out of this feature."
 
 [[task]]
 description = "dGPU/iGPU telemetry is empty on IBM15I10: GetGpuInfo returns gpus = [] because the proprietary NVIDIA driver and Intel xe expose no hwmon. Consider nvidia-smi (already used for cTGP limits) and DRM/xe sysfs sources."
-status = "pending"
+status = "done"
 priority = "medium"
 context = "tux-daemon/src/gpu/hwmon.rs discover_gpus; TUI Power tab shows 'No dGPU/iGPU detected'."
 reasoning = "Display-only gap; GPU power control works. Needs a design for polling cost (nvidia-smi wakes a suspended dGPU)."

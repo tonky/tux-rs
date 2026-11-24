@@ -805,21 +805,28 @@ mod tests {
 
     #[test]
     fn charging_priority_capability_follows_backend() {
-        let device = make_test_device();
         let caps = |iface: &SettingsInterface| -> CapabilitiesResponse {
             toml::from_str(&iface.get_capabilities().unwrap()).unwrap()
         };
+
+        // Uniwill EC profile device (descriptor of the real IBM15I10 row).
+        let uniwill = DetectedDevice {
+            descriptor: tux_core::device_table::lookup_by_sku("IBM15I10").unwrap(),
+            ..make_test_device()
+        };
         let base =
-            || SettingsInterface::new(&device, true, 2, vec![], None, None, true, false, false);
-        let profiles = caps(&base()).charging_profiles;
-        assert_eq!(caps(&base()).charging_priority, profiles);
-        // Profile-only EC (IBM15I10): priority capability must be off.
+            || SettingsInterface::new(&uniwill, true, 2, vec![], None, None, true, false, false);
+        assert!(caps(&base()).charging_profiles);
+        assert!(caps(&base()).charging_priority, "assumed until narrowed");
+        assert!(caps(&base().with_charging_priority(true)).charging_priority);
+        // Profile-only EC (IBM15I10 hardware): priority capability must be off.
         assert!(!caps(&base().with_charging_priority(false)).charging_priority);
-        // Narrowing never turns it on where profiles are unsupported.
-        assert_eq!(
-            caps(&base().with_charging_priority(true)).charging_priority,
-            profiles
-        );
+
+        // Narrowing never turns it on where profiles are unsupported (Clevo).
+        let clevo = make_test_device();
+        let iface = SettingsInterface::new(&clevo, true, 2, vec![], None, None, true, false, false)
+            .with_charging_priority(true);
+        assert!(!caps(&iface).charging_priority);
     }
 
     #[test]

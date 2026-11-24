@@ -76,6 +76,7 @@ pub struct MockChargingBackend {
     end: std::sync::Mutex<u8>,
     profile: std::sync::Mutex<Option<String>>,
     priority: std::sync::Mutex<Option<String>>,
+    priority_supported: bool,
 }
 
 #[allow(dead_code)]
@@ -86,6 +87,7 @@ impl MockChargingBackend {
             end: std::sync::Mutex::new(end),
             profile: std::sync::Mutex::new(None),
             priority: std::sync::Mutex::new(None),
+            priority_supported: true,
         }
     }
 
@@ -99,6 +101,7 @@ impl MockChargingBackend {
     pub fn with_profile_only(mut self, profile: &str) -> Self {
         self.profile = std::sync::Mutex::new(Some(profile.to_string()));
         self.priority = std::sync::Mutex::new(None);
+        self.priority_supported = false;
         self
     }
 }
@@ -129,8 +132,13 @@ impl ChargingBackend for MockChargingBackend {
         Ok(self.priority.lock().unwrap().clone())
     }
     fn set_priority(&self, priority: &str) -> std::io::Result<()> {
-        *self.priority.lock().unwrap() = Some(priority.to_string());
+        if self.priority_supported {
+            *self.priority.lock().unwrap() = Some(priority.to_string());
+        }
         Ok(())
+    }
+    fn supports_priority(&self) -> bool {
+        self.priority_supported
     }
 }
 

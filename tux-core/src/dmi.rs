@@ -18,7 +18,10 @@ const NB04_WMI_GUID: &str = "80C9BAA6-AC48-4538-9234-9F81A55E7C85";
 /// so Uniwill must be probed first in [`detect_platform`].
 const CLEVO_WMI_EVENT_GUID: &str = "ABBC0F6B-8EA1-11D1-00A0-C90629100000";
 
-/// Uniwill WMI event GUID 2 — unique to Uniwill hardware (tuxedo-drivers: uniwill_wmi.ko).
+/// Uniwill WMI event GUID 2 (tuxedo-drivers: uniwill_wmi.ko).
+///
+/// Like the other WMI GUIDs, it comes from the firmware's ACPI `_WDG` table, so
+/// its presence does not imply tuxedo-drivers is loaded.
 const UNIWILL_WMI_EVENT_GUID_2: &str = "ABBC0F72-8EA1-11D1-00A0-C90629100000";
 
 /// NB04 platform path exposed by tuxedo-drivers.
@@ -178,7 +181,7 @@ fn detect_platform(source: &dyn DmiSource, dmi: &DmiInfo) -> Option<Platform> {
         return Some(Platform::Nb04);
     }
 
-    // Uniwill: tuxedo-drivers exposes WMI event GUID 2 unique to Uniwill hardware.
+    // Uniwill: WMI event GUID 2 (not seen on Clevo/NB04 firmware so far).
     if source.wmi_guid_exists(UNIWILL_WMI_EVENT_GUID_2) {
         return Some(Platform::Uniwill);
     }
@@ -251,7 +254,9 @@ pub fn detect_device(source: &dyn DmiSource) -> Result<DetectedDevice, Detection
     // Step 2.5: For platforms detected via non-sysfs signals (NB04 via WMI),
     // verify the tuxedo-drivers kernel module is actually loaded.
     // NB05 is detected by board_vendor and has no sysfs platform path to verify.
-    // Uniwill/Clevo/Tuxi are detected BY sysfs/WMI, so driver is inherently present.
+    // Uniwill/Clevo WMI GUIDs come from ACPI firmware, not the driver; their
+    // backends probe /dev/tuxedo_io at init and degrade gracefully if absent.
+    // Tuxi is detected by its driver-registered platform device.
     // NB04: verify tuxedo_nb04_sensors is loaded (tuxedo-drivers platform device).
     if platform == Platform::Nb04 && !source.sysfs_path_exists(NB04_SHIM_SYSFS_PATH) {
         return Err(DetectionError::NoKernelShim { platform });
@@ -630,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn uwiwill_wmi_guid_detected_before_clevo() {
+    fn uniwill_wmi_guid_detected_before_clevo() {
         // If both Uniwill and Clevo WMI GUIDs are somehow present, Uniwill wins
         let source = MockDmiSource::new()
             .tuxedo_base("AMBIGUOUS_SKU")
@@ -671,8 +676,10 @@ mod tests {
 
     #[test]
     fn wmi_guid_match_is_case_insensitive() {
-        let dir = wmi_dir_with(&["80c9baa6-ac48-4538-9234-9f81a55e7c85-2"]);
-        assert!(wmi_guid_present_in(dir.path(), NB04_WMI_GUID));
+        let suffixed = wmi_dir_with(&["80c9baa6-ac48-4538-9234-9f81a55e7c85-2"]);
+        assert!(wmi_guid_present_in(suffixed.path(), NB04_WMI_GUID));
+        let bare = wmi_dir_with(&["80c9baa6-ac48-4538-9234-9f81a55e7c85"]);
+        assert!(wmi_guid_present_in(bare.path(), NB04_WMI_GUID));
     }
 
     #[test]

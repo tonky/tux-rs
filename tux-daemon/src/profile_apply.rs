@@ -964,6 +964,9 @@ mod tests {
                 *self.value.lock().unwrap() = watts;
                 Ok(())
             }
+            fn ctgp_offset_max(&self) -> u8 {
+                u8::MAX
+            }
         }
 
         let mock: Arc<dyn GpuPowerBackend> = Arc::new(MockGpuPower::new());

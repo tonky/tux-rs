@@ -57,6 +57,9 @@ mod tests {
             *self.value.lock().unwrap() = watts;
             Ok(())
         }
+        fn ctgp_offset_max(&self) -> u8 {
+            u8::MAX
+        }
     }
 
     #[test]
@@ -82,6 +85,10 @@ mod tests {
 
         fn set_ctgp_offset(&self, _watts: u8) -> io::Result<()> {
             Err(io::Error::new(io::ErrorKind::PermissionDenied, "no access"))
+        }
+
+        fn ctgp_offset_max(&self) -> u8 {
+            0
         }
     }
 

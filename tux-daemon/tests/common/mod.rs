@@ -157,6 +157,9 @@ impl GpuPowerBackend for MockGpuPowerBackend {
         *self.value.lock().unwrap() = watts;
         Ok(())
     }
+    fn ctgp_offset_max(&self) -> u8 {
+        u8::MAX
+    }
 }
 
 /// Builder for configuring a TestDaemon with optional backends.

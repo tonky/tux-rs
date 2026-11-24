@@ -12,4 +12,7 @@ pub trait GpuPowerBackend: Send + Sync {
 
     /// Set the cTGP offset in watts.
     fn set_ctgp_offset(&self, watts: u8) -> io::Result<()>;
+
+    /// Largest offset `set_ctgp_offset` accepts; `0` means not adjustable.
+    fn ctgp_offset_max(&self) -> u8;
 }

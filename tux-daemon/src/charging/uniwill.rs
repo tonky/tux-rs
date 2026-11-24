@@ -9,13 +9,16 @@
 //!   `charging_priority/charging_prios_available`   (RO)
 //!
 //! Both attribute groups are conditionally created by the driver; not all
-//! Uniwill hardware supports both features.
+//! Uniwill hardware supports both features (e.g. IBM15I10 only exposes
+//! `charging_profile`). A missing group reads as `None` and writes to it are
+//! validated and then ignored, mirroring the threshold no-ops below: callers
+//! (TUI form, profiles) always send both fields.
 
 use std::io;
 
 use super::ChargingBackend;
 use crate::platform::sysfs::SysfsReader;
-use tracing::info;
+use tracing::{debug, info};
 
 const SYSFS_BASE: &str = "/sys/devices/platform/tuxedo_keyboard";
 
@@ -37,6 +40,8 @@ const VALID_PRIORITIES: &[&str] = &["charge_battery", "performance"];
 #[derive(Debug)]
 pub struct UniwillCharging {
     sysfs: SysfsReader,
+    has_profile: bool,
+    has_priority: bool,
 }
 
 impl UniwillCharging {
@@ -56,7 +61,16 @@ impl UniwillCharging {
             let profile_ok = has_profile && sysfs.read_str(ATTR_PROFILE).is_ok();
             let prio_ok = has_prio && sysfs.read_str(ATTR_PRIO).is_ok();
             if profile_ok || prio_ok {
-                Some(Self { sysfs })
+                info!(
+                    "Uniwill charging: profile={}, priority={}",
+                    if has_profile { "present" } else { "absent" },
+                    if has_prio { "present" } else { "absent" },
+                );
+                Some(Self {
+                    sysfs,
+                    has_profile,
+                    has_priority: has_prio,
+                })
             } else {
                 info!(
                     "Uniwill charging attributes present but not readable; disabling charging backend"
@@ -69,8 +83,11 @@ impl UniwillCharging {
     /// Create a backend with a custom sysfs path (for testing).
     #[cfg(test)]
     pub fn with_path(path: impl Into<std::path::PathBuf>) -> Self {
+        let sysfs = SysfsReader::new(path);
         Self {
-            sysfs: SysfsReader::new(path),
+            has_profile: sysfs.exists(ATTR_PROFILE),
+            has_priority: sysfs.exists(ATTR_PRIO),
+            sysfs,
         }
     }
 
@@ -160,20 +177,34 @@ impl ChargingBackend for UniwillCharging {
     }
 
     fn get_profile(&self) -> io::Result<Option<String>> {
+        if !self.has_profile {
+            return Ok(None);
+        }
         self.read_str_retry(ATTR_PROFILE).map(Some)
     }
 
     fn set_profile(&self, profile: &str) -> io::Result<()> {
         Self::validate_profile(profile)?;
+        if !self.has_profile {
+            debug!("charge profile not supported by this device; ignoring '{profile}'");
+            return Ok(());
+        }
         self.write_str_retry(ATTR_PROFILE, profile)
     }
 
     fn get_priority(&self) -> io::Result<Option<String>> {
+        if !self.has_priority {
+            return Ok(None);
+        }
         self.read_str_retry(ATTR_PRIO).map(Some)
     }
 
     fn set_priority(&self, priority: &str) -> io::Result<()> {
         Self::validate_priority(priority)?;
+        if !self.has_priority {
+            debug!("charge priority not supported by this device; ignoring '{priority}'");
+            return Ok(());
+        }
         self.write_str_retry(ATTR_PRIO, priority)
     }
 }
@@ -267,6 +298,67 @@ mod tests {
         let err = backend.set_priority("max_speed").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("max_speed"));
+    }
+
+    // ── Profile-only hardware (IBM15I10: no charging_priority group) ──────
+
+    fn setup_profile_only() -> (MockSysfs, UniwillCharging) {
+        let mock = MockSysfs::new();
+        let base = mock.platform_dir("tuxedo_keyboard");
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charging_profile/charging_profile",
+            "high_capacity",
+        );
+        let backend = UniwillCharging::with_path(base);
+        (mock, backend)
+    }
+
+    #[test]
+    fn profile_only_reads_priority_as_none() {
+        let (_mock, backend) = setup_profile_only();
+        assert_eq!(
+            backend.get_profile().unwrap(),
+            Some("high_capacity".to_string())
+        );
+        assert_eq!(backend.get_priority().unwrap(), None);
+    }
+
+    #[test]
+    fn profile_only_ignores_valid_priority_write() {
+        let (mock, backend) = setup_profile_only();
+        backend.set_priority("performance").unwrap();
+        assert_eq!(backend.get_priority().unwrap(), None);
+        // Must not create the attribute in the (mock) sysfs tree.
+        assert!(
+            !mock
+                .root()
+                .join("devices/platform/tuxedo_keyboard/charging_priority/charging_prio")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn profile_only_still_rejects_invalid_priority() {
+        let (_mock, backend) = setup_profile_only();
+        let err = backend.set_priority("max_speed").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn priority_only_reads_profile_as_none() {
+        let mock = MockSysfs::new();
+        let base = mock.platform_dir("tuxedo_keyboard");
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charging_priority/charging_prio",
+            "performance",
+        );
+        let backend = UniwillCharging::with_path(base);
+        assert_eq!(backend.get_profile().unwrap(), None);
+        backend.set_profile("balanced").unwrap();
+        assert_eq!(
+            backend.get_priority().unwrap(),
+            Some("performance".to_string())
+        );
     }
 
     #[test]

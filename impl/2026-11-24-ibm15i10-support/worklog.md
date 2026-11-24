@@ -18,3 +18,13 @@
   (11 commits). Details in `worklog-1.md`, review in `review-1.md`.
 - `just check` green (771 passed). Daemon now resolves IBM15I10 exactly.
 - `stage-2.md` drafted (live validation; needs user to run the daemon with sudo).
+
+## 2026-11-24 — Stage 2 complete
+
+- Live validation on IBM15I10 with the user running the daemon via sudo.
+  Six real bugs found and fixed (charging without priority, keyboard empty
+  mode, turbo reset, GetGpuInfo interface, Power tab cTGP wiring, phantom
+  priority field) plus cTGP bounds mirroring TCC. 26 commits; details in
+  `worklog-2.md`, review in `review-2.md`.
+- `just check` green (799), `just live-test` PASSED on hardware.
+- Next: Stage 3 (Uniwill EC TDP via tuxedo_io) — awaiting user confirmation.

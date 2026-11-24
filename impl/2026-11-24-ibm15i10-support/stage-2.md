@@ -71,3 +71,10 @@ Anything that misbehaves → its own `fix:` commit with a regression test.
 - New fixture validated by `just fixture-contract-test`.
 - `docs/hardware_support.md` IBM15I10 note updated from "in progress" to the
   validated capability list.
+
+## Outcome (2026-11-24)
+
+All exit criteria met: `just check` green, `just live-test` green on IBM15I10,
+fixture validated by `just fixture-contract-test`, hardware docs updated.
+Scope grew beyond 2.1–2.5 with six live-found fixes and the cTGP-bounds work
+(user decision: mirror TCC) — see `worklog-2.md`.

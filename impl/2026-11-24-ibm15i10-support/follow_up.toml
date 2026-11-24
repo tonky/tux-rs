@@ -25,3 +25,52 @@ status = "pending"
 priority = "medium"
 context = "tux-core/src/dmi.rs detect_platform; WMI probing only started matching on suffixed device names in this feature (Stage 1)."
 reasoning = "Fallback detection for unknown SKUs now depends on WMI GUID sets that were never observed on non-Uniwill hardware. Board-vendor/TCC/Tuxi signals are checked first, but Clevo machines with board_vendor != NB0x still rely on GUIDs."
+
+[[task]]
+description = "Fall back to a valid governor when a profile asks for one the cpufreq driver lacks (built-in profiles request 'schedutil'; intel_pstate active mode only offers performance/powersave). Mirror TCC findDefaultGovernor: powersave for intel_pstate/amd-pstate-epp."
+status = "pending"
+priority = "medium"
+context = "tux-daemon/src/profile_apply.rs; WARN 'governor schedutil not available' on every profile apply on IBM15I10 (and any intel_pstate machine)."
+reasoning = "Harmless today (governor stays powersave) but noisy and misleading; generic, not IBM15I10-specific, so kept out of this feature."
+
+[[task]]
+description = "dGPU/iGPU telemetry is empty on IBM15I10: GetGpuInfo returns gpus = [] because the proprietary NVIDIA driver and Intel xe expose no hwmon. Consider nvidia-smi (already used for cTGP limits) and DRM/xe sysfs sources."
+status = "pending"
+priority = "medium"
+context = "tux-daemon/src/gpu/hwmon.rs discover_gpus; TUI Power tab shows 'No dGPU/iGPU detected'."
+reasoning = "Display-only gap; GPU power control works. Needs a design for polling cost (nvidia-smi wakes a suspended dGPU)."
+
+[[task]]
+description = "Add a cTGP offset field to the TUI profile editor (profiles already carry gpu.ctgp_offset; activation overrides the Power tab value, as in TCC where cTGP is per-profile)."
+status = "pending"
+priority = "low"
+context = "tux-core/src/profile.rs GpuSettings; tux-daemon/src/profile_apply.rs applies it; tux-tui/src/model.rs profile form has no field."
+reasoning = "Power tab edits are live-only until the next profile switch; editing per profile makes it stick."
+
+[[task]]
+description = "Display brightness restore drifts by 1% (15% -> 14%) through the percent->raw->percent round trip."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/display.rs; seen in just live-test on IBM15I10 (intel_backlight max=496)."
+reasoning = "Cosmetic rounding; live test tolerates +-2%."
+
+[[task]]
+description = "Run the nvidia-smi limits probe off the main task (spawn_blocking or tokio::process + timeout). It currently blocks startup ~0.4 s (up to 5 s worst case) before the D-Bus name is acquired."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/gpu/nb02.rs query_nvidia_smi_limits, called from main.rs during backend construction (stage-2 review A, b7)."
+reasoning = "Acceptable today (nothing else runs yet), but a wedged GPU would delay the daemon becoming reachable."
+
+[[task]]
+description = "Replace the Power tab's SavePower(toml) round trip with a typed command (e.g. DbusCommand::SetCtgpOffset(u8)) built in update.rs."
+status = "pending"
+priority = "low"
+context = "tux-tui/src/dbus_task.rs parse_tgp_offset (stage-2 review A, c)."
+reasoning = "Removes serialize-then-parse and its error path; pure refactor."
+
+[[task]]
+description = "Refresh form-backed TUI tabs (charging, power/cTGP, keyboard) on profile switches; today they are fetched on connect (and Power after a save)."
+status = "pending"
+priority = "low"
+context = "tux-tui/src/dbus_task.rs fetch_info_data (stage-2 review B, #4)."
+reasoning = "A profile activation can change charging/cTGP behind the TUI's back; pre-existing design, not IBM15I10-specific."

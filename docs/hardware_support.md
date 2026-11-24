@@ -7,9 +7,9 @@
 | Fan RPM             | Parsed from FANINFO u32 | Not available  | WMI BS             | EC port I/O        | ACPI         |
 | Keyboard backlight  | White / RGB / 3-zone | White / RGB      | Per-key RGB (WMI AB) | White (3 levels)  | —            |
 | Power profiles      | WMI command        | EC register (1–3)  | WMI BS (3 modes)   | WMI (3 modes)      | —            |
-| Charging control    | ACPI flexicharger  | EC (profile + priority) | —             | —                  | —            |
+| Charging control    | ACPI flexicharger  | EC (profile + priority; priority optional per board) | —             | —                  | —            |
 | TDP control         | —                  | EC (PL1/PL2/PL4) or Intel RAPL (PL1/PL2) | —     | —                  | —            |
-| NVIDIA GPU power    | —                  | EC (cTGP, DB) NB02 only | —             | —                  | —            |
+| NVIDIA GPU power    | —                  | EC (cTGP, DB) NB02 only; offset bounded by `nvidia-smi` max − default limit | —             | —                  | —            |
 | GPU detection       | hwmon + kernel `boot_vga` (AMD APU iGPU, NVIDIA/Intel dGPU) | same | same | same | same |
 | Package power draw  | Intel RAPL (`intel-rapl:0`) with AMD `amd_energy` hwmon fallback | same | same | same | same |
 | ITE keyboard LEDs   | USB HID (hidraw)   | USB HID (hidraw)   | USB HID (hidraw)   | —                  | —            |
@@ -22,7 +22,7 @@
 |-----|--------|-------|
 | IBP16I08MK2 | TUXEDO InfinityBook Pro 16 Gen8 MK2 | Maintainer's machine |
 | IBP14A09MK1 / IBP15A09MK1 | TUXEDO InfinityBook Pro 14 Gen9 AMD | Community-confirmed (platform fallback) |
-| IBM15I10 | TUXEDO InfinityBook Max 15 Gen10 Intel | Board `X5AR45xS`; Core Ultra 7 255H + RTX 5060; detection verified, live daemon validation in progress |
+| IBM15I10 | TUXEDO InfinityBook Max 15 Gen10 Intel | Board `X5AR45xS`; Core Ultra 7 255H + RTX 5060. `just live-test` passes: 2 fans (curve/manual/auto), ITE 8291 per-key keyboard, charging profiles (this EC has no charge priority), cTGP 0–65 W (needs `nvidia-smi`), display backlight. TDP control not yet enabled. |
 
 WMI-based platform probing accepts both bare (`<GUID>`) and instance-suffixed (`<GUID>-<n>`) device names under `/sys/bus/wmi/devices/`, as registered by current kernels.
 

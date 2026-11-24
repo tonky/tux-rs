@@ -41,6 +41,11 @@ pub fn build_backend(descriptor: &DeviceDescriptor) -> Option<Arc<dyn TdpBackend
 }
 
 /// Open `/dev/tuxedo_io` if it serves the Uniwill interface.
+///
+/// The `is_uniwill_hardware()` gate is load-bearing: on non-Uniwill boards
+/// tuxedo_io's `uw_set_tdp` dereferences Uniwill feature state before its
+/// table check, so a `W_UW_TDP*` ioctl there could crash the kernel. A custom
+/// device file can request `UniwillEc` on any machine — never drop this check.
 fn open_uniwill_io() -> Option<Arc<dyn TuxedoIo>> {
     let dev = crate::platform::tuxedo_io::TuxedoIoDevice::open()?;
     dev.is_uniwill_hardware()

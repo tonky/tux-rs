@@ -1155,6 +1155,10 @@ mod tests {
         assert!(device.sensors.gpu_temp);
         assert_eq!(device.charging, ChargingCapability::EcProfilePriority);
         assert_eq!(device.gpu_power, GpuPowerCapability::Nb02Nvidia);
+        assert_eq!(device.sensors.fan_rpm, &[true, true]);
+        // RAPL reports PL1 max = 28 W on this board while the EC programs 90 W;
+        // the generic RAPL backend must never be selected for it.
+        assert_ne!(device.tdp_source, TdpSource::Rapl);
     }
 
     #[test]

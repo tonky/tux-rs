@@ -14,6 +14,18 @@ use crate::cpu::tdp::TdpBackend;
 use crate::display::SharedDisplay;
 use crate::gpu::GpuPowerBackend;
 use crate::hid::SharedKeyboard;
+use crate::power_monitor::PowerState;
+
+/// SKUs whose CPU needs EPP `performance` on AC to reach its full frequency
+/// range. Mirrors TCC 3.1.2 `CpuWorker.eppPerformanceQuirkDevices`, limited
+/// to hardware-verified models. Unlike TCC, the override is **never** applied
+/// on battery, so battery profiles keep their power-saving EPP.
+///
+/// IBM15I10 (measured, 16-thread load, PL1/PL2 90 W): `balance_performance`
+/// sustains ~28 W, `performance` ~50 W.
+const AC_EPP_PERFORMANCE_SKUS: &[&str] = &["IBM15I10"];
+
+const QUIRK_AC_EPP: &str = "performance";
 
 /// Applies a profile's settings to the hardware.
 pub struct ProfileApplier {
@@ -24,6 +36,8 @@ pub struct ProfileApplier {
     gpu_backend: Option<Arc<dyn GpuPowerBackend>>,
     keyboards: Vec<SharedKeyboard>,
     display: Option<SharedDisplay>,
+    /// EPP forced on AC for quirky devices (see [`AC_EPP_PERFORMANCE_SKUS`]).
+    ac_epp_override: Option<&'static str>,
 }
 
 impl ProfileApplier {
@@ -44,7 +58,17 @@ impl ProfileApplier {
             gpu_backend,
             keyboards,
             display,
+            ac_epp_override: None,
         }
+    }
+
+    /// Enable device-specific quirks for `product_sku`.
+    pub fn with_device_quirks(mut self, product_sku: &str) -> Self {
+        if AC_EPP_PERFORMANCE_SKUS.contains(&product_sku) {
+            info!("EPP quirk active for {product_sku}: '{QUIRK_AC_EPP}' on AC only");
+            self.ac_epp_override = Some(QUIRK_AC_EPP);
+        }
+        self
     }
 
     fn sanitize_positive_u32(value: i32, field: &str, profile_name: &str) -> Option<u32> {
@@ -97,7 +121,21 @@ impl ProfileApplier {
     }
 
     /// Apply a profile's settings to hardware.
+    /// Apply `profile` for the given power source (enables AC-only quirks).
+    pub fn apply_on(&self, profile: &TuxProfile, power: PowerState) -> anyhow::Result<()> {
+        let epp_override = match power {
+            PowerState::Ac => self.ac_epp_override,
+            PowerState::Battery => None,
+        };
+        self.apply_inner(profile, epp_override)
+    }
+
+    /// Apply `profile` without power-source specific quirks.
     pub fn apply(&self, profile: &TuxProfile) -> anyhow::Result<()> {
+        self.apply_inner(profile, None)
+    }
+
+    fn apply_inner(&self, profile: &TuxProfile, epp_override: Option<&str>) -> anyhow::Result<()> {
         // 1. Update fan curve engine config from profile.
         if profile.fan.enabled {
             let fan_config = FanConfig {
@@ -129,7 +167,14 @@ impl ProfileApplier {
             if let Err(e) = gov.set_governor(&profile.cpu.governor) {
                 warn!("failed to set CPU governor: {e}");
             }
-            if let Some(ref epp) = profile.cpu.energy_performance_preference
+            let profile_epp = profile.cpu.energy_performance_preference.as_deref();
+            if let Some(epp) = epp_override {
+                info!(
+                    "EPP quirk: using '{epp}' on AC instead of profile '{}' EPP {profile_epp:?}",
+                    profile.name
+                );
+            }
+            if let Some(epp) = epp_override.or(profile_epp)
                 && let Err(e) = gov.set_epp(epp)
             {
                 warn!("failed to set CPU EPP: {e}");
@@ -727,6 +772,92 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
+    }
+
+    /// Fake cpufreq tree with `n` CPUs at EPP `balance_performance`.
+    fn fake_cpufreq(n: usize) -> (tempfile::TempDir, Arc<CpuGovernor>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let cpu_dir = tmp.path().join("cpu");
+        for i in 0..n {
+            let cpufreq = cpu_dir.join(format!("cpu{i}/cpufreq"));
+            std::fs::create_dir_all(&cpufreq).unwrap();
+            std::fs::write(cpufreq.join("scaling_governor"), "powersave\n").unwrap();
+            std::fs::write(
+                cpufreq.join("scaling_available_governors"),
+                "performance powersave\n",
+            )
+            .unwrap();
+            std::fs::write(
+                cpufreq.join("energy_performance_preference"),
+                "balance_performance\n",
+            )
+            .unwrap();
+        }
+        let intel = cpu_dir.join("intel_pstate");
+        std::fs::create_dir_all(&intel).unwrap();
+        std::fs::write(intel.join("no_turbo"), "0\n").unwrap();
+        let gov = Arc::new(CpuGovernor::with_path(&cpu_dir));
+        (tmp, gov)
+    }
+
+    fn epp_of(gov: &CpuGovernor) -> Option<String> {
+        gov.get_epp().unwrap()
+    }
+
+    /// The returned receiver must stay alive: `apply` sends the fan config.
+    fn applier_with_gov(
+        gov: &Arc<CpuGovernor>,
+        sku: &str,
+    ) -> (ProfileApplier, watch::Receiver<FanConfig>) {
+        let (tx, rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, None, Some(gov.clone()), None, None, vec![], None)
+            .with_device_quirks(sku);
+        (applier, rx)
+    }
+
+    fn profile_with_epp(epp: &str) -> TuxProfile {
+        let mut p = test_profile_with_fan(FanMode::Auto, true);
+        p.cpu.energy_performance_preference = Some(epp.to_string());
+        p
+    }
+
+    #[test]
+    fn ibm15i10_epp_quirk_forces_performance_on_ac() {
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        applier
+            .apply_on(&profile_with_epp("balance_performance"), PowerState::Ac)
+            .unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("performance"));
+    }
+
+    #[test]
+    fn ibm15i10_epp_quirk_never_applies_on_battery() {
+        // Battery life: the battery profile's power-saving EPP must win.
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        applier
+            .apply_on(&profile_with_epp("balance_power"), PowerState::Battery)
+            .unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
+    }
+
+    #[test]
+    fn epp_quirk_absent_for_other_devices() {
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBP16I08MK2");
+        applier
+            .apply_on(&profile_with_epp("balance_performance"), PowerState::Ac)
+            .unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_performance"));
+    }
+
+    #[test]
+    fn plain_apply_ignores_epp_quirk() {
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        applier.apply(&profile_with_epp("balance_power")).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
     }
 
     #[test]

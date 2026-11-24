@@ -353,15 +353,18 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let applier = Arc::new(ProfileApplier::new(
-        config_tx.clone(),
-        charging_backend.clone(),
-        cpu_governor.clone(),
-        tdp_backend.clone(),
-        gpu_backend.clone(),
-        keyboards.clone(),
-        display_backlight.clone(),
-    ));
+    let applier = Arc::new(
+        ProfileApplier::new(
+            config_tx.clone(),
+            charging_backend.clone(),
+            cpu_governor.clone(),
+            tdp_backend.clone(),
+            gpu_backend.clone(),
+            keyboards.clone(),
+            display_backlight.clone(),
+        )
+        .with_device_quirks(device.descriptor.product_sku),
+    );
 
     // 6c. Start power state monitor and auto-switch task.
     //     We detect the initial state inside the monitor to avoid a race.
@@ -379,7 +382,7 @@ async fn main() -> anyhow::Result<()> {
                     anyhow::anyhow!("profile store lock poisoned during initial apply: {e}")
                 })?;
                 if let Some(profile) = store.get(initial_profile_id) {
-                    if let Err(e) = applier.apply(profile) {
+                    if let Err(e) = applier.apply_on(profile, initial_state) {
                         error!("failed to apply initial profile '{initial_profile_id}': {e}");
                     } else {
                         info!(
@@ -581,6 +584,7 @@ async fn auto_switch_loop(
                     store,
                     applier,
                     &profile_id,
+                    state,
                     &format!("power state → {state:?} (apply #{apply_count})"),
                 );
             }
@@ -596,6 +600,7 @@ async fn auto_switch_loop(
                     store,
                     applier,
                     &profile_id,
+                    state,
                     &format!("assignment change (apply #{apply_count})"),
                 );
             }
@@ -621,6 +626,7 @@ fn apply_profile_by_id(
     store: &Arc<RwLock<ProfileStore>>,
     applier: &ProfileApplier,
     profile_id: &str,
+    power: PowerState,
     reason: &str,
 ) {
     let Ok(store) = store.read() else {
@@ -629,7 +635,7 @@ fn apply_profile_by_id(
     };
     match store.get(profile_id) {
         Some(profile) => {
-            if let Err(e) = applier.apply(profile) {
+            if let Err(e) = applier.apply_on(profile, power) {
                 error!("failed to apply profile '{profile_id}' on {reason}: {e}");
             } else {
                 info!("{reason}: applied profile '{}'", profile.name);

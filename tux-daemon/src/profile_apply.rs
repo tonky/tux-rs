@@ -670,6 +670,9 @@ mod tests {
             *self.priority.lock().unwrap() = Some(priority.to_string());
             Ok(())
         }
+        fn supports_priority(&self) -> bool {
+            true
+        }
     }
 
     #[test]

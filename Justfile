@@ -127,7 +127,7 @@ _warn-if-tccd-enabled:
     @if systemctl is-enabled --quiet tccd 2>/dev/null || systemctl is-enabled --quiet tccd-sleep 2>/dev/null \
         || [ -L /etc/systemd/system/multi-user.target.wants/tccd.service ]; then \
         echo "WARNING: TUXEDO Control Center's tccd is still enabled and will fight tux-daemon after reboot/resume."; \
-        echo "         To switch for good: sudo systemctl disable --now tccd tccd-sleep"; \
+        echo "         To switch for good: sudo systemctl unmask --runtime tccd; sudo systemctl disable --now tccd tccd-sleep"; \
     fi
 
 # Rebuild/reinstall daemon and print systemd status + recent journal logs

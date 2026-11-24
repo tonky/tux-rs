@@ -238,8 +238,10 @@ if [[ -z "$daemon_version" ]]; then
     daemon_version="unknown"
 fi
 
+fan_transport="tuxedo_uw_fan"
 if [[ ! -d "$sysfs_base_fan" ]]; then
     if [[ -e /dev/tuxedo_io ]]; then
+        fan_transport="tuxedo_io"
         # tuxedo-drivers 4.x: fans are driven via tuxedo_io ioctls, so raw fan
         # values are only observable through the daemon's D-Bus payloads.
         echo "[INFO] ${sysfs_base_fan} absent; fans via /dev/tuxedo_io (raw.dbus only)" >&2
@@ -304,6 +306,7 @@ capture_source = "manual-hardware"
 kernel_release = "$(toml_escape "$kernel_release")"
 daemon_version = "$(toml_escape "$daemon_version")"
 driver_stack = "tuxedo-drivers"
+fan_transport = "${fan_transport}"
 
 [raw.sysfs]
 cpu_temp = "$(toml_escape "$cpu_temp")"

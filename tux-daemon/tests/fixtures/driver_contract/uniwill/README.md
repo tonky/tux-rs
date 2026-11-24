@@ -53,10 +53,12 @@ consecutive_failures = 0
 
 Both variants are schema_version 1; the validators branch on which values are present.
 
-| Variant | Fan values | Charging | Example |
-|---------|-----------|----------|---------|
-| Legacy `tuxedo_uw_fan` sysfs | `raw.sysfs.cpu_temp` / `fan1_pwm` required | profile + priority | `ibp1xi08mk1-hardware-v1.toml` |
-| tuxedo-drivers 4.x (`/dev/tuxedo_io` ioctls) | raw sysfs fan keys empty; `raw.dbus.fan_data_0` required | may be profile-only | `ibm15i10-hardware-v1.toml` |
+Selected by the optional `meta.fan_transport` key:
+
+| `fan_transport` | Fan values | Charging | Example |
+|-----------------|-----------|----------|---------|
+| absent / `"tuxedo_uw_fan"` (legacy sysfs) | `raw.sysfs.cpu_temp` / `fan1_pwm` required | profile + priority | `ibp1xi08mk1-hardware-v1.toml` |
+| `"tuxedo_io"` (tuxedo-drivers 4.x ioctls) | raw sysfs fan keys may be empty; `raw.dbus.fan_data_0` required | may be profile-only | `ibm15i10-hardware-v1.toml` |
 
 Profile-only charging (no `charging_priority/` group) is recorded as empty
 `raw.sysfs.charging_priority` + `charging_prios_available`, and **no**

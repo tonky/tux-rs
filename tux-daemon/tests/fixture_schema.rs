@@ -26,6 +26,10 @@ struct Meta {
     kernel_release: String,
     daemon_version: String,
     driver_stack: String,
+    /// How fan values reach the daemon: legacy `tuxedo_uw_fan` sysfs
+    /// (default when absent) or `tuxedo_io` ioctls (tuxedo-drivers 4.x).
+    #[serde(default)]
+    fan_transport: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,8 +189,20 @@ fn fixture_schema_and_constraints_are_valid() {
 
         // Legacy stacks expose fans via tuxedo_uw_fan sysfs. On tuxedo-drivers
         // 4.x fans go through /dev/tuxedo_io ioctls, so fan values are only
-        // observable through the daemon's D-Bus payload.
-        let ioctl_fans = !is_blank(&fixture.raw.dbus, "fan_data_0");
+        // observable through the daemon's D-Bus payload. Declared explicitly
+        // so legacy fixtures keep their strict raw-sysfs requirements.
+        let ioctl_fans = match fixture.meta.fan_transport.as_deref() {
+            None | Some("tuxedo_uw_fan") => false,
+            Some("tuxedo_io") => true,
+            Some(other) => panic!("meta.fan_transport {other:?} invalid in {}", path.display()),
+        };
+        if ioctl_fans {
+            assert!(
+                !is_blank(&fixture.raw.dbus, "fan_data_0"),
+                "raw.dbus.fan_data_0 required for tuxedo_io fixtures in {}",
+                path.display()
+            );
+        }
         // Some ECs only create charging_profile/ (e.g. IBM15I10).
         let profile_only_charging = is_blank(&fixture.raw.sysfs, "charging_priority")
             && is_blank(&fixture.raw.sysfs, "charging_prios_available");

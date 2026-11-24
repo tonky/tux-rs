@@ -10,6 +10,7 @@ capture_source = "manual-hardware"
 kernel_release = "7.3.5-2-cachyos"
 daemon_version = "0.1.0"
 driver_stack = "tuxedo-drivers"
+fan_transport = "tuxedo_io"
 
 [raw.sysfs]
 cpu_temp = ""

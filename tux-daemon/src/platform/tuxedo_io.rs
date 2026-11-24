@@ -60,6 +60,35 @@ pub const W_UW_FANAUTO: u64 = 0x0000_F014;
 /// `_IOW(0xF0, 0x18, int32_t*)` — Uniwill set performance profile (1=power-save, 2=enthusiast, 3=overboost).
 pub const W_UW_PERF_PROF: u64 = 0x4008_F018;
 
+// TDP (EC power limits). Index 0/1/2 = PL1/PL2/PL4 at EC 0x0783/0x0784/0x0785.
+// Reads return the value or a *negative errno as the value* (the ioctl itself
+// succeeds); writes outside the driver's per-board table are silently dropped.
+
+/// `_IOR(0xEF, 0x18, int32_t*)` — current PL1 (W).
+pub const R_UW_TDP0: u64 = 0x8008_EF18;
+/// `_IOR(0xEF, 0x19, int32_t*)` — current PL2 (W).
+pub const R_UW_TDP1: u64 = 0x8008_EF19;
+/// `_IOR(0xEF, 0x1a, int32_t*)` — current PL4 (W).
+pub const R_UW_TDP2: u64 = 0x8008_EF1A;
+/// `_IOR(0xEF, 0x1b, int32_t*)` — PL1 minimum (W), `-ENODEV` if unsupported.
+pub const R_UW_TDP0_MIN: u64 = 0x8008_EF1B;
+/// `_IOR(0xEF, 0x1c, int32_t*)` — PL2 minimum (W).
+pub const R_UW_TDP1_MIN: u64 = 0x8008_EF1C;
+/// `_IOR(0xEF, 0x1d, int32_t*)` — PL4 minimum (W).
+pub const R_UW_TDP2_MIN: u64 = 0x8008_EF1D;
+/// `_IOR(0xEF, 0x1e, int32_t*)` — PL1 maximum (W).
+pub const R_UW_TDP0_MAX: u64 = 0x8008_EF1E;
+/// `_IOR(0xEF, 0x1f, int32_t*)` — PL2 maximum (W).
+pub const R_UW_TDP1_MAX: u64 = 0x8008_EF1F;
+/// `_IOR(0xEF, 0x20, int32_t*)` — PL4 maximum (W).
+pub const R_UW_TDP2_MAX: u64 = 0x8008_EF20;
+/// `_IOW(0xF0, 0x15, int32_t*)` — set PL1 (W).
+pub const W_UW_TDP0: u64 = 0x4008_F015;
+/// `_IOW(0xF0, 0x16, int32_t*)` — set PL2 (W).
+pub const W_UW_TDP1: u64 = 0x4008_F016;
+/// `_IOW(0xF0, 0x17, int32_t*)` — set PL4 (W).
+pub const W_UW_TDP2: u64 = 0x4008_F017;
+
 // ─── Trait ────────────────────────────────────────────────────────────────────
 
 /// Abstraction over the `/dev/tuxedo_io` ioctl interface.
@@ -224,6 +253,32 @@ impl TuxedoIo for MockTuxedoIo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `_IOC(dir, type, nr, size)` for `int32_t*` args (size 8 on 64-bit).
+    const fn ioc(dir: u64, ty: u64, nr: u64) -> u64 {
+        (dir << 30) | (8 << 16) | (ty << 8) | nr
+    }
+    const IOR: u64 = 2;
+    const IOW: u64 = 1;
+
+    #[test]
+    fn tdp_ioctl_codes_match_tuxedo_io_ioctl_h() {
+        // MAGIC_READ_UW = 0xEF, MAGIC_WRITE_UW = 0xF0 (tuxedo_io_ioctl.h).
+        assert_eq!(R_UW_TDP0, ioc(IOR, 0xEF, 0x18));
+        assert_eq!(R_UW_TDP1, ioc(IOR, 0xEF, 0x19));
+        assert_eq!(R_UW_TDP2, ioc(IOR, 0xEF, 0x1a));
+        assert_eq!(R_UW_TDP0_MIN, ioc(IOR, 0xEF, 0x1b));
+        assert_eq!(R_UW_TDP1_MIN, ioc(IOR, 0xEF, 0x1c));
+        assert_eq!(R_UW_TDP2_MIN, ioc(IOR, 0xEF, 0x1d));
+        assert_eq!(R_UW_TDP0_MAX, ioc(IOR, 0xEF, 0x1e));
+        assert_eq!(R_UW_TDP1_MAX, ioc(IOR, 0xEF, 0x1f));
+        assert_eq!(R_UW_TDP2_MAX, ioc(IOR, 0xEF, 0x20));
+        assert_eq!(W_UW_TDP0, ioc(IOW, 0xF0, 0x15));
+        assert_eq!(W_UW_TDP1, ioc(IOW, 0xF0, 0x16));
+        assert_eq!(W_UW_TDP2, ioc(IOW, 0xF0, 0x17));
+        // Sanity: an existing, hardware-proven code follows the same formula.
+        assert_eq!(R_UW_FANSPEED, ioc(IOR, 0xEF, 0x10));
+    }
 
     #[test]
     fn mock_read_returns_programmed_value() {

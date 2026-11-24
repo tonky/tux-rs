@@ -112,16 +112,32 @@ deploy-daemon:
     cargo build --release -p tux-daemon
     sudo systemctl stop tccd 2>/dev/null || true
     sudo systemctl stop tux-daemon 2>/dev/null || true
-    sudo cp target/release/tux-daemon /usr/bin/tux-daemon
-    sudo systemctl start tux-daemon
+    just _install-systemd-unit
+    sudo systemctl enable --now tux-daemon
+    just _warn-if-tccd-enabled
+
+# Install binary + systemd unit (idempotent)
+_install-systemd-unit:
+    sudo install -Dm755 target/release/tux-daemon /usr/bin/tux-daemon
+    sudo install -Dm644 dist/tux-daemon.service /etc/systemd/system/tux-daemon.service
+    sudo systemctl daemon-reload
+
+# tccd and tux-daemon both claim com.tuxedocomputers.tccd and drive the same hardware
+_warn-if-tccd-enabled:
+    @if systemctl is-enabled --quiet tccd 2>/dev/null || systemctl is-enabled --quiet tccd-sleep 2>/dev/null \
+        || [ -L /etc/systemd/system/multi-user.target.wants/tccd.service ]; then \
+        echo "WARNING: TUXEDO Control Center's tccd is still enabled and will fight tux-daemon after reboot/resume."; \
+        echo "         To switch for good: sudo systemctl disable --now tccd tccd-sleep"; \
+    fi
 
 # Rebuild/reinstall daemon and print systemd status + recent journal logs
 deploy-daemon-debug:
     cargo build --release -p tux-daemon
     sudo systemctl stop tccd 2>/dev/null || true
     sudo systemctl stop tux-daemon 2>/dev/null || true
-    sudo cp target/release/tux-daemon /usr/bin/tux-daemon
-    sudo systemctl start tux-daemon
+    just _install-systemd-unit
+    sudo systemctl enable --now tux-daemon
+    just _warn-if-tccd-enabled
     sudo systemctl --no-pager --full status tux-daemon || true
     sudo journalctl -u tux-daemon -n 120 --no-pager -o short-iso
 

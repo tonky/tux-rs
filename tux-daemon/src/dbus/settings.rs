@@ -44,6 +44,9 @@ impl Default for GlobalSettings {
 }
 
 /// Keyboard state stored and returned via Settings D-Bus interface.
+///
+/// In `SetKeyboardState`, empty `color` / `mode` mean "leave unchanged", but
+/// `brightness` is always applied (a missing key means 0 = off).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct KeyboardState {
     #[serde(default)]

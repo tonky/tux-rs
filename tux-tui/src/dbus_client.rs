@@ -131,6 +131,26 @@ impl DaemonClient {
         self.call_method(CPU_IFACE, "GetTdpBounds", &()).await
     }
 
+    /// Get the current PL1 (sustained) power limit in watts; 0 without TDP.
+    pub async fn get_pl1(&self) -> Result<u32, zbus::Error> {
+        self.call_method(CPU_IFACE, "GetPl1", &()).await
+    }
+
+    /// Set PL1 in watts (the daemon clamps to the TDP bounds).
+    pub async fn set_pl1(&self, watts: u32) -> Result<(), zbus::Error> {
+        self.call_method(CPU_IFACE, "SetPl1", &(watts,)).await
+    }
+
+    /// Get the current PL2 (boost) power limit in watts; 0 without TDP.
+    pub async fn get_pl2(&self) -> Result<u32, zbus::Error> {
+        self.call_method(CPU_IFACE, "GetPl2", &()).await
+    }
+
+    /// Set PL2 in watts (the daemon clamps to the TDP bounds).
+    pub async fn set_pl2(&self, watts: u32) -> Result<(), zbus::Error> {
+        self.call_method(CPU_IFACE, "SetPl2", &(watts,)).await
+    }
+
     /// Get CPU load (overall + per-core) as TOML string.
     pub async fn get_cpu_load(&self) -> Result<String, zbus::Error> {
         self.call_method(SYSTEM_IFACE, "GetCpuLoad", &()).await

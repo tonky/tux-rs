@@ -1614,33 +1614,60 @@ scaling_max_frequency = 3500000
                 client.get_pl2().await.expect("get_pl2"),
             );
             println!("  original PL1={orig1} W PL2={orig2} W");
-            // Pick values inside the bounds and different from the current ones.
-            let t1 = if orig1 > bounds.pl1_min + 10 {
-                orig1 - 10
-            } else {
-                bounds.pl1_min + 5
+            // One watt away from the current value, inside the bounds.
+            let step = |orig: u32, min: u32, max: u32| {
+                let t = if orig > min { orig - 1 } else { orig + 1 };
+                assert!(
+                    t != orig && (min..=max).contains(&t),
+                    "no test value for {orig}"
+                );
+                t
             };
-            let t2 = if orig2 > bounds.pl2_min + 5 {
-                orig2 - 5
-            } else {
-                bounds.pl2_min + 5
-            };
-            client.set_pl1(t1).await.expect("set_pl1");
-            client.set_pl2(t2).await.expect("set_pl2");
-            assert_eq!(client.get_pl1().await.unwrap(), t1, "PL1 read-back");
-            assert_eq!(client.get_pl2().await.unwrap(), t2, "PL2 read-back");
-            println!("  set PL1={t1} W PL2={t2} W: OK");
-            // Out-of-range requests clamp to the bounds instead of failing.
-            client
-                .set_pl1(bounds.pl1_max + 50)
-                .await
-                .expect("set_pl1 above max");
-            assert_eq!(client.get_pl1().await.unwrap(), bounds.pl1_max);
-            println!("  PL1 above max clamped to {} W: OK", bounds.pl1_max);
-            client.set_pl1(orig1).await.expect("restore PL1");
-            client.set_pl2(orig2).await.expect("restore PL2");
-            assert_eq!(client.get_pl1().await.unwrap(), orig1);
-            assert_eq!(client.get_pl2().await.unwrap(), orig2);
+            let t1 = step(orig1, bounds.pl1_min, bounds.pl1_max);
+            let t2 = step(orig2, bounds.pl2_min, bounds.pl2_max);
+
+            // Run every check, then always restore before reporting failures,
+            // so a mid-way assertion can't leave the power limits modified.
+            let checks: Result<(), String> = async {
+                let get = |r: Result<u32, zbus::Error>| r.map_err(|e| e.to_string());
+                client
+                    .set_pl1(t1)
+                    .await
+                    .map_err(|e| format!("set_pl1: {e}"))?;
+                client
+                    .set_pl2(t2)
+                    .await
+                    .map_err(|e| format!("set_pl2: {e}"))?;
+                let (r1, r2) = (get(client.get_pl1().await)?, get(client.get_pl2().await)?);
+                if (r1, r2) != (t1, t2) {
+                    return Err(format!("read-back {r1}/{r2} W, expected {t1}/{t2} W"));
+                }
+                println!("  set PL1={t1} W PL2={t2} W: OK");
+                // Out-of-range requests clamp to the bounds instead of failing.
+                // PL2 is used so PL1 <= PL2 holds throughout.
+                client
+                    .set_pl2(bounds.pl2_max + 50)
+                    .await
+                    .map_err(|e| format!("set_pl2 above max: {e}"))?;
+                let r2 = get(client.get_pl2().await)?;
+                if r2 != bounds.pl2_max {
+                    return Err(format!(
+                        "PL2 above max read back {r2} W, expected {} W",
+                        bounds.pl2_max
+                    ));
+                }
+                println!("  PL2 above max clamped to {} W: OK", bounds.pl2_max);
+                Ok(())
+            }
+            .await;
+            // Restore PL2 first so raising PL1 back never exceeds PL2.
+            let restore2 = client.set_pl2(orig2).await;
+            let restore1 = client.set_pl1(orig1).await;
+            checks.expect("TDP round-trip");
+            restore2.expect("restore PL2");
+            restore1.expect("restore PL1");
+            assert_eq!(client.get_pl1().await.unwrap(), orig1, "PL1 restored");
+            assert_eq!(client.get_pl2().await.unwrap(), orig2, "PL2 restored");
             println!("  restored PL1={orig1} W PL2={orig2} W: OK");
         }
     } else {

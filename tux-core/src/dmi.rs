@@ -12,7 +12,10 @@ use crate::platform::Platform;
 /// NB04 WMI GUID used for platform detection.
 const NB04_WMI_GUID: &str = "80C9BAA6-AC48-4538-9234-9F81A55E7C85";
 
-/// Clevo WMI event GUID — unique to Clevo hardware (tuxedo-drivers: clevo_wmi.ko).
+/// Clevo WMI event GUID (tuxedo-drivers: clevo_wmi.ko).
+///
+/// Not unique to Clevo: Uniwill firmware also exposes it (seen on IBM15I10),
+/// so Uniwill must be probed first in [`detect_platform`].
 const CLEVO_WMI_EVENT_GUID: &str = "ABBC0F6B-8EA1-11D1-00A0-C90629100000";
 
 /// Uniwill WMI event GUID 2 — unique to Uniwill hardware (tuxedo-drivers: uniwill_wmi.ko).
@@ -49,6 +52,36 @@ pub trait DmiSource {
     fn sysfs_path_exists(&self, path: &str) -> bool;
 }
 
+/// Directory where the kernel WMI bus registers its devices.
+const WMI_DEVICES_DIR: &str = "/sys/bus/wmi/devices";
+
+/// Check whether `dir` contains a WMI device for `guid`.
+///
+/// Older kernels name WMI devices after the bare GUID; current kernels append
+/// an instance suffix (`<GUID>-<n>`, e.g. `ABBC0F72-…-C90629100000-13`).
+/// Both forms are accepted; the GUID comparison is case-insensitive.
+fn wmi_guid_present_in(dir: &std::path::Path, guid: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        let Some((head, rest)) = name.split_at_checked(guid.len()) else {
+            return false;
+        };
+        if !head.eq_ignore_ascii_case(guid) {
+            return false;
+        }
+        match rest.strip_prefix('-') {
+            None => rest.is_empty(),
+            Some(instance) => !instance.is_empty() && instance.bytes().all(|b| b.is_ascii_digit()),
+        }
+    })
+}
+
 /// Real implementation that reads from `/sys/`.
 pub struct SysFsDmiSource;
 
@@ -59,7 +92,7 @@ impl DmiSource for SysFsDmiSource {
     }
 
     fn wmi_guid_exists(&self, guid: &str) -> bool {
-        std::path::Path::new(&format!("/sys/bus/wmi/devices/{guid}")).exists()
+        wmi_guid_present_in(std::path::Path::new(WMI_DEVICES_DIR), guid)
     }
 
     fn sysfs_path_exists(&self, path: &str) -> bool {
@@ -584,6 +617,59 @@ mod tests {
             .with_wmi_guid(CLEVO_WMI_EVENT_GUID);
         let result = detect_device(&source).unwrap();
         assert_eq!(result.descriptor.platform, Platform::Uniwill);
+    }
+
+    // ── WMI device-name matching (sysfs layout) ────────────────────────────
+
+    fn wmi_dir_with(names: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for name in names {
+            std::fs::create_dir(dir.path().join(name)).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn wmi_guid_matches_bare_name() {
+        // Older kernels: device dir is the bare GUID.
+        let dir = wmi_dir_with(&[UNIWILL_WMI_EVENT_GUID_2]);
+        assert!(wmi_guid_present_in(dir.path(), UNIWILL_WMI_EVENT_GUID_2));
+    }
+
+    #[test]
+    fn wmi_guid_matches_instance_suffixed_name() {
+        // Regression (IBM15I10, Linux 7.3): device dirs carry a "-<n>" suffix.
+        let dir = wmi_dir_with(&[
+            "ABBC0F6B-8EA1-11D1-00A0-C90629100000-6",
+            "ABBC0F72-8EA1-11D1-00A0-C90629100000-13",
+        ]);
+        assert!(wmi_guid_present_in(dir.path(), UNIWILL_WMI_EVENT_GUID_2));
+        assert!(wmi_guid_present_in(dir.path(), CLEVO_WMI_EVENT_GUID));
+        assert!(!wmi_guid_present_in(dir.path(), NB04_WMI_GUID));
+    }
+
+    #[test]
+    fn wmi_guid_match_is_case_insensitive() {
+        let dir = wmi_dir_with(&["80c9baa6-ac48-4538-9234-9f81a55e7c85-2"]);
+        assert!(wmi_guid_present_in(dir.path(), NB04_WMI_GUID));
+    }
+
+    #[test]
+    fn wmi_guid_rejects_non_numeric_suffix_and_other_guids() {
+        let dir = wmi_dir_with(&[
+            "ABBC0F72-8EA1-11D1-00A0-C90629100000-",
+            "ABBC0F72-8EA1-11D1-00A0-C90629100000-x1",
+            "ABBC0F72-8EA1-11D1-00A0-C90629100000FF",
+            "ABBC0F7",
+        ]);
+        assert!(!wmi_guid_present_in(dir.path(), UNIWILL_WMI_EVENT_GUID_2));
+    }
+
+    #[test]
+    fn wmi_guid_missing_dir_is_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        assert!(!wmi_guid_present_in(&missing, UNIWILL_WMI_EVENT_GUID_2));
     }
 
     #[test]

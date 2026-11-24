@@ -31,10 +31,27 @@ use crate::platform::tuxedo_io::{
 /// - `TdpSource::Ec` → requires `descriptor.tdp` bounds; tries `EcTdp::new`.
 /// - `TdpSource::Rapl` → probes RAPL sysfs; bounds come from firmware.
 ///   `descriptor.tdp` is ignored.
+/// - `TdpSource::UniwillEc` → opens `/dev/tuxedo_io` (Uniwill interface);
+///   bounds come from the driver. `descriptor.tdp` is ignored.
 ///
 /// No fallthrough: if the requested backend is unavailable, we log and return
 /// `None` — we never silently try a different backend.
 pub fn build_backend(descriptor: &DeviceDescriptor) -> Option<Arc<dyn TdpBackend>> {
+    build_backend_with(descriptor, open_uniwill_io)
+}
+
+/// Open `/dev/tuxedo_io` if it serves the Uniwill interface.
+fn open_uniwill_io() -> Option<Arc<dyn TuxedoIo>> {
+    let dev = crate::platform::tuxedo_io::TuxedoIoDevice::open()?;
+    dev.is_uniwill_hardware()
+        .then(|| Arc::new(dev) as Arc<dyn TuxedoIo>)
+}
+
+/// [`build_backend`] with an injectable `tuxedo_io` opener (hermetic tests).
+fn build_backend_with(
+    descriptor: &DeviceDescriptor,
+    open_io: impl FnOnce() -> Option<Arc<dyn TuxedoIo>>,
+) -> Option<Arc<dyn TdpBackend>> {
     match descriptor.tdp_source {
         TdpSource::None => {
             info!("no TDP control for this device");
@@ -82,6 +99,37 @@ pub fn build_backend(descriptor: &DeviceDescriptor) -> Option<Arc<dyn TdpBackend
                 None
             }
         },
+        TdpSource::UniwillEc => {
+            let Some(io) = open_io() else {
+                warn!(
+                    "device {:?} requests Uniwill EC TDP but /dev/tuxedo_io (Uniwill) is unavailable",
+                    descriptor.product_sku
+                );
+                return None;
+            };
+            match UniwillEcTdp::probe(io) {
+                Some(b) => {
+                    let bounds = b.bounds();
+                    info!(
+                        "Uniwill EC TDP backend available (PL1: {}-{}W, PL2: {}-{}W, PL4 read-only: {:?}-{:?}W)",
+                        bounds.pl1_min,
+                        bounds.pl1_max,
+                        bounds.pl2_min,
+                        bounds.pl2_max,
+                        bounds.pl4_min,
+                        bounds.pl4_max
+                    );
+                    Some(Arc::new(b))
+                }
+                None => {
+                    warn!(
+                        "device {:?}: tuxedo_io reports no TDP table for this board; no TDP control",
+                        descriptor.product_sku
+                    );
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -699,6 +747,41 @@ mod tests {
     fn factory_ec_without_bounds_returns_none() {
         let desc = test_descriptor(TdpSource::Ec, None);
         assert!(build_backend(&desc).is_none());
+    }
+
+    #[test]
+    fn factory_uniwill_ec_uses_driver_bounds() {
+        let desc = test_descriptor(TdpSource::UniwillEc, None);
+        let backend = build_backend_with(&desc, || {
+            Some(Arc::new(UniwillEcSim::x5ar45xs()) as Arc<dyn TuxedoIo>)
+        })
+        .expect("backend");
+        assert_eq!(backend.bounds().pl1_max, 90);
+        assert_eq!(backend.get_pl1().unwrap(), 90);
+    }
+
+    #[test]
+    fn factory_uniwill_ec_without_device_returns_none() {
+        let desc = test_descriptor(TdpSource::UniwillEc, None);
+        assert!(build_backend_with(&desc, || None).is_none());
+    }
+
+    #[test]
+    fn factory_uniwill_ec_without_driver_table_returns_none() {
+        let desc = test_descriptor(TdpSource::UniwillEc, None);
+        let sim = UniwillEcSim {
+            table: None,
+            ..UniwillEcSim::x5ar45xs()
+        };
+        assert!(build_backend_with(&desc, || Some(Arc::new(sim) as Arc<dyn TuxedoIo>)).is_none());
+    }
+
+    #[test]
+    fn factory_non_uniwill_sources_never_open_tuxedo_io() {
+        for source in [TdpSource::None, TdpSource::Ec] {
+            let desc = test_descriptor(source, None);
+            let _ = build_backend_with(&desc, || panic!("{source:?} must not open tuxedo_io"));
+        }
     }
 
     #[test]

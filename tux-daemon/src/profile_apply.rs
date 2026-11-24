@@ -196,8 +196,23 @@ impl ProfileApplier {
 
         // 2. CPU governor + EPP + turbo + cores + frequencies.
         if let Some(ref gov) = self.cpu_governor {
-            if let Err(e) = gov.set_governor(&profile.cpu.governor) {
-                warn!("failed to set CPU governor: {e}");
+            let requested = profile.cpu.governor.as_str();
+            let available = gov.available_governors().unwrap_or_default();
+            match CpuGovernor::resolve_governor(requested, &available) {
+                Some(governor) => {
+                    if governor != requested {
+                        debug!(
+                            "governor '{requested}' not offered by this cpufreq driver; using '{governor}'"
+                        );
+                    }
+                    if let Err(e) = gov.set_governor(governor) {
+                        warn!("failed to set CPU governor: {e}");
+                    }
+                }
+                None => warn!(
+                    "governor '{requested}' not available (available: {}); keeping current",
+                    available.join(", ")
+                ),
             }
             let profile_epp = profile.cpu.energy_performance_preference.as_deref();
             let effective_epp = match epp {
@@ -880,6 +895,23 @@ mod tests {
         let mut p = test_profile_with_fan(FanMode::Auto, true);
         p.cpu.energy_performance_preference = Some(epp.to_string());
         p
+    }
+
+    #[test]
+    fn schedutil_profile_maps_to_powersave_on_pstate() {
+        // Regression: built-in profiles ask for 'schedutil', which
+        // intel_pstate doesn't offer; this used to WARN on every apply.
+        let (tmp, gov) = fake_cpufreq(2);
+        std::fs::write(
+            tmp.path().join("cpu/cpu0/cpufreq/scaling_governor"),
+            "performance\n",
+        )
+        .unwrap();
+        let (applier, _rx) = applier_with_gov(&gov, "TEST");
+        let mut profile = profile_with_epp("balance_power");
+        profile.cpu.governor = "schedutil".into();
+        applier.apply_on(&profile, PowerState::Battery).unwrap();
+        assert_eq!(gov.get_governor().unwrap(), "powersave");
     }
 
     #[test]

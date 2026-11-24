@@ -14,7 +14,14 @@ reasoning = "Nice-to-have Uniwill features; not required for baseline machine su
 
 [[task]]
 description = "Note in dmi.rs that the Clevo WMI event GUID ABBC0F6B is also present on Uniwill (IBM15I10), so it is not 'unique to Clevo'; detection order (Uniwill before Clevo) is what keeps it correct."
-status = "pending"
+status = "done"
 priority = "low"
 context = "tux-core/src/dmi.rs CLEVO_WMI_EVENT_GUID doc comment; /sys/bus/wmi/devices on IBM15I10 lists ABBC0F6A..ABBC0F72."
 reasoning = "Once WMI probing works (Stage 1.1), the ordering becomes load-bearing; a comment plus test prevents a future reorder from misdetecting Uniwill as Clevo."
+
+[[task]]
+description = "Capture /sys/bus/wmi/devices from a real Clevo and NB04 machine on a current kernel to confirm which WMI GUIDs they expose (is UNIWILL_WMI_EVENT_GUID_2 really absent on Clevo?)."
+status = "pending"
+priority = "medium"
+context = "tux-core/src/dmi.rs detect_platform; WMI probing only started matching on suffixed device names in this feature (Stage 1)."
+reasoning = "Fallback detection for unknown SKUs now depends on WMI GUID sets that were never observed on non-Uniwill hardware. Board-vendor/TCC/Tuxi signals are checked first, but Clevo machines with board_vendor != NB0x still rely on GUIDs."

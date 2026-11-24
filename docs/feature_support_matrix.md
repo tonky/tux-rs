@@ -14,7 +14,7 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 | Platform     | Kernel module(s) used                                      | Devices in table |
 |-------------|-------------------------------------------------------------|-----------------|
 | **NB05**    | `tuxedo_nb05_fan_control`, `tuxedo_nb05_sensors`, `tuxedo_nb05_ec`, `tuxedo_nb05_power_profiles` | 4 |
-| **Uniwill** | `tuxedo_io` (ioctl chardev)                                 | 22 |
+| **Uniwill** | `tuxedo_io` (ioctl chardev)                                 | 29 |
 | **Clevo**   | `tuxedo_io` (ioctl chardev), `tuxedo_keyboard`              | 3 |
 | **NB04**    | `tuxedo_nb04_sensors`, `tuxedo_nb04_power_profiles`, `tuxedo_nb04_wmi_*` | 2 |
 | **Tuxi**    | `tuxedo_tuxi` → `tuxedo_fan_control` platform dev          | 2 |

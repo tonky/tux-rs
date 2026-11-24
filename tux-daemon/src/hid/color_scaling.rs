@@ -62,7 +62,8 @@ pub fn scale_for_model(product_sku: &str, usb_pid: u16) -> ColorScaling {
             b: 220.0 / 255.0,
         },
         // InfinityBook Max 15 Gen10 Intel (board X5AR45xS): vendor driver
-        // applies no correction for this panel.
+        // applies no correction. It matches on board name for any PID; we
+        // deliberately pin the hardware-verified PID only.
         ("IBM15I10", 0x600b) => ColorScaling::IDENTITY,
         // ITE 8291 lightbar scaling
         ("STEPOL1XA04", 0x6010) | ("STELLARIS1XI05", 0x6010) | ("STELLARIS17I06", 0x6010) => {

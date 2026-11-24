@@ -1106,22 +1106,30 @@ scaling_max_frequency = 3500000
         println!("  set brightness=0 (off): OK");
 
         // Test: set brightness to 100 (max).
+        // Use an animation the hardware advertises (ITE rejects unknown names;
+        // sysfs keyboards only list "static").
+        let anim_mode = caps
+            .keyboard_modes
+            .iter()
+            .find(|m| m.as_str() != "static")
+            .cloned()
+            .unwrap_or_else(|| "static".into());
         let max_state = KeyboardState {
             brightness: 100,
             color: "#ffffff".into(),
-            mode: "Breathe".into(),
+            mode: anim_mode.clone(),
         };
         let max_toml = toml::to_string(&max_state).unwrap();
         client
             .set_keyboard_state(&max_toml)
             .await
-            .expect("set_keyboard_state(100, Breathe) failed");
+            .unwrap_or_else(|e| panic!("set_keyboard_state(100, {anim_mode}) failed: {e}"));
 
         let rb3 = client.get_keyboard_state().await.unwrap();
         let rb3_parsed: KeyboardState = toml::from_str(&rb3).unwrap();
         assert_eq!(rb3_parsed.brightness, 100, "brightness should be 100");
-        assert_eq!(rb3_parsed.mode, "Breathe", "mode should be Breathe");
-        println!("  set brightness=100, mode=Breathe: OK");
+        assert_eq!(rb3_parsed.mode, anim_mode, "mode should be {anim_mode}");
+        println!("  set brightness=100, mode={anim_mode}: OK");
 
         // Restore original.
         client

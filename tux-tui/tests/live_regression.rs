@@ -260,6 +260,11 @@ async fn uniwill_live_regression() {
         "{} gpu_control",
         exp.label
     );
+    assert_eq!(
+        caps.charging_priority, exp.charging_priority,
+        "{} charging_priority",
+        exp.label
+    );
 
     println!(
         "  fan_control={} fan_count={}",

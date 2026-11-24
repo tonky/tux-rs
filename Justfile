@@ -67,6 +67,14 @@ daemon-debug:
     sudo systemctl stop tux-daemon || true
     sudo ./target/release/tux-daemon --debug
 
+# Like daemon-debug, but also tee plain-text logs to tmp/daemon-debug.log (readable without root)
+daemon-debug-log:
+    cargo build --release -p tux-daemon
+    mkdir -p tmp
+    sudo systemctl stop tccd 2>/dev/null || true
+    sudo systemctl stop tux-daemon 2>/dev/null || true
+    sudo env NO_COLOR=1 ./target/release/tux-daemon --debug 2>&1 | tee -i tmp/daemon-debug.log
+
 # Run the TUI (e.g. just tui --tab profiles, just tui --help)
 tui *ARGS:
     cargo run -p tux-tui -- {{ARGS}}

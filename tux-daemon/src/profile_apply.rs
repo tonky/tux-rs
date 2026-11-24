@@ -120,7 +120,6 @@ impl ProfileApplier {
         }
     }
 
-    /// Apply a profile's settings to hardware.
     /// Apply `profile` for the given power source (enables AC-only quirks).
     pub fn apply_on(&self, profile: &TuxProfile, power: PowerState) -> anyhow::Result<()> {
         let epp_override = match power {
@@ -168,7 +167,7 @@ impl ProfileApplier {
                 warn!("failed to set CPU governor: {e}");
             }
             let profile_epp = profile.cpu.energy_performance_preference.as_deref();
-            if let Some(epp) = epp_override {
+            if let Some(epp) = epp_override.filter(|e| Some(*e) != profile_epp) {
                 info!(
                     "EPP quirk: using '{epp}' on AC instead of profile '{}' EPP {profile_epp:?}",
                     profile.name
@@ -840,6 +839,22 @@ mod tests {
             .apply_on(&profile_with_epp("balance_power"), PowerState::Battery)
             .unwrap();
         assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
+    }
+
+    #[test]
+    fn ibm15i10_epp_follows_unplug_and_replug() {
+        // AC → battery must drop back to the battery profile's EPP, and AC again
+        // must restore the override.
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        let office = profile_with_epp("balance_performance");
+        let quiet = profile_with_epp("balance_power");
+        applier.apply_on(&office, PowerState::Ac).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("performance"));
+        applier.apply_on(&quiet, PowerState::Battery).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
+        applier.apply_on(&office, PowerState::Ac).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("performance"));
     }
 
     #[test]

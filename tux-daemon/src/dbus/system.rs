@@ -8,7 +8,6 @@ use zbus::interface;
 
 use crate::config::ProfileAssignments;
 use crate::cpu::sampler::CpuSampler;
-use crate::gpu::hwmon;
 use crate::power_monitor::PowerState;
 use crate::profile_store::ProfileStore;
 use tux_core::dbus_types::{
@@ -25,6 +24,7 @@ pub struct SystemInterface {
     store: Arc<RwLock<ProfileStore>>,
     cpu_sampler: Mutex<CpuSampler>,
     energy_sampler: Mutex<EnergySampler>,
+    gpus: Arc<crate::gpu::GpuTelemetry>,
 }
 
 impl SystemInterface {
@@ -43,7 +43,14 @@ impl SystemInterface {
             store,
             cpu_sampler: Mutex::new(CpuSampler::system()),
             energy_sampler: Mutex::new(EnergySampler::new(source)),
+            gpus: Arc::new(crate::gpu::GpuTelemetry::hwmon_only("/sys/class/hwmon")),
         }
+    }
+
+    /// Use `gpus` (e.g. [`crate::gpu::GpuTelemetry::discover`]) for `GetGpuInfo`.
+    pub fn with_gpu_telemetry(mut self, gpus: Arc<crate::gpu::GpuTelemetry>) -> Self {
+        self.gpus = gpus;
+        self
     }
 }
 
@@ -91,9 +98,8 @@ impl SystemInterface {
     /// crate rejects with "unsupported rust type" because TOML requires a
     /// table at the root — so this method had been failing on every call.
     fn get_gpu_info(&self) -> zbus::fdo::Result<String> {
-        let gpus = hwmon::discover_gpus(Path::new("/sys/class/hwmon"));
         let resp = GpuInfoResponse {
-            gpus: gpus.into_iter().map(Into::into).collect(),
+            gpus: self.gpus.sample(),
         };
         toml::to_string(&resp).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }

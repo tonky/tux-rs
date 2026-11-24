@@ -500,6 +500,7 @@ async fn main() -> anyhow::Result<()> {
         daemon_config: daemon_config_arc,
         fan_failure_counter,
         manual_pwms_tx,
+        gpu_telemetry: Some(Arc::new(gpu::GpuTelemetry::discover())),
     })
     .await?;
 

@@ -314,6 +314,7 @@ impl TestDaemon {
             )),
             fan_failure_counter,
             manual_pwms_tx,
+            gpu_telemetry: None,
         })
         .await
         .expect("failed to start D-Bus service on session bus");

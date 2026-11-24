@@ -699,6 +699,12 @@ pub fn settings_form() -> FormTabState {
             field_type: FieldType::Bool(true),
             enabled: true,
         },
+        FormField {
+            label: "Profiles Set Keyboard Light".into(),
+            key: "profile_keyboard_control".into(),
+            field_type: FieldType::Bool(true),
+            enabled: true,
+        },
     ])
 }
 

@@ -2171,6 +2171,40 @@ mod tests {
     }
 
     #[test]
+    fn settings_form_roundtrips_profile_keyboard_control() {
+        let mut model = Model::new();
+        model.current_tab = Tab::Settings;
+        handle_data(
+            &mut model,
+            DbusUpdate::SettingsData("profile_keyboard_control = false".into()),
+        );
+        let idx = model
+            .settings
+            .form
+            .fields
+            .iter()
+            .position(|f| f.key == "profile_keyboard_control")
+            .expect("keyboard control toggle");
+        assert!(matches!(
+            model.settings.form.fields[idx].field_type,
+            crate::model::FieldType::Bool(false)
+        ));
+        for _ in 0..idx {
+            handle_key(&mut model, key(KeyCode::Down));
+        }
+        handle_key(&mut model, key(KeyCode::Right)); // toggle on
+        let cmds = handle_key(&mut model, key(KeyCode::Char('s')));
+        let toml = cmds
+            .iter()
+            .find_map(|c| match c {
+                Command::SaveSettings(t) => Some(t.clone()),
+                _ => None,
+            })
+            .expect("SaveSettings");
+        assert!(toml.contains("profile_keyboard_control = true"), "{toml}");
+    }
+
+    #[test]
     fn settings_form_save_ignored_when_clean() {
         let mut model = Model::new();
         model.current_tab = Tab::Settings;

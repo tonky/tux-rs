@@ -984,11 +984,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                 // Power tab gating: the daemon is the source of truth for
                 // which controls can actually change hardware state.
                 model.power.form_tab.supported = caps.gpu_control || caps.tdp_control;
-                for field in &mut model.power.form_tab.form.fields {
-                    if field.key == "tgp_offset" {
-                        field.enabled = caps.gpu_control;
-                    }
-                }
+                model.power.set_gpu_control(caps.gpu_control);
             }
         }
         DbusUpdate::FanCurve(points) => {
@@ -1170,6 +1166,13 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                     Some("unsaved local changes".into()),
                 );
             } else {
+                // Range first, so the loaded value isn't clamped to a stale max.
+                if let Some(table) = toml_table(&toml_str)
+                    && let Some(max) = toml_int(&table, "tgp_offset_max")
+                {
+                    let current = toml_int(&table, "tgp_offset").unwrap_or(0);
+                    model.power.apply_tgp_offset_range(max, current);
+                }
                 load_form_from_toml(&mut model.power.form_tab.form, &toml_str);
             }
         }
@@ -2210,9 +2213,20 @@ mod tests {
             &mut model,
             DbusUpdate::Capabilities("gpu_control = true".to_string()),
         );
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 0\ntgp_offset_max = 65".into()),
+        );
         handle_key(&mut model, key(KeyCode::Right)); // Make dirty.
         let cmds = handle_key(&mut model, key(KeyCode::Char('s')));
-        assert!(cmds.iter().any(|c| matches!(c, Command::SavePower(_))));
+        let toml = cmds
+            .iter()
+            .find_map(|c| match c {
+                Command::SavePower(t) => Some(t.clone()),
+                _ => None,
+            })
+            .expect("SavePower command");
+        assert!(toml.contains("tgp_offset = 5"), "got {toml:?}");
     }
 
     #[test]
@@ -2507,6 +2521,11 @@ gpu_type = "integrated"
             model.power.form_tab.supported,
             "Power tab must be supported when gpu_control is reported"
         );
+        // Editable only once the daemon reports a non-zero cTGP range.
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 10\ntgp_offset_max = 65".into()),
+        );
         let tgp = model
             .power
             .form_tab
@@ -2519,6 +2538,60 @@ gpu_type = "integrated"
             tgp.enabled,
             "tgp_offset field must be enabled when gpu_control is reported"
         );
+    }
+
+    fn tgp_field(model: &Model) -> (bool, i64, i64) {
+        let f = model
+            .power
+            .form_tab
+            .form
+            .fields
+            .iter()
+            .find(|f| f.key == "tgp_offset")
+            .expect("tgp_offset field must exist");
+        match f.field_type {
+            crate::model::FieldType::Number { value, max, .. } => (f.enabled, value, max),
+            _ => panic!("tgp_offset must be a number field"),
+        }
+    }
+
+    #[test]
+    fn power_data_loads_full_ctgp_range() {
+        // Regression (IBM15I10, RTX 5060): offset 65 W used to be clamped to
+        // a hard-coded +15 and the field never showed the hardware value.
+        let mut model = Model::new();
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
+        assert_eq!(
+            tgp_field(&model),
+            (false, 0, 0),
+            "disabled until range known"
+        );
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 65\ntgp_offset_max = 65".into()),
+        );
+        assert_eq!(tgp_field(&model), (true, 65, 65));
+    }
+
+    #[test]
+    fn power_data_with_zero_range_keeps_tgp_read_only() {
+        // No nvidia-smi → daemon reports max 0: show the value, don't edit it.
+        let mut model = Model::new();
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 20\ntgp_offset_max = 0".into()),
+        );
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
+        let (enabled, value, _) = tgp_field(&model);
+        assert!(!enabled);
+        assert_eq!(value, 20, "hardware value must still be shown");
+        assert_eq!(model.power.tgp_offset_max, 0);
     }
 
     #[test]
@@ -2685,7 +2758,11 @@ end_threshold = 80"#;
             &mut model,
             DbusUpdate::Capabilities("gpu_control = true".to_string()),
         );
-        model.power.form_tab.form.adjust(1); // 0 -> 1
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 0\ntgp_offset_max = 65".into()),
+        );
+        model.power.form_tab.form.adjust(1); // 0 -> 5
         handle_data(&mut model, DbusUpdate::PowerData("tgp_offset = 10".into()));
         assert!(
             model
@@ -2699,7 +2776,7 @@ end_threshold = 80"#;
         if let crate::model::FieldType::Number { value, .. } =
             &model.power.form_tab.form.fields[0].field_type
         {
-            assert_eq!(*value, 1);
+            assert_eq!(*value, 5);
         }
 
         // 5. Display: change brightness to 55 locally, daemon sends 10.

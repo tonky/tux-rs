@@ -266,6 +266,12 @@ impl DaemonClient {
             .await
     }
 
+    /// Largest accepted cTGP offset in watts; `0` means not adjustable.
+    pub async fn get_ctgp_offset_max(&self) -> Result<u8, zbus::Error> {
+        self.call_method(GPU_POWER_IFACE, "GetCtgpOffsetMax", &())
+            .await
+    }
+
     /// Set the NVIDIA cTGP offset in watts (NB02 Uniwill only).
     pub async fn set_ctgp_offset(&self, watts: u8) -> Result<(), zbus::Error> {
         self.call_method(GPU_POWER_IFACE, "SetCtgpOffset", &(watts,))

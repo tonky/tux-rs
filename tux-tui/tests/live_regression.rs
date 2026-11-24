@@ -1074,6 +1074,14 @@ scaling_max_frequency = 3500000
             orig_kbd_parsed.brightness, orig_kbd_parsed.color, orig_kbd_parsed.mode
         );
 
+        // Regression: echoing the daemon's own state back must work even when
+        // color/mode are still empty (ITE controllers reject mode "").
+        client
+            .set_keyboard_state(&orig_kbd)
+            .await
+            .expect("echoing GetKeyboardState back must succeed");
+        println!("  echo original state back: OK");
+
         // Test: set brightness to 75, mode to "Static", color to "#ff0000".
         let test_kbd_state = KeyboardState {
             brightness: 75,
@@ -1193,6 +1201,23 @@ scaling_max_frequency = 3500000
     } else {
         println!("  skipping governor toggle (not powersave currently)");
     }
+
+    // Regression: a partial update without `no_turbo` (what the old Power tab
+    // sent) must leave turbo untouched.
+    let turbo_before = client.get_power_settings().await.unwrap();
+    let _ = client.set_power_settings("tgp_offset = 0").await;
+    let turbo_after = client.get_power_settings().await.unwrap();
+    let no_turbo = |t: &str| {
+        t.lines()
+            .find(|l| l.trim_start().starts_with("no_turbo"))
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        no_turbo(&turbo_after),
+        no_turbo(&turbo_before),
+        "SetPowerSettings without no_turbo changed turbo state"
+    );
+    println!("  partial SetPowerSettings left no_turbo unchanged: OK");
 
     // ── 9. Charging — branch on platform type ────────────────────
     if caps.charging_profiles {

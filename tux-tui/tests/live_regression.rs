@@ -65,6 +65,8 @@ struct LiveExpectations {
     gpu_control: bool,
     /// Whether the EC exposes `charging_priority` (not only `charging_profile`).
     charging_priority: bool,
+    /// Exercise a PL1/PL2 set → read-back → restore round-trip.
+    tdp_roundtrip: bool,
 }
 
 const IBP_GEN8: LiveExpectations = LiveExpectations {
@@ -75,18 +77,20 @@ const IBP_GEN8: LiveExpectations = LiveExpectations {
     tdp_control: true,
     gpu_control: false,
     charging_priority: true,
+    tdp_roundtrip: false,
 };
 
 const IBM15I10: LiveExpectations = LiveExpectations {
     label: "IBM15I10",
     fan_count: 2,
     min_cpu_count: 16,
-    // Uniwill EC TDP backend lands in a later stage; RAPL must stay off.
-    tdp_control: false,
+    // Uniwill EC via tuxedo_io (driver table: PL1/PL2 10-90 W); never RAPL.
+    tdp_control: true,
     // RTX 5060 via tuxedo_nb02_nvidia_power_ctrl.
     gpu_control: true,
     // Driver only creates charging_profile/ on this board.
     charging_priority: false,
+    tdp_roundtrip: true,
 };
 
 /// Pick expectations from the daemon-reported device name, or fail loudly.
@@ -1603,6 +1607,42 @@ scaling_max_frequency = 3500000
         );
         assert!(bounds.pl1_max >= 15, "PL1 max should be at least 15 W");
         assert!(bounds.pl2_max >= 15, "PL2 max should be at least 15 W");
+
+        if exp.tdp_roundtrip {
+            let (orig1, orig2) = (
+                client.get_pl1().await.expect("get_pl1"),
+                client.get_pl2().await.expect("get_pl2"),
+            );
+            println!("  original PL1={orig1} W PL2={orig2} W");
+            // Pick values inside the bounds and different from the current ones.
+            let t1 = if orig1 > bounds.pl1_min + 10 {
+                orig1 - 10
+            } else {
+                bounds.pl1_min + 5
+            };
+            let t2 = if orig2 > bounds.pl2_min + 5 {
+                orig2 - 5
+            } else {
+                bounds.pl2_min + 5
+            };
+            client.set_pl1(t1).await.expect("set_pl1");
+            client.set_pl2(t2).await.expect("set_pl2");
+            assert_eq!(client.get_pl1().await.unwrap(), t1, "PL1 read-back");
+            assert_eq!(client.get_pl2().await.unwrap(), t2, "PL2 read-back");
+            println!("  set PL1={t1} W PL2={t2} W: OK");
+            // Out-of-range requests clamp to the bounds instead of failing.
+            client
+                .set_pl1(bounds.pl1_max + 50)
+                .await
+                .expect("set_pl1 above max");
+            assert_eq!(client.get_pl1().await.unwrap(), bounds.pl1_max);
+            println!("  PL1 above max clamped to {} W: OK", bounds.pl1_max);
+            client.set_pl1(orig1).await.expect("restore PL1");
+            client.set_pl2(orig2).await.expect("restore PL2");
+            assert_eq!(client.get_pl1().await.unwrap(), orig1);
+            assert_eq!(client.get_pl2().await.unwrap(), orig2);
+            println!("  restored PL1={orig1} W PL2={orig2} W: OK");
+        }
     } else {
         // The CPU interface may be absent entirely or report empty bounds.
         if let Ok(bounds_toml) = client.get_tdp_bounds().await {

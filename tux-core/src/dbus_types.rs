@@ -93,6 +93,9 @@ pub struct CapabilitiesResponse {
     pub charging_thresholds: bool,
     #[serde(default)]
     pub charging_profiles: bool,
+    /// Charge priority is writable (some profile-capable ECs lack it, e.g. IBM15I10).
+    #[serde(default)]
+    pub charging_priority: bool,
     #[serde(default)]
     pub tdp_control: bool,
     #[serde(default)]
@@ -303,6 +306,7 @@ mod tests {
             keyboard_type: "rgb".into(),
             charging_thresholds: true,
             charging_profiles: false,
+            charging_priority: false,
             tdp_control: true,
             keyboard_modes: vec!["static".into(), "breathe".into()],
             power_profiles: true,

@@ -34,6 +34,11 @@ pub trait ChargingBackend: Send + Sync {
 
     /// Set the charge priority, if applicable.
     fn set_priority(&self, priority: &str) -> io::Result<()>;
+
+    /// Whether `set_priority` actually reaches hardware.
+    fn supports_priority(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

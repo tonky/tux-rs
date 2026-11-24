@@ -971,8 +971,11 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                         "start_threshold" | "end_threshold" => {
                             field.enabled = caps.charging_thresholds;
                         }
-                        "profile" | "priority" => {
+                        "profile" => {
                             field.enabled = caps.charging_profiles;
+                        }
+                        "priority" => {
+                            field.enabled = caps.charging_profiles && caps.charging_priority;
                         }
                         _ => {}
                     }
@@ -2467,7 +2470,8 @@ gpu_type = "integrated"
         handle_data(
             &mut model,
             DbusUpdate::Capabilities(
-                "charging_thresholds = false\ncharging_profiles = true".to_string(),
+                "charging_thresholds = false\ncharging_profiles = true\ncharging_priority = true"
+                    .to_string(),
             ),
         );
         // Tab should be enabled (profiles are supported).
@@ -2481,6 +2485,26 @@ gpu_type = "integrated"
                 "start_threshold" | "end_threshold" => {
                     assert!(!field.enabled, "field '{}' should be disabled", field.label);
                 }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn capabilities_profile_only_ec_disables_priority_field() {
+        // IBM15I10: charging_profile exists, charging_priority does not.
+        let mut model = Model::new();
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities(
+                "charging_profiles = true\ncharging_priority = false".to_string(),
+            ),
+        );
+        assert!(model.charging.supported);
+        for field in &model.charging.form.fields {
+            match field.key.as_str() {
+                "profile" => assert!(field.enabled),
+                "priority" => assert!(!field.enabled, "priority must be disabled"),
                 _ => {}
             }
         }

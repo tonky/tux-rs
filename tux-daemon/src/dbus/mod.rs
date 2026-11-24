@@ -160,7 +160,8 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         charging.is_some(),
         tdp_backend.is_some(),
         gpu_backend.is_some(),
-    );
+    )
+    .with_charging_priority(charging.as_ref().is_some_and(|c| c.supports_priority()));
 
     // Clone before SystemInterface consumes them by value
     let fan_store = store.clone();

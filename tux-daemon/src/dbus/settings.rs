@@ -137,6 +137,12 @@ impl SettingsInterface {
                     device.descriptor.charging,
                     ChargingCapability::EcProfilePriority
                 ),
+            // Assume supported with profiles; refined via `with_charging_priority`.
+            charging_priority: charging_available
+                && matches!(
+                    device.descriptor.charging,
+                    ChargingCapability::EcProfilePriority
+                ),
             tdp_control: tdp_available,
             power_profiles: true,
             gpu_control: gpu_available,
@@ -150,6 +156,12 @@ impl SettingsInterface {
             cpu_governor,
             display,
         }
+    }
+
+    /// Narrow the `charging_priority` capability to what the backend supports.
+    pub fn with_charging_priority(mut self, supported: bool) -> Self {
+        self.capabilities.charging_priority &= supported;
+        self
     }
 }
 
@@ -789,6 +801,25 @@ mod tests {
     fn parse_hex_color_invalid_returns_white() {
         assert_eq!(parse_hex_color(""), Rgb::WHITE);
         assert_eq!(parse_hex_color("#ff"), Rgb::WHITE);
+    }
+
+    #[test]
+    fn charging_priority_capability_follows_backend() {
+        let device = make_test_device();
+        let caps = |iface: &SettingsInterface| -> CapabilitiesResponse {
+            toml::from_str(&iface.get_capabilities().unwrap()).unwrap()
+        };
+        let base =
+            || SettingsInterface::new(&device, true, 2, vec![], None, None, true, false, false);
+        let profiles = caps(&base()).charging_profiles;
+        assert_eq!(caps(&base()).charging_priority, profiles);
+        // Profile-only EC (IBM15I10): priority capability must be off.
+        assert!(!caps(&base().with_charging_priority(false)).charging_priority);
+        // Narrowing never turns it on where profiles are unsupported.
+        assert_eq!(
+            caps(&base().with_charging_priority(true)).charging_priority,
+            profiles
+        );
     }
 
     #[test]

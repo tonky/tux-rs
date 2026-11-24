@@ -207,6 +207,10 @@ impl ChargingBackend for UniwillCharging {
         }
         self.write_str_retry(ATTR_PRIO, priority)
     }
+
+    fn supports_priority(&self) -> bool {
+        self.has_priority
+    }
 }
 
 #[cfg(test)]
@@ -335,6 +339,14 @@ mod tests {
                 .join("devices/platform/tuxedo_keyboard/charging_priority/charging_prio")
                 .exists()
         );
+    }
+
+    #[test]
+    fn supports_priority_reflects_sysfs_layout() {
+        let (_mock, full) = setup();
+        assert!(full.supports_priority());
+        let (_mock, profile_only) = setup_profile_only();
+        assert!(!profile_only.supports_priority());
     }
 
     #[test]

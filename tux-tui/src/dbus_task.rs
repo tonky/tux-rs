@@ -359,6 +359,8 @@ async fn handle_command(
             // GpuPower interface (SetPowerSettings knows nothing about it).
             Ok(watts) => {
                 execute_form_save(tx, "power", || client.set_ctgp_offset(watts)).await;
+                // Re-read what the hardware actually holds (and the current range).
+                fetch_power_data(client, tx).await;
             }
             Err(e) => {
                 let _ = tx
@@ -483,13 +485,7 @@ async fn fetch_info_data(client: &DaemonClient, tx: &mpsc::Sender<AppEvent>) -> 
     if let Ok(s) = client.get_gpu_info().await {
         let _ = tx.send(AppEvent::DbusData(DbusUpdate::GpuInfo(s))).await;
     }
-    if let (Ok(offset), Ok(max)) = (
-        client.get_ctgp_offset().await,
-        client.get_ctgp_offset_max().await,
-    ) {
-        let s = format!("tgp_offset = {offset}\ntgp_offset_max = {max}\n");
-        let _ = tx.send(AppEvent::DbusData(DbusUpdate::PowerData(s))).await;
-    }
+    fetch_power_data(client, tx).await;
     if let Ok(s) = client.get_display_settings().await {
         let _ = tx
             .send(AppEvent::DbusData(DbusUpdate::DisplayData(s)))
@@ -568,7 +564,18 @@ async fn fetch_profile_assignments(client: &DaemonClient, tx: &mpsc::Sender<AppE
     }
 }
 
-/// Execute a form save operation, sending FormSaved or FormSaveError.
+/// Send the Power tab's cTGP value and range (silently skipped on devices
+/// without the GpuPower interface).
+async fn fetch_power_data(client: &DaemonClient, tx: &mpsc::Sender<AppEvent>) {
+    if let (Ok(offset), Ok(max)) = (
+        client.get_ctgp_offset().await,
+        client.get_ctgp_offset_max().await,
+    ) {
+        let s = format!("tgp_offset = {offset}\ntgp_offset_max = {max}\n");
+        let _ = tx.send(AppEvent::DbusData(DbusUpdate::PowerData(s))).await;
+    }
+}
+
 /// Extract the Power tab's `tgp_offset` (watts) from its serialized form.
 fn parse_tgp_offset(toml_str: &str) -> Result<u8, String> {
     let table: toml::Table = toml_str
@@ -581,6 +588,7 @@ fn parse_tgp_offset(toml_str: &str) -> Result<u8, String> {
     u8::try_from(value).map_err(|_| format!("tgp_offset {value} out of range 0..=255"))
 }
 
+/// Execute a form save operation, sending FormSaved or FormSaveError.
 async fn execute_form_save<F, Fut>(tx: &mpsc::Sender<AppEvent>, tab_name: &str, op: F)
 where
     F: FnOnce() -> Fut,

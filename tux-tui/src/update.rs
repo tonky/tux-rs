@@ -1160,6 +1160,15 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             }
         }
         DbusUpdate::PowerData(toml_str) => {
+            let table = toml_table(&toml_str);
+            let current = table.as_ref().and_then(|t| toml_int(t, "tgp_offset"));
+            if let Some(max) = table.as_ref().and_then(|t| toml_int(t, "tgp_offset_max")) {
+                // The range is daemon state, so apply it even with local edits
+                // pending; only the value below is protected by `dirty`.
+                model
+                    .power
+                    .apply_tgp_offset_range(max, current.unwrap_or(0));
+            }
             if model.power.form_tab.form.dirty {
                 model.power.form_tab.status_message =
                     Some("Daemon update skipped (unsaved changes)".into());
@@ -1169,13 +1178,6 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                     Some("unsaved local changes".into()),
                 );
             } else {
-                // Range first, so the loaded value isn't clamped to a stale max.
-                if let Some(table) = toml_table(&toml_str)
-                    && let Some(max) = toml_int(&table, "tgp_offset_max")
-                {
-                    let current = toml_int(&table, "tgp_offset").unwrap_or(0);
-                    model.power.apply_tgp_offset_range(max, current);
-                }
                 load_form_from_toml(&mut model.power.form_tab.form, &toml_str);
             }
         }
@@ -2598,6 +2600,30 @@ gpu_type = "integrated"
             DbusUpdate::PowerData("tgp_offset = 65\ntgp_offset_max = 65".into()),
         );
         assert_eq!(tgp_field(&model), (true, 65, 65));
+    }
+
+    #[test]
+    fn power_data_range_applies_while_form_dirty() {
+        let mut model = Model::new();
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 0\ntgp_offset_max = 0".into()),
+        );
+        assert!(!tgp_field(&model).0, "read-only while range unknown");
+        // nvidia-smi became available later; a local edit must not block that.
+        model.power.form_tab.form.dirty = true;
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 65\ntgp_offset_max = 65".into()),
+        );
+        let (enabled, value, max) = tgp_field(&model);
+        assert!(enabled);
+        assert_eq!(max, 65);
+        assert_eq!(value, 0, "dirty value is not overwritten");
     }
 
     #[test]

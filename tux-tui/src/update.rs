@@ -1113,6 +1113,10 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             model.power.dgpu_power = None;
             model.power.igpu_name.clear();
             model.power.igpu_usage = None;
+            model.power.dgpu_state = None;
+            model.power.dgpu_freq = None;
+            model.power.igpu_power = None;
+            model.power.igpu_freq = None;
 
             match toml::from_str::<tux_core::dbus_types::GpuInfoResponse>(&toml_str) {
                 Ok(resp) => {
@@ -1131,6 +1135,8 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                             igpu_seen = true;
                             model.power.igpu_name = gpu.name;
                             model.power.igpu_usage = gpu.usage_percent;
+                            model.power.igpu_power = gpu.power_draw_w;
+                            model.power.igpu_freq = gpu.freq_mhz;
                         } else {
                             // Treat anything not "integrated" as discrete
                             // (covers "discrete" and any unexpected value).
@@ -1147,6 +1153,8 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                             model.power.dgpu_temp = gpu.temperature;
                             model.power.dgpu_power = gpu.power_draw_w;
                             model.power.dgpu_usage = gpu.usage_percent;
+                            model.power.dgpu_state = gpu.power_state;
+                            model.power.dgpu_freq = gpu.freq_mhz;
                         }
                     }
                 }

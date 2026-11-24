@@ -816,6 +816,11 @@ pub struct PowerState {
     pub dgpu_power: Option<f32>,
     pub igpu_name: String,
     pub igpu_usage: Option<u8>,
+    /// dGPU runtime-PM state ("active" / "suspended") when reported.
+    pub dgpu_state: Option<String>,
+    pub dgpu_freq: Option<u32>,
+    pub igpu_power: Option<f32>,
+    pub igpu_freq: Option<u32>,
     /// Daemon reported `gpu_control` (NB02 cTGP backend present).
     pub gpu_control: bool,
     /// Daemon-reported cTGP offset maximum (W); 0 = not adjustable.
@@ -848,6 +853,10 @@ impl PowerState {
             dgpu_power: None,
             igpu_name: String::new(),
             igpu_usage: None,
+            dgpu_state: None,
+            dgpu_freq: None,
+            igpu_power: None,
+            igpu_freq: None,
             gpu_control: false,
             tgp_offset_max: 0,
         }

@@ -71,23 +71,34 @@ fn build_dgpu_paragraph(state: &PowerState) -> Paragraph<'_> {
         dgpu_name,
         Style::default().add_modifier(Modifier::BOLD),
     ))];
-    if let Some(temp) = state.dgpu_temp {
-        lines.push(Line::from(format!("Temp: {temp:.0}°C")));
-    }
-    let mut usage_power = String::new();
-    if let Some(usage) = state.dgpu_usage {
-        usage_power.push_str(&format!("Usage: {usage}%"));
-    }
-    if let Some(power) = state.dgpu_power {
-        if !usage_power.is_empty() {
-            usage_power.push_str("  ");
+    if state.dgpu_state.as_deref() == Some("suspended") {
+        // Telemetry is deliberately not read: querying would wake the GPU.
+        lines.push(Line::from("State: off (runtime suspended)"));
+    } else {
+        if let Some(temp) = state.dgpu_temp {
+            lines.push(Line::from(format!("Temp: {temp:.0}°C")));
         }
-        usage_power.push_str(&format!("Power: {power:.0}W"));
-    }
-    if !usage_power.is_empty() {
-        lines.push(Line::from(usage_power));
+        let stats = join_stats(state.dgpu_usage, state.dgpu_power, state.dgpu_freq);
+        if !stats.is_empty() {
+            lines.push(Line::from(stats));
+        }
     }
     Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" dGPU "))
+}
+
+/// "Usage: 12%  Power: 3.4W  Clock: 800 MHz" (missing parts omitted).
+fn join_stats(usage: Option<u8>, power: Option<f32>, freq: Option<u32>) -> String {
+    let mut parts = Vec::new();
+    if let Some(usage) = usage {
+        parts.push(format!("Usage: {usage}%"));
+    }
+    if let Some(power) = power {
+        parts.push(format!("Power: {power:.1}W"));
+    }
+    if let Some(freq) = freq {
+        parts.push(format!("Clock: {freq} MHz"));
+    }
+    parts.join("  ")
 }
 
 fn build_igpu_paragraph(state: &PowerState) -> Paragraph<'_> {
@@ -100,8 +111,9 @@ fn build_igpu_paragraph(state: &PowerState) -> Paragraph<'_> {
         igpu_name,
         Style::default().add_modifier(Modifier::BOLD),
     ))];
-    if let Some(usage) = state.igpu_usage {
-        lines.push(Line::from(format!("Usage: {usage}%")));
+    let stats = join_stats(state.igpu_usage, state.igpu_power, state.igpu_freq);
+    if !stats.is_empty() {
+        lines.push(Line::from(stats));
     }
     Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" iGPU "))
 }
@@ -183,5 +195,62 @@ mod tests {
             rendered.contains("RTX 4060"),
             "dGPU name should appear in full-width layout, got: {rendered}"
         );
+    }
+
+    fn render_to_string(state: &PowerState) -> String {
+        let backend = TestBackend::new(120, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, f.area(), state)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn suspended_dgpu_shows_off_state_not_stale_stats() {
+        let mut state = PowerState::new();
+        state.form_tab.supported = true;
+        state.dgpu_name = "NVIDIA GeForce RTX 5060 Laptop GPU".into();
+        state.dgpu_state = Some("suspended".into());
+        state.dgpu_temp = Some(99.0); // must not be shown while suspended
+        let rendered = render_to_string(&state);
+        assert!(rendered.contains("off (runtime suspended)"), "{rendered}");
+        assert!(!rendered.contains("99"), "{rendered}");
+    }
+
+    #[test]
+    fn active_gpus_show_usage_power_and_clock() {
+        let mut state = PowerState::new();
+        state.form_tab.supported = true;
+        state.dgpu_name = "RTX".into();
+        state.dgpu_state = Some("active".into());
+        state.dgpu_temp = Some(48.0);
+        state.dgpu_usage = Some(37);
+        state.dgpu_power = Some(21.5);
+        state.dgpu_freq = Some(1890);
+        state.igpu_name = "Intel Arc".into();
+        state.igpu_usage = Some(12);
+        state.igpu_power = Some(1.5);
+        state.igpu_freq = Some(800);
+        let rendered = render_to_string(&state);
+        for needle in [
+            "Temp: 48°C",
+            "Usage: 37%",
+            "Power: 21.5W",
+            "Clock: 1890 MHz",
+            "Usage: 12%",
+            "Power: 1.5W",
+            "Clock: 800 MHz",
+        ] {
+            assert!(
+                rendered.contains(needle),
+                "missing {needle:?} in {rendered}"
+            );
+        }
     }
 }

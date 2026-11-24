@@ -64,11 +64,19 @@ pub async fn run_dbus_task(
 
         // Poll + command loop.
         let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut tick: u64 = 0;
         loop {
             tokio::select! {
                 _ = interval.tick() => {
                     if tx.is_closed() {
                         return; // TUI shut down.
+                    }
+                    tick += 1;
+                    // GPU stats every 2 s (rates are computed daemon-side).
+                    if tick.is_multiple_of(2)
+                        && let Ok(s) = client.get_gpu_info().await
+                    {
+                        let _ = tx.send(AppEvent::DbusData(DbusUpdate::GpuInfo(s))).await;
                     }
                     if poll_dashboard_checked(&client, &tx, num_fans, &mut last_active_profile).await {
                         consecutive_failures = 0;

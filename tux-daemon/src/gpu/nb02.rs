@@ -36,8 +36,14 @@ type LimitsQuery = Box<dyn Fn() -> Option<(f64, f64)> + Send + Sync>;
 struct OffsetRange {
     query: LimitsQuery,
     retry_interval: Duration,
-    /// `(max, last_attempt)`; `max` stays `None` until a query succeeds.
-    state: Mutex<(Option<u8>, Option<Instant>)>,
+    state: Mutex<RangeState>,
+}
+
+#[derive(Default)]
+struct RangeState {
+    /// `(default_w, max_w)`; stays `None` until a query succeeds.
+    limits: Option<(f64, f64)>,
+    last_attempt: Option<Instant>,
 }
 
 impl OffsetRange {
@@ -45,15 +51,24 @@ impl OffsetRange {
         Self {
             query,
             retry_interval,
-            state: Mutex::new((None, None)),
+            state: Mutex::new(RangeState::default()),
         }
     }
 
     /// Maximum writable offset, querying (rate-limited) while unknown.
     fn get(&self) -> Option<u8> {
+        self.limits()
+            .map(|(default_w, max_w)| offset_max_from_limits(default_w, max_w))
+    }
+
+    /// NVIDIA `(default, max)` limits, querying (rate-limited) while unknown.
+    fn limits(&self) -> Option<(f64, f64)> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let (max, last_attempt) = &mut *state;
-        if max.is_none() && last_attempt.is_none_or(|t| t.elapsed() >= self.retry_interval) {
+        let RangeState {
+            limits,
+            last_attempt,
+        } = &mut *state;
+        if limits.is_none() && last_attempt.is_none_or(|t| t.elapsed() >= self.retry_interval) {
             let first = last_attempt.is_none();
             *last_attempt = Some(Instant::now());
             match (self.query)() {
@@ -62,7 +77,7 @@ impl OffsetRange {
                     info!(
                         "NVIDIA power limits: default {default_w} W, max {max_w} W → cTGP offset 0–{m} W"
                     );
-                    *max = Some(m);
+                    *limits = Some((default_w, max_w));
                 }
                 None if first => warn!(
                     "NVIDIA power limits unavailable (nvidia-smi); cTGP offset read-only, retrying every {:?}",
@@ -71,7 +86,7 @@ impl OffsetRange {
                 None => {}
             }
         }
-        *max
+        *limits
     }
 }
 
@@ -136,6 +151,10 @@ impl GpuPowerBackend for Nb02GpuPower {
 
     fn ctgp_offset_max(&self) -> u8 {
         self.range.get().unwrap_or(0)
+    }
+
+    fn power_limits_w(&self) -> Option<(f64, f64)> {
+        self.range.limits()
     }
 }
 
@@ -288,6 +307,7 @@ mod tests {
         setup_sysfs(tmp.path(), 65);
         let gpu = Nb02GpuPower::probe(tmp.path(), rtx5060(), Duration::ZERO).unwrap();
         assert_eq!(gpu.ctgp_offset_max(), 65);
+        assert_eq!(gpu.power_limits_w(), Some((50.0, 115.0)));
 
         gpu.set_ctgp_offset(65).unwrap();
         let err = gpu.set_ctgp_offset(66).unwrap_err();

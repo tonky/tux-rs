@@ -15,4 +15,9 @@ pub trait GpuPowerBackend: Send + Sync {
 
     /// Largest offset `set_ctgp_offset` accepts; `0` means not adjustable.
     fn ctgp_offset_max(&self) -> u8;
+
+    /// NVIDIA `(default_limit, max_limit)` in watts, when known.
+    fn power_limits_w(&self) -> Option<(f64, f64)> {
+        None
+    }
 }

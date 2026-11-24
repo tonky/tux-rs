@@ -63,6 +63,13 @@ pub struct GpuData {
     pub power_draw_w: Option<f32>,
     pub usage_percent: Option<u8>,
     pub gpu_type: String,
+    /// Runtime power state ("active" / "suspended") when known. Telemetry of a
+    /// suspended dGPU is deliberately not queried (it would wake the GPU).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_state: Option<String>,
+    /// Current (actual) GPU clock in MHz, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freq_mhz: Option<u32>,
 }
 
 /// System info as returned by D-Bus `GetSystemInfo`.
@@ -278,6 +285,8 @@ mod tests {
                 power_draw_w: Some(80.5),
                 usage_percent: Some(45),
                 gpu_type: "Discrete".into(),
+                power_state: None,
+                freq_mhz: None,
             }],
         };
         let toml_str = toml::to_string(&resp).unwrap();

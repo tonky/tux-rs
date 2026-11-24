@@ -27,6 +27,21 @@ const AC_EPP_PERFORMANCE_SKUS: &[&str] = &["IBM15I10"];
 
 const QUIRK_AC_EPP: &str = "performance";
 
+/// EPP used on battery for quirked devices when the profile sets none, so the
+/// AC override never lingers after unplugging (battery-life first).
+const QUIRK_BATTERY_FALLBACK_EPP: &str = "balance_power";
+
+/// How the EPP for one apply is chosen.
+#[derive(Debug, Clone, Copy)]
+enum EppChoice {
+    /// Use the profile's EPP (or leave EPP untouched if it has none).
+    Profile,
+    /// Write this EPP regardless of the profile (AC quirk).
+    Force(&'static str),
+    /// Use the profile's EPP, or this one if the profile has none.
+    ProfileOr(&'static str),
+}
+
 /// Applies a profile's settings to the hardware.
 pub struct ProfileApplier {
     fan_config_tx: watch::Sender<FanConfig>,
@@ -122,19 +137,22 @@ impl ProfileApplier {
 
     /// Apply `profile` for the given power source (enables AC-only quirks).
     pub fn apply_on(&self, profile: &TuxProfile, power: PowerState) -> anyhow::Result<()> {
-        let epp_override = match power {
-            PowerState::Ac => self.ac_epp_override,
-            PowerState::Battery => None,
+        let epp = match (power, self.ac_epp_override) {
+            (_, None) => EppChoice::Profile,
+            (PowerState::Ac, Some(forced)) => EppChoice::Force(forced),
+            (PowerState::Battery, Some(_)) => EppChoice::ProfileOr(QUIRK_BATTERY_FALLBACK_EPP),
         };
-        self.apply_inner(profile, epp_override)
+        self.apply_inner(profile, epp)
     }
 
-    /// Apply `profile` without power-source specific quirks.
+    /// Apply `profile` without power-source specific quirks (tests only, so
+    /// production code can't bypass the AC/battery EPP handling).
+    #[cfg(test)]
     pub fn apply(&self, profile: &TuxProfile) -> anyhow::Result<()> {
-        self.apply_inner(profile, None)
+        self.apply_inner(profile, EppChoice::Profile)
     }
 
-    fn apply_inner(&self, profile: &TuxProfile, epp_override: Option<&str>) -> anyhow::Result<()> {
+    fn apply_inner(&self, profile: &TuxProfile, epp: EppChoice) -> anyhow::Result<()> {
         // 1. Update fan curve engine config from profile.
         if profile.fan.enabled {
             let fan_config = FanConfig {
@@ -167,13 +185,18 @@ impl ProfileApplier {
                 warn!("failed to set CPU governor: {e}");
             }
             let profile_epp = profile.cpu.energy_performance_preference.as_deref();
-            if let Some(epp) = epp_override.filter(|e| Some(*e) != profile_epp) {
+            let effective_epp = match epp {
+                EppChoice::Profile => profile_epp,
+                EppChoice::Force(forced) => Some(forced),
+                EppChoice::ProfileOr(fallback) => profile_epp.or(Some(fallback)),
+            };
+            if effective_epp != profile_epp {
                 info!(
-                    "EPP quirk: using '{epp}' on AC instead of profile '{}' EPP {profile_epp:?}",
+                    "EPP quirk: using {effective_epp:?} instead of profile '{}' EPP {profile_epp:?}",
                     profile.name
                 );
             }
-            if let Some(epp) = epp_override.or(profile_epp)
+            if let Some(epp) = effective_epp
                 && let Err(e) = gov.set_epp(epp)
             {
                 warn!("failed to set CPU EPP: {e}");
@@ -855,6 +878,32 @@ mod tests {
         assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
         applier.apply_on(&office, PowerState::Ac).unwrap();
         assert_eq!(epp_of(&gov).as_deref(), Some("performance"));
+    }
+
+    #[test]
+    fn ibm15i10_battery_profile_without_epp_drops_ac_override() {
+        // Regression (stage-4 review): a battery profile with no EPP used to
+        // leave the AC 'performance' override in place after unplugging.
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        applier
+            .apply_on(&profile_with_epp("balance_performance"), PowerState::Ac)
+            .unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("performance"));
+        let mut no_epp = test_profile_with_fan(FanMode::Auto, true);
+        no_epp.cpu.energy_performance_preference = None;
+        applier.apply_on(&no_epp, PowerState::Battery).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
+    }
+
+    #[test]
+    fn profile_without_epp_leaves_epp_untouched_without_quirk() {
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBP16I08MK2");
+        let mut no_epp = test_profile_with_fan(FanMode::Auto, true);
+        no_epp.cpu.energy_performance_preference = None;
+        applier.apply_on(&no_epp, PowerState::Battery).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_performance"));
     }
 
     #[test]

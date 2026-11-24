@@ -74,3 +74,24 @@ status = "pending"
 priority = "low"
 context = "tux-tui/src/dbus_task.rs fetch_info_data (stage-2 review B, #4)."
 reasoning = "A profile activation can change charging/cTGP behind the TUI's back; pre-existing design, not IBM15I10-specific."
+
+[[task]]
+description = "Re-apply the active profile's TDP (PL1/PL2) on resume: neither tuxedo_io nor sleep.rs on_resume restores EC TDP after suspend."
+status = "pending"
+priority = "medium"
+context = "tux-daemon/src/sleep.rs on_resume; tuxedo-drivers uniwill_keyboard.h resume path (stage-3 review A). Not yet measured on IBM15I10."
+reasoning = "If the EC resets 0x0783/0x0784 across S3/s2idle, a user's lowered PL1 silently reverts to the default."
+
+[[task]]
+description = "TCC compat: ODMPowerLimitsJSON returns '{}' although a TDP backend now exists; also tcc_compat builds tdpValues by pushing only set values, so a PL2-only profile exports [pl2] which TCC reads as PL1."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/dbus/tcc_compat.rs odm_power_limits_json and profile export (~264-272) (stage-3 review A)."
+reasoning = "Only matters for TCC GUI clients talking to tux-daemon; pre-existing gaps."
+
+[[task]]
+description = "Investigate the ~50 W sustained package cap on IBM15I10 with PL1=90 W and EPP=performance (bursts to ~86 W, then settles at 50 W)."
+status = "pending"
+priority = "low"
+context = "Measured 2026-11-24 during stage-3 live verification; EC TDP 90/90 W, overboost profile, 16-thread busy loop."
+reasoning = "Could be thermal/EC/platform (PsysPL) limits rather than tux-rs; worth understanding before promising '90 W' in docs."

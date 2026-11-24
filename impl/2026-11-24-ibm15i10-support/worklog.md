@@ -28,3 +28,11 @@
   `worklog-2.md`, review in `review-2.md`.
 - `just check` green (799), `just live-test` PASSED on hardware.
 - Next: Stage 3 (Uniwill EC TDP via tuxedo_io) — awaiting user confirmation.
+
+## 2026-11-24 — Stage 3 complete
+
+- Uniwill EC TDP via tuxedo_io on IBM15I10 (PL1/PL2 10–90 W), verified live
+  including measured enforcement under load. Review in `review-3.md`, details
+  in `worklog-3.md`.
+- Finding for Stage 4: EPP `performance` roughly doubles sustained package
+  power (28 → 50 W) on this machine — matches TCC's quirk.

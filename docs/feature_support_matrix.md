@@ -145,6 +145,7 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 | Feature | tuxedo-drivers | tccd / TCC | tux-rs |
 |---------|---------------|------------|--------|
 | PL1 read/write (NB05 EC) | ✅ `tuxedo_nb05_ec` ec_ram | ✅ | ⚠️ backend implemented (`cpu/tdp.rs`), no device table TDP fields populated for current SKUs |
+| PL1/PL2 read/write (Uniwill EC) | ✅ `tuxedo_io` `R/W_UW_TDP0..2` | ✅ | ✅ `UniwillEcTdp` (`cpu/tdp.rs`), opted in for IBM15I10; PL4 read-only |
 | PL2 read/write (NB05 EC) | ✅ `tuxedo_nb05_ec` | ✅ | ⚠️ same |
 | Power profiles (NB05) | ✅ `tuxedo_nb05_power_profiles` | ✅ | ❌ not exposed |
 | Power profiles (NB04) | ✅ `tuxedo_nb04_power_profiles` | ✅ | ⚠️ mapped to fan Balanced via `td_nb04.rs`; no ODM profile API |

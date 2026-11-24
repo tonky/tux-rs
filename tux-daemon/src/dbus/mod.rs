@@ -140,6 +140,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
     let fan_count = backend.as_ref().map_or(0, |b| b.num_fans());
 
     let assignments_tx = Arc::new(assignments_tx);
+    let keyboard_control_flag = applier.keyboard_control_flag();
 
     let profile_iface = ProfileInterface::new(
         store.clone(),
@@ -161,7 +162,12 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         tdp_backend.is_some(),
         gpu_backend.is_some(),
     )
-    .with_charging_priority(charging.as_ref().is_some_and(|c| c.supports_priority()));
+    .with_charging_priority(charging.as_ref().is_some_and(|c| c.supports_priority()))
+    .with_keyboard_control(settings::KeyboardControl {
+        flag: keyboard_control_flag,
+        daemon_config: daemon_config.clone(),
+        config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
+    });
 
     // Clone before SystemInterface consumes them by value
     let fan_store = store.clone();

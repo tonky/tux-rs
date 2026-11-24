@@ -1,6 +1,7 @@
 //! Apply profile settings to hardware backends.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -53,6 +54,8 @@ pub struct ProfileApplier {
     display: Option<SharedDisplay>,
     /// EPP forced on AC for quirky devices (see [`AC_EPP_PERFORMANCE_SKUS`]).
     ac_epp_override: Option<&'static str>,
+    /// Whether profiles set the keyboard brightness (shared with D-Bus settings).
+    keyboard_control: Arc<AtomicBool>,
 }
 
 impl ProfileApplier {
@@ -74,7 +77,19 @@ impl ProfileApplier {
             keyboards,
             display,
             ac_epp_override: None,
+            keyboard_control: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Set whether profiles control the keyboard brightness.
+    pub fn with_keyboard_control(self, enabled: bool) -> Self {
+        self.keyboard_control.store(enabled, Ordering::Relaxed);
+        self
+    }
+
+    /// Shared flag behind [`Self::with_keyboard_control`], for runtime toggling.
+    pub fn keyboard_control_flag(&self) -> Arc<AtomicBool> {
+        self.keyboard_control.clone()
     }
 
     /// Enable device-specific quirks for `product_sku`.
@@ -263,8 +278,12 @@ impl ProfileApplier {
             );
         }
 
-        // 3. Keyboard backlight brightness.
-        if !self.keyboards.is_empty() {
+        // 3. Keyboard backlight brightness (unless the user opted out).
+        let keyboard_control = self.keyboard_control.load(Ordering::Relaxed);
+        if !keyboard_control && !self.keyboards.is_empty() {
+            debug!("profile keyboard control disabled; leaving keyboard backlight as is");
+        }
+        if keyboard_control && !self.keyboards.is_empty() {
             let brightness = profile.keyboard.brightness;
             // Profile brightness is percentage-like (0-100). Convert to hardware scale.
             let hw_brightness = ((brightness.min(100) as f32 / 100.0) * 255.0) as u8;
@@ -942,6 +961,60 @@ mod tests {
         let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
         applier.apply(&profile_with_epp("balance_power")).unwrap();
         assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
+    }
+
+    #[test]
+    fn keyboard_control_disabled_leaves_keyboard_untouched() {
+        use crate::hid::{KeyboardLed, Rgb};
+        use std::sync::Mutex;
+
+        /// Fails the test on any call.
+        struct Untouchable;
+        impl KeyboardLed for Untouchable {
+            fn set_brightness(&mut self, _: u8) -> std::io::Result<()> {
+                panic!("set_brightness called")
+            }
+            fn set_color(&mut self, _: u8, _: Rgb) -> std::io::Result<()> {
+                panic!("set_color called")
+            }
+            fn set_mode(&mut self, _: &str) -> std::io::Result<()> {
+                panic!("set_mode called")
+            }
+            fn zone_count(&self) -> u8 {
+                1
+            }
+            fn turn_off(&mut self) -> std::io::Result<()> {
+                panic!("turn_off called")
+            }
+            fn turn_on(&mut self) -> std::io::Result<()> {
+                panic!("turn_on called")
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                panic!("flush called")
+            }
+            fn device_type(&self) -> &str {
+                "untouchable"
+            }
+            fn available_modes(&self) -> Vec<String> {
+                vec![]
+            }
+        }
+
+        let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(Untouchable)));
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, None, None, None, None, vec![kb], None)
+            .with_keyboard_control(false);
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.keyboard.brightness = 0; // would turn the light off
+        applier.apply_on(&profile, PowerState::Battery).unwrap();
+        profile.keyboard.brightness = 80; // would turn it on
+        applier.apply_on(&profile, PowerState::Ac).unwrap();
+
+        // Runtime toggle via the shared flag re-enables control.
+        applier
+            .keyboard_control_flag()
+            .store(true, Ordering::Relaxed);
+        assert!(applier.keyboard_control_flag().load(Ordering::Relaxed));
     }
 
     #[test]

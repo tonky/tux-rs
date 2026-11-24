@@ -31,6 +31,11 @@ pub struct GlobalSettings {
     pub temperature_unit: String,
     pub fan_control_enabled: bool,
     pub cpu_settings_enabled: bool,
+    /// Profiles set the keyboard backlight brightness (persisted in the
+    /// daemon config as `daemon.profile_keyboard_control`). Always present in
+    /// `GetGlobalSettings`; absent in `SetGlobalSettings` means unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_keyboard_control: Option<bool>,
 }
 
 impl Default for GlobalSettings {
@@ -39,8 +44,17 @@ impl Default for GlobalSettings {
             temperature_unit: "celsius".to_string(),
             fan_control_enabled: true,
             cpu_settings_enabled: true,
+            profile_keyboard_control: Some(true),
         }
     }
+}
+
+/// Shared, persisted "profiles control the keyboard" switch.
+pub struct KeyboardControl {
+    pub flag: Arc<std::sync::atomic::AtomicBool>,
+    pub daemon_config: Arc<std::sync::RwLock<crate::config::DaemonConfig>>,
+    /// Where the config is saved (`DEFAULT_CONFIG_PATH` in production).
+    pub config_path: std::path::PathBuf,
 }
 
 /// Keyboard state stored and returned via Settings D-Bus interface.
@@ -74,6 +88,7 @@ pub struct PowerSettings {
 pub struct SettingsInterface {
     settings: std::sync::RwLock<GlobalSettings>,
     capabilities: CapabilitiesResponse,
+    keyboard_control: Option<KeyboardControl>,
     keyboard_state: std::sync::RwLock<KeyboardState>,
     keyboards: Vec<SharedKeyboard>,
     cpu_governor: Option<Arc<CpuGovernor>>,
@@ -154,11 +169,18 @@ impl SettingsInterface {
         Self {
             settings: std::sync::RwLock::new(GlobalSettings::default()),
             capabilities: caps,
+            keyboard_control: None,
             keyboard_state: std::sync::RwLock::new(KeyboardState::default()),
             keyboards,
             cpu_governor,
             display,
         }
+    }
+
+    /// Back `profile_keyboard_control` with the applier's flag and persist changes.
+    pub fn with_keyboard_control(mut self, control: KeyboardControl) -> Self {
+        self.keyboard_control = Some(control);
+        self
     }
 
     /// Narrow the `charging_priority` capability to what the backend supports.
@@ -172,17 +194,39 @@ impl SettingsInterface {
 impl SettingsInterface {
     /// Get global settings as TOML.
     fn get_global_settings(&self) -> zbus::fdo::Result<String> {
-        let settings = self
+        let mut settings = self
             .settings
             .read()
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        toml::to_string(&*settings).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+            .clone();
+        if let Some(ref kc) = self.keyboard_control {
+            settings.profile_keyboard_control =
+                Some(kc.flag.load(std::sync::atomic::Ordering::Relaxed));
+        }
+        toml::to_string(&settings).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// Update global settings from a TOML string.
     fn set_global_settings(&self, toml_str: &str) -> zbus::fdo::Result<()> {
         let new_settings: GlobalSettings = toml::from_str(toml_str)
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("invalid settings TOML: {e}")))?;
+        if let Some(ref kc) = self.keyboard_control
+            && let Some(enabled) = new_settings.profile_keyboard_control
+        {
+            let previous = kc.flag.swap(enabled, std::sync::atomic::Ordering::Relaxed);
+            if previous != enabled
+                && let Ok(mut config) = kc.daemon_config.write()
+            {
+                config.daemon.profile_keyboard_control = enabled;
+                if let Err(e) = config.save(&kc.config_path) {
+                    tracing::warn!("failed to persist profile_keyboard_control: {e}");
+                }
+                tracing::info!(
+                    "profile keyboard control {}",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+            }
+        }
         let mut settings = self
             .settings
             .write()
@@ -478,6 +522,48 @@ mod tests {
         assert!(
             !caps.keyboard_backlight,
             "keyboard_backlight must be false when no backends discovered"
+        );
+    }
+
+    #[test]
+    fn profile_keyboard_control_toggles_flag_and_persists() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        let flag = Arc::new(AtomicBool::new(true));
+        let daemon_config = Arc::new(std::sync::RwLock::new(
+            crate::config::DaemonConfig::default(),
+        ));
+        let device = make_test_device();
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![], None, None, true, false, false)
+                .with_keyboard_control(KeyboardControl {
+                    flag: flag.clone(),
+                    daemon_config: daemon_config.clone(),
+                    config_path: config_path.clone(),
+                });
+
+        let get =
+            || -> GlobalSettings { toml::from_str(&iface.get_global_settings().unwrap()).unwrap() };
+        assert_eq!(get().profile_keyboard_control, Some(true));
+
+        let mut off = get();
+        off.profile_keyboard_control = Some(false);
+        iface
+            .set_global_settings(&toml::to_string(&off).unwrap())
+            .unwrap();
+        assert!(!flag.load(Ordering::Relaxed), "applier flag must follow");
+        assert_eq!(get().profile_keyboard_control, Some(false));
+
+        // A client that doesn't know the key must not re-enable control.
+        iface
+            .set_global_settings("temperature_unit = \"celsius\"\nfan_control_enabled = true\ncpu_settings_enabled = true")
+            .unwrap();
+        assert!(!flag.load(Ordering::Relaxed), "absent key means unchanged");
+        let saved = crate::config::DaemonConfig::load(&config_path);
+        assert!(
+            !saved.daemon.profile_keyboard_control,
+            "must persist across restarts"
         );
     }
 

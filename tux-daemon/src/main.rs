@@ -363,7 +363,8 @@ async fn main() -> anyhow::Result<()> {
             keyboards.clone(),
             display_backlight.clone(),
         )
-        .with_device_quirks(device.descriptor.product_sku),
+        .with_device_quirks(device.descriptor.product_sku)
+        .with_keyboard_control(config.daemon.profile_keyboard_control),
     );
 
     // 6c. Start power state monitor and auto-switch task.

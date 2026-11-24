@@ -379,10 +379,23 @@ impl ProfileApplier {
         if let Some(ref gpu) = self.gpu_backend
             && let Some(ref settings) = profile.gpu
         {
-            if let Some(ctgp) = settings.ctgp_offset
-                && let Err(e) = gpu.set_ctgp_offset(ctgp)
-            {
-                warn!("failed to set cTGP offset: {e}");
+            if let Some(requested) = settings.ctgp_offset {
+                // Profiles may carry offsets beyond this GPU's range (TCC
+                // imports clamp only to 255, or a profile from another GPU):
+                // clamp instead of leaving the previous profile's offset.
+                let max = gpu.ctgp_offset_max();
+                let ctgp = if max > 0 && requested > max {
+                    warn!(
+                        "profile '{}' cTGP offset {requested} W exceeds max {max} W; clamping",
+                        profile.name
+                    );
+                    max
+                } else {
+                    requested
+                };
+                if let Err(e) = gpu.set_ctgp_offset(ctgp) {
+                    warn!("failed to set cTGP offset: {e}");
+                }
             }
             info!("applied GPU power settings from profile '{}'", profile.name);
         }
@@ -944,32 +957,7 @@ mod tests {
         use crate::gpu::GpuPowerBackend;
         use tux_core::profile::GpuSettings;
 
-        struct MockGpuPower {
-            value: std::sync::Mutex<u8>,
-        }
-
-        impl MockGpuPower {
-            fn new() -> Self {
-                Self {
-                    value: std::sync::Mutex::new(0),
-                }
-            }
-        }
-
-        impl GpuPowerBackend for MockGpuPower {
-            fn get_ctgp_offset(&self) -> std::io::Result<u8> {
-                Ok(*self.value.lock().unwrap())
-            }
-            fn set_ctgp_offset(&self, watts: u8) -> std::io::Result<()> {
-                *self.value.lock().unwrap() = watts;
-                Ok(())
-            }
-            fn ctgp_offset_max(&self) -> u8 {
-                u8::MAX
-            }
-        }
-
-        let mock: Arc<dyn GpuPowerBackend> = Arc::new(MockGpuPower::new());
+        let mock: Arc<dyn GpuPowerBackend> = Arc::new(BoundedGpuPower::new(u8::MAX));
         let (tx, _rx) = watch::channel(FanConfig::default());
         let applier = ProfileApplier::new(tx, None, None, None, Some(mock.clone()), vec![], None);
 
@@ -980,6 +968,62 @@ mod tests {
 
         applier.apply(&profile).unwrap();
         assert_eq!(mock.get_ctgp_offset().unwrap(), 15);
+    }
+
+    /// GPU backend that, like `Nb02GpuPower`, rejects offsets above `max`.
+    struct BoundedGpuPower {
+        value: std::sync::Mutex<u8>,
+        max: u8,
+    }
+
+    impl BoundedGpuPower {
+        fn new(max: u8) -> Self {
+            Self {
+                value: std::sync::Mutex::new(0),
+                max,
+            }
+        }
+    }
+
+    impl crate::gpu::GpuPowerBackend for BoundedGpuPower {
+        fn get_ctgp_offset(&self) -> std::io::Result<u8> {
+            Ok(*self.value.lock().unwrap())
+        }
+        fn set_ctgp_offset(&self, watts: u8) -> std::io::Result<()> {
+            if watts > self.max {
+                return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+            }
+            *self.value.lock().unwrap() = watts;
+            Ok(())
+        }
+        fn ctgp_offset_max(&self) -> u8 {
+            self.max
+        }
+    }
+
+    #[test]
+    fn apply_gpu_clamps_profile_offset_to_backend_max() {
+        // Regression: a TCC-imported 100 W offset on a 65 W GPU (IBM15I10
+        // RTX 5060) was rejected outright, leaving the previous offset active.
+        use crate::gpu::GpuPowerBackend;
+        let mock = Arc::new(BoundedGpuPower::new(65));
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(
+            tx,
+            None,
+            None,
+            None,
+            Some(mock.clone() as Arc<dyn GpuPowerBackend>),
+            vec![],
+            None,
+        );
+
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.gpu = Some(tux_core::profile::GpuSettings {
+            ctgp_offset: Some(100),
+        });
+        applier.apply(&profile).unwrap();
+        assert_eq!(mock.get_ctgp_offset().unwrap(), 65);
     }
 
     #[test]

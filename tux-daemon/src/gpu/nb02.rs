@@ -17,7 +17,12 @@ pub struct Nb02GpuPower {
 
 impl Nb02GpuPower {
     pub fn new() -> Option<Self> {
-        let sysfs = SysfsReader::new(SYSFS_BASE);
+        Self::probe(SYSFS_BASE)
+    }
+
+    /// Probe `base` for the `ctgp_offset` attribute; `None` if absent.
+    fn probe(base: impl Into<std::path::PathBuf>) -> Option<Self> {
+        let sysfs = SysfsReader::new(base);
         if !sysfs.available() || !sysfs.exists("ctgp_offset") {
             return None;
         }
@@ -88,8 +93,26 @@ mod tests {
         assert_eq!(gpu.get_ctgp_offset().unwrap(), 255);
     }
 
+    // Probe tests use tempdirs: the real /sys path exists on NB02 machines
+    // with an NVIDIA dGPU (e.g. IBM15I10), so they must not touch it.
+
     #[test]
-    fn new_returns_none_when_sysfs_missing() {
-        assert!(Nb02GpuPower::new().is_none());
+    fn probe_returns_none_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(Nb02GpuPower::probe(tmp.path().join("missing")).is_none());
+    }
+
+    #[test]
+    fn probe_returns_none_without_ctgp_offset() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(Nb02GpuPower::probe(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn probe_succeeds_with_ctgp_offset() {
+        let tmp = tempfile::tempdir().unwrap();
+        setup_sysfs(tmp.path(), 5);
+        let gpu = Nb02GpuPower::probe(tmp.path()).expect("probe should succeed");
+        assert_eq!(gpu.get_ctgp_offset().unwrap(), 5);
     }
 }

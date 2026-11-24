@@ -25,6 +25,7 @@ toml = { workspace = true }
 anyhow = { workspace = true }
 tokio-stream = { workspace = true }
 serde_json = { workspace = true, optional = true }
+nvml-wrapper = "0.13"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 inotify = { workspace = true }

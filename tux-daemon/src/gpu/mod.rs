@@ -3,6 +3,7 @@
 pub mod hwmon;
 pub mod intel;
 pub mod nb02;
+pub mod nvidia;
 
 use std::io;
 

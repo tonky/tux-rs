@@ -36,3 +36,9 @@
   in `worklog-3.md`.
 - Finding for Stage 4: EPP `performance` roughly doubles sustained package
   power (28 → 50 W) on this machine — matches TCC's quirk.
+
+## 2026-11-24 — Stage 4 complete
+
+- EPP `performance` on AC only for IBM15I10 (battery keeps profile EPP;
+  fallback `balance_power`). Verified live across unplug/replug. Review in
+  `review-4.md`. All four stages done.

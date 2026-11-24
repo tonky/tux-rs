@@ -22,7 +22,7 @@
 |-----|--------|-------|
 | IBP16I08MK2 | TUXEDO InfinityBook Pro 16 Gen8 MK2 | Maintainer's machine |
 | IBP14A09MK1 / IBP15A09MK1 | TUXEDO InfinityBook Pro 14 Gen9 AMD | Community-confirmed (platform fallback) |
-| IBM15I10 | TUXEDO InfinityBook Max 15 Gen10 Intel | Board `X5AR45xS`; Core Ultra 7 255H + RTX 5060. `just live-test` passes: 2 fans (curve/manual/auto), ITE 8291 per-key keyboard, charging profiles (this EC has no charge priority), cTGP 0–65 W (needs `nvidia-smi`), display backlight, EC TDP PL1/PL2 10–90 W (verified under load). |
+| IBM15I10 | TUXEDO InfinityBook Max 15 Gen10 Intel | Board `X5AR45xS`; Core Ultra 7 255H + RTX 5060. `just live-test` passes: 2 fans (curve/manual/auto), ITE 8291 per-key keyboard, charging profiles (this EC has no charge priority), cTGP 0–65 W (needs `nvidia-smi`), display backlight, EC TDP PL1/PL2 10–90 W (verified under load), EPP `performance` quirk on AC only (battery keeps profile EPP). |
 
 WMI-based platform probing accepts both bare (`<GUID>`) and instance-suffixed (`<GUID>-<n>`) device names under `/sys/bus/wmi/devices/`, as registered by current kernels.
 

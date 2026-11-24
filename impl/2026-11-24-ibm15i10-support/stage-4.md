@@ -22,3 +22,7 @@
 ## Live verification
 - Startup log: `EPP quirk active for IBM15I10`; on AC sysfs EPP = `performance`.
 - Unplug AC → battery profile applied, EPP = `balance_power`; replug → `performance`.
+
+## Outcome (2026-11-24)
+Verified live: AC → `performance`, battery (Quiet) → `balance_power`, replug →
+`performance`. Review blocker (battery profile without EPP) fixed in `8acb180`.

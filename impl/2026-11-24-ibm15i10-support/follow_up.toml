@@ -95,3 +95,10 @@ status = "pending"
 priority = "low"
 context = "Measured 2026-11-24 during stage-3 live verification; EC TDP 90/90 W, overboost profile, 16-thread busy loop."
 reasoning = "Could be thermal/EC/platform (PsysPL) limits rather than tux-rs; worth understanding before promising '90 W' in docs."
+
+[[task]]
+description = "TCC also applies the EPP 'performance' quirk to GEMINI17I04 and IBPG10INTEL (IBP15I10MK1). Add them to AC_EPP_PERFORMANCE_SKUS once hardware-verified (and add device rows)."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/profile_apply.rs AC_EPP_PERFORMANCE_SKUS; TCC 3.1.2 CpuWorker eppPerformanceQuirkDevices."
+reasoning = "Kept to the verified IBM15I10 to avoid untested behaviour changes on other models."

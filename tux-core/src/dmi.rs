@@ -151,10 +151,26 @@ pub fn read_dmi_info(source: &dyn DmiSource) -> Result<DmiInfo, DetectionError> 
 }
 
 /// Detect the platform from DMI info and sysfs probing.
+///
+/// Signals are checked strongest-first: ODM board vendor, curated SKU hints,
+/// platform-specific WMI GUIDs / sysfs devices, and finally the Clevo event
+/// GUID, which Uniwill firmware also exposes and is therefore ambiguous.
 fn detect_platform(source: &dyn DmiSource, dmi: &DmiInfo) -> Option<Platform> {
     // NB05: board_vendor == "NB05"
     if dmi.board_vendor.eq_ignore_ascii_case("NB05") {
         return Some(Platform::Nb05);
+    }
+
+    // NB02 platforms are Uniwill-based in tuxedo-drivers. Some firmware
+    // variants do not expose the Uniwill WMI GUID reliably, and some expose
+    // the Clevo GUID as well, so the board vendor wins over WMI probing.
+    if dmi.board_vendor.eq_ignore_ascii_case("NB02") {
+        return Some(Platform::Uniwill);
+    }
+
+    // TCC-proven recent SKU strings can provide a safe platform hint.
+    if let Some(platform) = platform_hint_from_tcc_sku_map(&dmi.product_sku) {
+        return Some(platform);
     }
 
     // NB04: WMI GUID present
@@ -167,26 +183,14 @@ fn detect_platform(source: &dyn DmiSource, dmi: &DmiInfo) -> Option<Platform> {
         return Some(Platform::Uniwill);
     }
 
-    // Clevo: tuxedo-drivers exposes WMI event GUID unique to Clevo hardware.
-    if source.wmi_guid_exists(CLEVO_WMI_EVENT_GUID) {
-        return Some(Platform::Clevo);
-    }
-
     // Tuxi: tuxedo-drivers registers a tuxedo_fan_control platform device.
     if source.sysfs_path_exists(TUXI_FAN_CONTROL_SYSFS_PATH) {
         return Some(Platform::Tuxi);
     }
 
-    // TCC-proven recent SKU strings can provide a safe platform hint.
-    if let Some(platform) = platform_hint_from_tcc_sku_map(&dmi.product_sku) {
-        return Some(platform);
-    }
-
-    // NB02 platforms are Uniwill-based in tuxedo-drivers.
-    // Some firmware variants do not expose the Uniwill WMI GUID reliably,
-    // so treat NB02 board vendor as a final Uniwill fallback hint.
-    if dmi.board_vendor.eq_ignore_ascii_case("NB02") {
-        return Some(Platform::Uniwill);
+    // Clevo: weakest signal — the event GUID is shared with Uniwill firmware.
+    if source.wmi_guid_exists(CLEVO_WMI_EVENT_GUID) {
+        return Some(Platform::Clevo);
     }
 
     None
@@ -672,14 +676,19 @@ mod tests {
     }
 
     #[test]
-    fn wmi_guid_rejects_non_numeric_suffix_and_other_guids() {
-        let dir = wmi_dir_with(&[
-            "ABBC0F72-8EA1-11D1-00A0-C90629100000-",
-            "ABBC0F72-8EA1-11D1-00A0-C90629100000-x1",
-            "ABBC0F72-8EA1-11D1-00A0-C90629100000FF",
-            "ABBC0F7",
-        ]);
-        assert!(!wmi_guid_present_in(dir.path(), UNIWILL_WMI_EVENT_GUID_2));
+    fn wmi_guid_rejects_malformed_names() {
+        for name in [
+            "ABBC0F72-8EA1-11D1-00A0-C90629100000-",   // empty instance
+            "ABBC0F72-8EA1-11D1-00A0-C90629100000-x1", // non-numeric instance
+            "ABBC0F72-8EA1-11D1-00A0-C90629100000FF",  // longer GUID-like name
+            "ABBC0F7",                                 // truncated
+        ] {
+            let dir = wmi_dir_with(&[name]);
+            assert!(
+                !wmi_guid_present_in(dir.path(), UNIWILL_WMI_EVENT_GUID_2),
+                "{name:?} must not match"
+            );
+        }
     }
 
     #[test]
@@ -687,6 +696,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("does-not-exist");
         assert!(!wmi_guid_present_in(&missing, UNIWILL_WMI_EVENT_GUID_2));
+    }
+
+    // ── Detection order with the shared Clevo event GUID ───────────────────
+
+    #[test]
+    fn nb02_with_only_clevo_guid_is_uniwill() {
+        // Uniwill firmware also exposes the Clevo event GUID; without the
+        // Uniwill GUID the NB02 board vendor must still win.
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_NB02_SKU")
+            .with_field("board_vendor", "NB02")
+            .with_wmi_guid(CLEVO_WMI_EVENT_GUID);
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Uniwill);
+    }
+
+    #[test]
+    fn nb02_with_both_guids_and_unknown_sku_is_uniwill() {
+        // Mirrors the real IBM15I10 WMI layout, but with an unknown SKU.
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_NB02_SKU")
+            .with_field("board_vendor", "NB02")
+            .with_wmi_guid(UNIWILL_WMI_EVENT_GUID_2)
+            .with_wmi_guid(CLEVO_WMI_EVENT_GUID);
+        let result = detect_device(&source).unwrap();
+        assert!(!result.exact_match);
+        assert_eq!(result.descriptor.platform, Platform::Uniwill);
+    }
+
+    #[test]
+    fn tuxi_sysfs_wins_over_clevo_guid() {
+        let source = MockDmiSource::new()
+            .tuxedo_base("UNKNOWN_TUXI_SKU")
+            .with_wmi_guid(CLEVO_WMI_EVENT_GUID)
+            .with_sysfs_path(TUXI_FAN_CONTROL_SYSFS_PATH);
+        let result = detect_device(&source).unwrap();
+        assert_eq!(result.descriptor.platform, Platform::Tuxi);
+    }
+
+    #[test]
+    fn tcc_sku_hint_wins_over_clevo_guid() {
+        let source = MockDmiSource::new()
+            .tuxedo_base("IBP14A10MK1 / IBP15A10MK1")
+            .with_wmi_guid(CLEVO_WMI_EVENT_GUID);
+        let result = detect_device(&source).unwrap();
+        assert_eq!(result.descriptor.platform, Platform::Uniwill);
     }
 
     #[test]

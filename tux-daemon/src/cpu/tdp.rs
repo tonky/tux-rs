@@ -1,8 +1,9 @@
 //! TDP (PL1/PL2) control.
 //!
-//! Two backends are provided:
+//! Three backends are provided:
 //! - `EcTdp`: EC-RAM based (NB05 platforms — Pulse, InfinityFlex).
 //! - `RaplTdp`: Intel RAPL via `/sys/class/powercap/intel-rapl:0/`.
+//! - `UniwillEcTdp`: Uniwill EC via `/dev/tuxedo_io` ioctls (e.g. IBM15I10).
 //!
 //! Both implement [`TdpBackend`]. Selection is driven by
 //! `DeviceDescriptor::tdp_source` via [`build_backend`].
@@ -15,6 +16,10 @@ use tracing::{debug, info, warn};
 use tux_core::device::{DeviceDescriptor, TdpBounds, TdpSource};
 
 use crate::platform::sysfs::SysfsReader;
+use crate::platform::tuxedo_io::{
+    R_UW_TDP0, R_UW_TDP0_MAX, R_UW_TDP0_MIN, R_UW_TDP1, R_UW_TDP1_MAX, R_UW_TDP1_MIN,
+    R_UW_TDP2_MAX, R_UW_TDP2_MIN, TuxedoIo, W_UW_TDP0, W_UW_TDP1,
+};
 
 // ─── Backend factory ─────────────────────────────────────────────────────────
 
@@ -310,6 +315,94 @@ impl TdpBackend for RaplTdp {
         let w = watts.clamp(self.bounds.pl2_min, self.bounds.pl2_max);
         self.sysfs
             .write_u32(RAPL_PL2_LIMIT, w.saturating_mul(UW_PER_W))
+    }
+
+    fn bounds(&self) -> &TdpBounds {
+        &self.bounds
+    }
+}
+
+// ─── Uniwill EC backend (tuxedo_io) ──────────────────────────────────────────
+
+/// Uniwill EC TDP control through the `tuxedo_io` ioctl interface.
+///
+/// The driver owns a per-board bounds table (e.g. X5AR45xS: PL1/PL2 10–90 W,
+/// PL4 10–230 W) and is the source of truth for bounds. Its ioctls never fail:
+/// reads report errors as a negative errno *value*, and out-of-range writes
+/// are dropped silently, so every write here is clamped and verified by
+/// reading it back. PL4 is exposed in the bounds only (read-only).
+///
+/// On boards with `uniwill_custom_profile_mode_needed` the driver switches the
+/// EC performance profile to "overboost" before each TDP write.
+pub struct UniwillEcTdp {
+    io: Arc<dyn TuxedoIo>,
+    bounds: TdpBounds,
+}
+
+impl UniwillEcTdp {
+    /// Read bounds from the driver; `None` if the board has no TDP table or
+    /// the current PL1 cannot be read.
+    pub fn probe(io: Arc<dyn TuxedoIo>) -> Option<Self> {
+        let read = |cmd| Self::read_watts(io.as_ref(), cmd).ok();
+        let bounds = TdpBounds {
+            pl1_min: read(R_UW_TDP0_MIN)?,
+            pl1_max: read(R_UW_TDP0_MAX)?,
+            pl2_min: read(R_UW_TDP1_MIN)?,
+            pl2_max: read(R_UW_TDP1_MAX)?,
+            pl4_min: read(R_UW_TDP2_MIN),
+            pl4_max: read(R_UW_TDP2_MAX),
+        };
+        if bounds.pl1_min > bounds.pl1_max || bounds.pl2_min > bounds.pl2_max {
+            warn!("Uniwill EC TDP: inconsistent driver bounds {bounds:?}; skipping");
+            return None;
+        }
+        if let Err(e) = Self::read_watts(io.as_ref(), R_UW_TDP0) {
+            warn!("Uniwill EC TDP: PL1 not readable: {e}");
+            return None;
+        }
+        Some(Self { io, bounds })
+    }
+
+    /// Decode a tuxedo_io read: non-negative watts, or a negative errno.
+    fn read_watts(io: &dyn TuxedoIo, cmd: u64) -> io::Result<u32> {
+        let v = io.read_i32(cmd)?;
+        if v < 0 {
+            Err(io::Error::from_raw_os_error(-v))
+        } else {
+            Ok(v as u32)
+        }
+    }
+
+    fn set_verified(&self, label: &str, write: u64, read: u64, watts: u32) -> io::Result<()> {
+        self.io.write_i32(write, watts as i32)?;
+        let actual = Self::read_watts(self.io.as_ref(), read)?;
+        if actual == watts {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "EC did not accept {label}={watts} W (reads back {actual} W)"
+            )))
+        }
+    }
+}
+
+impl TdpBackend for UniwillEcTdp {
+    fn get_pl1(&self) -> io::Result<u32> {
+        Self::read_watts(self.io.as_ref(), R_UW_TDP0)
+    }
+
+    fn set_pl1(&self, watts: u32) -> io::Result<()> {
+        let w = watts.clamp(self.bounds.pl1_min, self.bounds.pl1_max);
+        self.set_verified("PL1", W_UW_TDP0, R_UW_TDP0, w)
+    }
+
+    fn get_pl2(&self) -> io::Result<u32> {
+        Self::read_watts(self.io.as_ref(), R_UW_TDP1)
+    }
+
+    fn set_pl2(&self, watts: u32) -> io::Result<()> {
+        let w = watts.clamp(self.bounds.pl2_min, self.bounds.pl2_max);
+        self.set_verified("PL2", W_UW_TDP1, R_UW_TDP1, w)
     }
 
     fn bounds(&self) -> &TdpBounds {
@@ -616,5 +709,124 @@ mod tests {
     fn factory_rapl_without_sysfs_returns_none() {
         let desc = test_descriptor(TdpSource::Rapl, None);
         assert!(build_backend(&desc).is_none());
+    }
+
+    // ─── UniwillEcTdp (tuxedo_io) ───────────────────────────────────
+
+    /// Simulates tuxedo_io's Uniwill TDP ioctls for board X5AR45xS.
+    struct UniwillEcSim {
+        /// `None` models a board without a driver TDP table (-ENODEV).
+        table: Option<[(i32, i32); 3]>,
+        current: std::sync::Mutex<[i32; 3]>,
+        /// When set, writes are dropped even if in range (EC refuses).
+        drop_writes: bool,
+    }
+
+    const ENODEV: i32 = 19;
+
+    impl UniwillEcSim {
+        fn x5ar45xs() -> Self {
+            Self {
+                table: Some([(10, 90), (10, 90), (10, 230)]),
+                current: std::sync::Mutex::new([90, 90, 230]),
+                drop_writes: false,
+            }
+        }
+    }
+
+    impl TuxedoIo for UniwillEcSim {
+        fn read_i32(&self, cmd: u64) -> io::Result<i32> {
+            let idx = |base: u64| (cmd - base) as usize;
+            let Some(table) = self.table else {
+                return Ok(-ENODEV);
+            };
+            Ok(match cmd {
+                R_UW_TDP0..=crate::platform::tuxedo_io::R_UW_TDP2 => {
+                    self.current.lock().unwrap()[idx(R_UW_TDP0)]
+                }
+                R_UW_TDP0_MIN..=R_UW_TDP2_MIN => table[idx(R_UW_TDP0_MIN)].0,
+                R_UW_TDP0_MAX..=R_UW_TDP2_MAX => table[idx(R_UW_TDP0_MAX)].1,
+                _ => return Err(io::Error::from(io::ErrorKind::Unsupported)),
+            })
+        }
+
+        fn write_i32(&self, cmd: u64, val: i32) -> io::Result<()> {
+            let i = (cmd - W_UW_TDP0) as usize;
+            if let Some(table) = self.table {
+                // Driver: out-of-range → -EINVAL internally, ioctl still Ok.
+                let (min, max) = table[i];
+                if (min..=max).contains(&val) && !self.drop_writes {
+                    self.current.lock().unwrap()[i] = val;
+                }
+            }
+            Ok(())
+        }
+
+        fn ioctl_noarg(&self, _cmd: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn uniwill_ec_probe_reads_driver_bounds() {
+        let tdp = UniwillEcTdp::probe(Arc::new(UniwillEcSim::x5ar45xs())).unwrap();
+        let b = tdp.bounds();
+        assert_eq!((b.pl1_min, b.pl1_max), (10, 90));
+        assert_eq!((b.pl2_min, b.pl2_max), (10, 90));
+        assert_eq!((b.pl4_min, b.pl4_max), (Some(10), Some(230)));
+        assert_eq!(tdp.get_pl1().unwrap(), 90);
+        assert_eq!(tdp.get_pl2().unwrap(), 90);
+    }
+
+    #[test]
+    fn uniwill_ec_probe_without_driver_table_is_none() {
+        let sim = UniwillEcSim {
+            table: None,
+            ..UniwillEcSim::x5ar45xs()
+        };
+        assert!(UniwillEcTdp::probe(Arc::new(sim)).is_none());
+    }
+
+    #[test]
+    fn uniwill_ec_set_roundtrip() {
+        let tdp = UniwillEcTdp::probe(Arc::new(UniwillEcSim::x5ar45xs())).unwrap();
+        tdp.set_pl1(45).unwrap();
+        tdp.set_pl2(60).unwrap();
+        assert_eq!(tdp.get_pl1().unwrap(), 45);
+        assert_eq!(tdp.get_pl2().unwrap(), 60);
+    }
+
+    #[test]
+    fn uniwill_ec_set_clamps_to_driver_bounds() {
+        // The driver would silently drop 5 W / 200 W; we clamp instead.
+        let tdp = UniwillEcTdp::probe(Arc::new(UniwillEcSim::x5ar45xs())).unwrap();
+        tdp.set_pl1(5).unwrap();
+        assert_eq!(tdp.get_pl1().unwrap(), 10);
+        tdp.set_pl2(200).unwrap();
+        assert_eq!(tdp.get_pl2().unwrap(), 90);
+    }
+
+    #[test]
+    fn uniwill_ec_set_detects_silently_dropped_write() {
+        let sim = UniwillEcSim {
+            drop_writes: true,
+            ..UniwillEcSim::x5ar45xs()
+        };
+        let tdp = UniwillEcTdp::probe(Arc::new(sim)).unwrap();
+        let err = tdp.set_pl1(45).unwrap_err();
+        assert!(err.to_string().contains("did not accept PL1=45"), "{err}");
+    }
+
+    #[test]
+    fn uniwill_ec_negative_read_is_errno() {
+        let v = UniwillEcTdp::read_watts(
+            &UniwillEcSim {
+                table: None,
+                ..UniwillEcSim::x5ar45xs()
+            },
+            R_UW_TDP0,
+        )
+        .unwrap_err();
+        assert_eq!(v.raw_os_error(), Some(ENODEV));
     }
 }

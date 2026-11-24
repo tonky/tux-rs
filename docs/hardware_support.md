@@ -14,7 +14,17 @@
 | Package power draw  | Intel RAPL (`intel-rapl:0`) with AMD `amd_energy` hwmon fallback | same | same | same | same |
 | ITE keyboard LEDs   | USB HID (hidraw)   | USB HID (hidraw)   | USB HID (hidraw)   | —                  | —            |
 
-40 named SKUs are directly supported out of the box (Pulse, InfinityBook, Polaris, Stellaris, Sirius, InfinityFlex, Aura, Omnia) plus 5 platform fallback descriptors.
+40 named SKUs are directly supported out of the box (Pulse, InfinityBook Pro/S/Max, Polaris, Stellaris, Sirius, InfinityFlex, Aura, Omnia) plus 5 platform fallback descriptors.
+
+## Devices run on real hardware
+
+| SKU | Device | Notes |
+|-----|--------|-------|
+| IBP16I08MK2 | TUXEDO InfinityBook Pro 16 Gen8 MK2 | Maintainer's machine |
+| IBP14A09MK1 / IBP15A09MK1 | TUXEDO InfinityBook Pro 14 Gen9 AMD | Community-confirmed (platform fallback) |
+| IBM15I10 | TUXEDO InfinityBook Max 15 Gen10 Intel | Board `X5AR45xS`; Core Ultra 7 255H + RTX 5060; detection verified, live daemon validation in progress |
+
+WMI-based platform probing accepts both bare (`<GUID>`) and instance-suffixed (`<GUID>-<n>`) device names under `/sys/bus/wmi/devices/`, as registered by current kernels.
 
 ## TDP (RAPL) opt-in policy
 

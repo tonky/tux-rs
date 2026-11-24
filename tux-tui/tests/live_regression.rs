@@ -1426,7 +1426,22 @@ scaling_max_frequency = 3500000
             .await
             .expect("get_ctgp_offset failed");
         println!("  original ctgp_offset={orig} W");
-        let test_value = if orig == 0 { 5 } else { 0 };
+        let max = client
+            .get_ctgp_offset_max()
+            .await
+            .expect("get_ctgp_offset_max failed");
+        // nvidia-smi present on test machines: TCC-style range must be known.
+        assert!(max > 0, "{}: cTGP offset max must be > 0", exp.label);
+        println!("  ctgp_offset_max={max} W");
+        if max < u8::MAX {
+            assert!(
+                client.set_ctgp_offset(max + 1).await.is_err(),
+                "offset above max must be rejected"
+            );
+            assert_eq!(client.get_ctgp_offset().await.unwrap(), orig);
+            println!("  set ctgp_offset={} W rejected: OK", max + 1);
+        }
+        let test_value = if orig == 0 { 5.min(max) } else { 0 };
         client
             .set_ctgp_offset(test_value)
             .await

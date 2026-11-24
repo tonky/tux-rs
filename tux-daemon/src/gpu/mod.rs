@@ -1,6 +1,7 @@
 //! GPU power control and telemetry backends.
 
 pub mod hwmon;
+pub mod intel;
 pub mod nb02;
 
 use std::io;

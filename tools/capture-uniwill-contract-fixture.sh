@@ -228,14 +228,24 @@ call_dbus_property_string() {
 }
 
 kernel_release="$(uname -r)"
-product_sku="${PRODUCT_SKU_OVERRIDE:-UNKNOWN_UNIWILL_SKU}"
+product_sku="${PRODUCT_SKU_OVERRIDE:-$(read_attr /sys/class/dmi/id/product_sku)}"
+if [[ -z "$product_sku" ]]; then
+    warn "DMI product_sku unreadable; set PRODUCT_SKU_OVERRIDE"
+    product_sku="UNKNOWN_UNIWILL_SKU"
+fi
 daemon_version="$(call_dbus_property_string com.tuxedocomputers.tccd.Device DaemonVersion | tr -d '\n')"
 if [[ -z "$daemon_version" ]]; then
     daemon_version="unknown"
 fi
 
 if [[ ! -d "$sysfs_base_fan" ]]; then
-    warn "${sysfs_base_fan} does not exist. Capture likely not running on Uniwill fan backend."
+    if [[ -e /dev/tuxedo_io ]]; then
+        # tuxedo-drivers 4.x: fans are driven via tuxedo_io ioctls, so raw fan
+        # values are only observable through the daemon's D-Bus payloads.
+        echo "[INFO] ${sysfs_base_fan} absent; fans via /dev/tuxedo_io (raw.dbus only)" >&2
+    else
+        warn "${sysfs_base_fan} does not exist. Capture likely not running on Uniwill fan backend."
+    fi
 fi
 
 cpu_temp="$(read_attr "${sysfs_base_fan}/cpu_temp")"
@@ -329,7 +339,7 @@ rpm_available = false
 
 [normalized.charging]
 profile = "$(toml_escape "$charging_profile")"
-priority = "$(toml_escape "$charging_priority")"
+$(if [[ -n "$charging_priority" ]]; then printf 'priority = "%s"' "$(toml_escape "$charging_priority")"; else printf '# no charging_priority group on this hardware'; fi)
 
 [normalized.health]
 status = "ok"

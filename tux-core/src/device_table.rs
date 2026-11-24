@@ -639,7 +639,7 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         },
         charging: ChargingCapability::EcProfilePriority,
         tdp: None,
-        tdp_source: TdpSource::None,
+        tdp_source: TdpSource::UniwillEc,
         gpu_power: GpuPowerCapability::Nb02Nvidia,
         registers: PlatformRegisters::Uniwill,
     },
@@ -1157,8 +1157,9 @@ mod tests {
         assert_eq!(device.gpu_power, GpuPowerCapability::Nb02Nvidia);
         assert_eq!(device.sensors.fan_rpm, &[true, true]);
         // RAPL reports PL1 max = 28 W on this board while the EC programs 90 W;
-        // the generic RAPL backend must never be selected for it.
-        assert_ne!(device.tdp_source, TdpSource::Rapl);
+        // TDP must go through the vendor EC path (tuxedo_io), never RAPL.
+        assert_eq!(device.tdp_source, TdpSource::UniwillEc);
+        assert!(device.tdp.is_none(), "bounds come from the driver");
     }
 
     #[test]

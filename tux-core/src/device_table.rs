@@ -618,8 +618,10 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         registers: PlatformRegisters::Uniwill,
     },
     // InfinityBook Max Gen10 (board X5AR45xS, NB02)
-    // Hardware-verified: Core Ultra 7 255H + RTX 5060 Mobile, ITE 8291
-    // per-key keyboard (USB 048d:600b), charging profile without priority.
+    // Core Ultra 7 255H + RTX 5060 Mobile, ITE 8291 per-key keyboard
+    // (USB 048d:600b). Charging: the driver exposes only the
+    // `charging_profile` group (no `charging_priority`); the
+    // EcProfilePriority backend handles the missing half gracefully.
     DeviceDescriptor {
         name: "TUXEDO InfinityBook Max 15 Gen10 Intel",
         product_sku: "IBM15I10",

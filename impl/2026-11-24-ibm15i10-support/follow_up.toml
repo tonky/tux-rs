@@ -109,3 +109,10 @@ status = "pending"
 priority = "medium"
 context = "tux-daemon/src/profile_apply.rs apply_power_limits; worked around on IBM15I10 with an explicit 90 W AC profile (2026-11-24)."
 reasoning = "Easy footgun for anyone creating a low-power battery profile; RAPL devices (IBP Gen8) currently rely on 'unset = untouched', so needs a per-backend decision."
+
+[[task]]
+description = "Optional: poll GetGpuInfo only while the TUI Power tab is visible, and/or a daemon 'yield probe' (stop NVML queries ~30 s to see if pre-existing /dev/nvidiaN holders like gnome-shell really keep the dGPU awake)."
+status = "pending"
+priority = "low"
+context = "tux-daemon/src/gpu/nvidia.rs has_real_users; tux-tui/src/dbus_task.rs 2 s GPU poll. Measured: idle dGPU re-suspends ~20 s after last user; 2 s polling restarts that timer."
+reasoning = "User decision 2026-11-24: acceptable that an awake dGPU stays awake while the (rarely open) TUI is open."

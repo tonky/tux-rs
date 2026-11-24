@@ -21,3 +21,15 @@ Constraint from the user's goal (best battery life): never wake a runtime-suspen
 4. daemon: `GetGpuInfo` merges hwmon + Intel + NVIDIA via a persistent sampler.
 5. tui: refresh GPU info every few seconds; Power tab shows state and clock.
 6. live check: values on AC/battery; dGPU stays `suspended` while polled.
+
+## Outcome (2026-11-24)
+- iGPU (i915): name, busy %, clock, uncore power — verified live.
+- dGPU (RTX 5060): `suspended` is never queried and stays asleep under polling
+  (verified); while in use, NVML temp/usage/power/clock are shown (verified).
+- Known, accepted limitation (user decision): if the dGPU is awake when the TUI
+  is open, the TUI's 2 s polling can keep it awake until the TUI closes, because
+  each NVML query restarts its ~20 s idle timer. Mitigated by only querying
+  while a non-background process holds `/dev/nvidiaN` (NVIDIA daemons and
+  holders seen while suspended are ignored); a pre-existing holder such as
+  gnome-shell can still count as a user. The TUI is rarely open, so no
+  further work (a "yield probe" was designed but not built).

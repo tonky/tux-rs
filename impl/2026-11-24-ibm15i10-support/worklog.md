@@ -52,3 +52,14 @@
   20 %) → battery, and **Office (full power)** (`office-copy`: Office + PL1/PL2
   90 W) → AC. The AC profile needs explicit 90 W because unset TDP means
   "leave as is", so battery limits would otherwise persist on AC.
+
+## 2026-11-24 — Stage 5: GPU telemetry + governor fix
+
+- Intel iGPU via i915 sysfs/RAPL uncore; NVIDIA via NVML, never querying a
+  suspended dGPU; TUI polls every 2 s. Live-verified both GPUs.
+- Found live: NVML polling keeps an otherwise idle dGPU awake (restarts its
+  ~20 s idle timer); guarded by querying only with real users, ignoring
+  nvidia-powerd / nvidia-persistenced (comm truncated to 15 bytes!) and
+  holders seen while suspended. Residual case accepted by the user.
+- `schedutil` → `powersave` mapping on pstate drivers (no more startup WARN).
+- Profile keyboard control setting; turned off for this user (persisted).

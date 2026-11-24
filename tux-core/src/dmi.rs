@@ -518,6 +518,23 @@ mod tests {
     }
 
     #[test]
+    fn exact_sku_match_ibm15i10() {
+        // InfinityBook Max 15 Gen10 Intel — DMI strings captured on hardware.
+        let source = MockDmiSource::new()
+            .tuxedo_base("IBM15I10")
+            .with_field("board_vendor", "NB02")
+            .with_field("board_name", "X5AR45xS")
+            .with_field("product_name", "TUXEDO InfinityBook Max 15 Intel Gen10")
+            .with_field("product_version", "Standard")
+            .with_wmi_guid(UNIWILL_WMI_EVENT_GUID_2)
+            .with_wmi_guid(CLEVO_WMI_EVENT_GUID);
+        let result = detect_device(&source).unwrap();
+        assert!(result.exact_match, "IBM15I10 must match by SKU");
+        assert_eq!(result.descriptor.product_sku, "IBM15I10");
+        assert_eq!(result.descriptor.platform, Platform::Uniwill);
+    }
+
+    #[test]
     fn exact_sku_match_aura_gen4_combined() {
         // The actual hardware SKU string reported by Aura 14 Gen4 / Aura 15 Gen4
         let source = MockDmiSource::new().tuxedo_base("AURA14GEN4 / AURA15GEN4");

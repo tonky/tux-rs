@@ -617,6 +617,30 @@ pub static DEVICE_TABLE: &[DeviceDescriptor] = &[
         gpu_power: GpuPowerCapability::None,
         registers: PlatformRegisters::Uniwill,
     },
+    // InfinityBook Max Gen10 (board X5AR45xS, NB02)
+    // Hardware-verified: Core Ultra 7 255H + RTX 5060 Mobile, ITE 8291
+    // per-key keyboard (USB 048d:600b), charging profile without priority.
+    DeviceDescriptor {
+        name: "TUXEDO InfinityBook Max 15 Gen10 Intel",
+        product_sku: "IBM15I10",
+        platform: Platform::Uniwill,
+        fans: FanCapability {
+            count: 2,
+            control: FanControlType::Direct,
+            pwm_scale: 200,
+        },
+        keyboard: KeyboardType::IteHid(IteModel::Ite8291),
+        sensors: SensorSet {
+            cpu_temp: true,
+            gpu_temp: true,
+            fan_rpm: &[true, true],
+        },
+        charging: ChargingCapability::EcProfilePriority,
+        tdp: None,
+        tdp_source: TdpSource::None,
+        gpu_power: GpuPowerCapability::Nb02Nvidia,
+        registers: PlatformRegisters::Uniwill,
+    },
     // InfinityBook S series
     DeviceDescriptor {
         name: "TUXEDO InfinityBook S 14 Gen8",
@@ -1113,6 +1137,22 @@ mod tests {
         assert!(lookup_by_sku("SIRIUS1601").is_some());
         // Tuxi
         assert!(lookup_by_sku("AURA15GEN1T").is_some());
+    }
+
+    #[test]
+    fn ibm15i10_infinitybook_max_capabilities() {
+        let device = lookup_by_sku("IBM15I10").expect("IBM15I10 should exist");
+        assert_eq!(device.name, "TUXEDO InfinityBook Max 15 Gen10 Intel");
+        assert_eq!(device.platform, Platform::Uniwill);
+        assert_eq!(device.registers, PlatformRegisters::Uniwill);
+        assert_eq!(device.fans.count, 2);
+        assert_eq!(device.fans.control, FanControlType::Direct);
+        assert_eq!(device.fans.pwm_scale, 200);
+        assert_eq!(device.keyboard, KeyboardType::IteHid(IteModel::Ite8291));
+        assert!(device.sensors.cpu_temp);
+        assert!(device.sensors.gpu_temp);
+        assert_eq!(device.charging, ChargingCapability::EcProfilePriority);
+        assert_eq!(device.gpu_power, GpuPowerCapability::Nb02Nvidia);
     }
 
     #[test]

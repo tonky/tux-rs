@@ -107,7 +107,14 @@ async fn main() -> anyhow::Result<()> {
         let level = &config.daemon.log_level;
         EnvFilter::new(level)
     };
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    // Colour only on a terminal: under systemd stdout goes to the journal,
+    // where ANSI escapes show up as literal "[2m…[0m" noise.
+    let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout())
+        && std::env::var_os("NO_COLOR").is_none();
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_ansi(ansi)
+        .init();
 
     if debug_mode {
         info!("debug mode enabled via --debug flag");

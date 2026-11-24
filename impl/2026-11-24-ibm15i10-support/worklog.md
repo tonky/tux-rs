@@ -42,3 +42,13 @@
 - EPP `performance` on AC only for IBM15I10 (battery keeps profile EPP;
   fallback `balance_power`). Verified live across unplug/replug. Review in
   `review-4.md`. All four stages done.
+
+## 2026-11-24 — Ad hoc: suspend fix + battery profile
+
+- `3cc49d4` fix(sleep): on resume, re-apply the active profile's EC-held power
+  limits (TDP, cTGP) for the current power source (follow-up closed).
+- User config (via D-Bus, not in the repo): created **Max Battery**
+  (`max-energy-save-copy`: EPP power, no turbo, PL1 15 W / PL2 20 W, keyboard
+  20 %) → battery, and **Office (full power)** (`office-copy`: Office + PL1/PL2
+  90 W) → AC. The AC profile needs explicit 90 W because unset TDP means
+  "leave as is", so battery limits would otherwise persist on AC.

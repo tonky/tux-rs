@@ -77,7 +77,7 @@ reasoning = "A profile activation can change charging/cTGP behind the TUI's back
 
 [[task]]
 description = "Re-apply the active profile's TDP (PL1/PL2) on resume: neither tuxedo_io nor sleep.rs on_resume restores EC TDP after suspend."
-status = "pending"
+status = "done"
 priority = "medium"
 context = "tux-daemon/src/sleep.rs on_resume; tuxedo-drivers uniwill_keyboard.h resume path (stage-3 review A). Not yet measured on IBM15I10."
 reasoning = "If the EC resets 0x0783/0x0784 across S3/s2idle, a user's lowered PL1 silently reverts to the default."
@@ -102,3 +102,10 @@ status = "pending"
 priority = "low"
 context = "tux-daemon/src/profile_apply.rs AC_EPP_PERFORMANCE_SKUS; TCC 3.1.2 CpuWorker eppPerformanceQuirkDevices."
 reasoning = "Kept to the verified IBM15I10 to avoid untested behaviour changes on other models."
+
+[[task]]
+description = "Unset profile TDP means 'leave as is', so a battery profile's low PL1/PL2 persist after switching to an AC profile without TDP. Consider TCC's semantics for UniwillEc (unset = driver max) or warn in the TUI when only some profiles set TDP."
+status = "pending"
+priority = "medium"
+context = "tux-daemon/src/profile_apply.rs apply_power_limits; worked around on IBM15I10 with an explicit 90 W AC profile (2026-11-24)."
+reasoning = "Easy footgun for anyone creating a low-power battery profile; RAPL devices (IBP Gen8) currently rely on 'unset = untouched', so needs a per-backend decision."

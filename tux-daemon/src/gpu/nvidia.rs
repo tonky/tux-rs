@@ -7,6 +7,12 @@
 //!
 //! NVML is also initialised per query and shut down right after, so the
 //! daemon holds no handle that could keep the GPU from suspending.
+//!
+//! An *active* GPU is only queried while another process has one of its
+//! device nodes (`/dev/nvidiaN`) open. Right after its last user exits the
+//! GPU stays active for its idle timeout (~20 s on IBM15I10) before
+//! suspending; each NVML query restarts that timer, so polling an otherwise
+//! unused GPU would keep it awake forever. Such a GPU is reported as `idle`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,6 +63,8 @@ pub struct NvidiaGpu {
     pci_dev: PathBuf,
     name: String,
     nvml: Box<dyn NvQuery>,
+    /// `/proc`, scanned for other holders of `/dev/nvidiaN`.
+    proc_root: PathBuf,
 }
 
 impl NvidiaGpu {
@@ -94,7 +102,15 @@ impl NvidiaGpu {
             pci_dev,
             name,
             nvml,
+            proc_root: PathBuf::from("/proc"),
         })
+    }
+
+    /// Override the `/proc` root used to find GPU users (tests).
+    #[cfg(test)]
+    fn with_proc_root(mut self, proc_root: PathBuf) -> Self {
+        self.proc_root = proc_root;
+        self
     }
 
     /// PCI runtime-PM state (`active`, `suspended`, …); `active` if unknown.
@@ -102,12 +118,16 @@ impl NvidiaGpu {
         read_trim(&self.pci_dev.join("power/runtime_status")).unwrap_or_else(|| "active".into())
     }
 
-    /// Report telemetry, querying NVML only if the GPU is already awake.
+    /// Report telemetry, querying NVML only if the GPU is awake *and* in use.
     pub fn sample(&self) -> GpuData {
-        let state = self.runtime_status();
-        let s = if state == "active" {
+        let mut state = self.runtime_status();
+        let s = if state != "active" {
+            NvSample::default()
+        } else if other_gpu_users(&self.proc_root, std::process::id()) {
             self.nvml.query(&self.bdf).unwrap_or_default()
         } else {
+            // Coasting towards runtime suspend; a query would keep it awake.
+            state = "idle".to_string();
             NvSample::default()
         };
         GpuData {
@@ -124,6 +144,35 @@ impl NvidiaGpu {
 
 fn read_trim(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+}
+
+/// Whether a process other than `self_pid` has an NVIDIA GPU node
+/// (`/dev/nvidia<N>`, not `nvidiactl`/`nvidia-uvm`/`nvidia-modeset`) open.
+fn other_gpu_users(proc_root: &Path, self_pid: u32) -> bool {
+    let Ok(procs) = fs::read_dir(proc_root) else {
+        return false;
+    };
+    procs.flatten().any(|p| {
+        let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            return false;
+        };
+        if pid == self_pid {
+            return false;
+        }
+        let Ok(fds) = fs::read_dir(p.path().join("fd")) else {
+            return false;
+        };
+        fds.flatten().any(|fd| {
+            fs::read_link(fd.path()).is_ok_and(|target| {
+                target
+                    .to_str()
+                    .and_then(|t| t.strip_prefix("/dev/nvidia"))
+                    .is_some_and(|rest| {
+                        !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+                    })
+            })
+        })
+    })
 }
 
 /// `Model:` line of `/proc/driver/nvidia/gpus/<bdf>/information` (no GPU wake-up).
@@ -194,8 +243,17 @@ mod tests {
             &root.join("pci.ids"),
             Box::new(nvml),
         )
-        .expect("dGPU discovered");
+        .expect("dGPU discovered")
+        .with_proc_root(root.join("procfs"));
+        fs::create_dir_all(root.join("procfs")).unwrap();
         (tmp, gpu, calls)
+    }
+
+    /// Fake process `pid` holding `target` open as fd 3.
+    fn add_process(tmp: &tempfile::TempDir, pid: u32, target: &str) {
+        let fd_dir = tmp.path().join(format!("procfs/{pid}/fd"));
+        fs::create_dir_all(&fd_dir).unwrap();
+        std::os::unix::fs::symlink(target, fd_dir.join("3")).unwrap();
     }
 
     #[test]
@@ -214,8 +272,23 @@ mod tests {
     }
 
     #[test]
+    fn active_gpu_without_users_is_not_queried() {
+        // Regression (IBM15I10): polling an awake-but-unused dGPU every 2 s
+        // reset its ~20 s idle timer and kept it from ever suspending.
+        let (tmp, gpu, calls) = fixture("active");
+        add_process(&tmp, 100, "/dev/nvidiactl");
+        add_process(&tmp, 101, "/dev/nvidia-uvm");
+        add_process(&tmp, std::process::id(), "/dev/nvidia0"); // ourselves
+        let d = gpu.sample();
+        assert_eq!(d.power_state.as_deref(), Some("idle"));
+        assert_eq!((d.temperature, d.usage_percent), (None, None));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn active_gpu_reports_nvml_values() {
-        let (_tmp, gpu, calls) = fixture("active");
+        let (tmp, gpu, calls) = fixture("active");
+        add_process(&tmp, 4242, "/dev/nvidia0"); // e.g. a game
         let d = gpu.sample();
         assert_eq!(d.name, "NVIDIA GeForce RTX 5060 Laptop GPU");
         assert_eq!(d.gpu_type, "discrete");

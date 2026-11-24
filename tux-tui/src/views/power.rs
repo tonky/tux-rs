@@ -74,6 +74,9 @@ fn build_dgpu_paragraph(state: &PowerState) -> Paragraph<'_> {
     if state.dgpu_state.as_deref() == Some("suspended") {
         // Telemetry is deliberately not read: querying would wake the GPU.
         lines.push(Line::from("State: off (runtime suspended)"));
+    } else if state.dgpu_state.as_deref() == Some("idle") {
+        // Awake but unused: not queried so it can fall back asleep.
+        lines.push(Line::from("State: idle (about to sleep)"));
     } else {
         if let Some(temp) = state.dgpu_temp {
             lines.push(Line::from(format!("Temp: {temp:.0}°C")));

@@ -76,4 +76,6 @@ PL4 write (trait has PL1/PL2 only) → follow-up; NB05/other Uniwill boards.
 
 3.1–3.6 done. Live: EC TDP read-back and *enforcement* verified (PL 25 W →
 package 25.0 W); RAPL registers do not mirror EC limits, so 3.6's "RAPL follows
-the EC" check was replaced by a measured load test. See `worklog-3.md`.
+the EC" check was replaced by a measured load test. TUI PL1/PL2 editor fields:
+covered by `tdp_fields_shown_with_bounds` with the live 10–90 W bounds; not
+checked visually (built-in profiles open read-only). See `worklog-3.md`.

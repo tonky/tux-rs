@@ -61,8 +61,10 @@ pub struct PowerSettings {
     pub governor: String,
     #[serde(default)]
     pub epp: String,
-    #[serde(default)]
-    pub no_turbo: bool,
+    /// `None` (key absent) leaves turbo untouched, so partial updates such as
+    /// the TUI Power tab's `tgp_offset`-only form don't re-enable turbo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_turbo: Option<bool>,
 }
 
 /// D-Bus object implementing the Settings interface.
@@ -271,7 +273,7 @@ impl SettingsInterface {
                 PowerSettings {
                     governor,
                     epp,
-                    no_turbo,
+                    no_turbo: Some(no_turbo),
                 }
             }
             None => PowerSettings::default(),
@@ -306,10 +308,12 @@ impl SettingsInterface {
                     Err(_) => {}
                 }
             }
-            match gov.set_no_turbo(settings.no_turbo) {
-                Ok(()) => any_ok = true,
-                Err(e) if first_err.is_none() => first_err = Some(e),
-                Err(_) => {}
+            if let Some(no_turbo) = settings.no_turbo {
+                match gov.set_no_turbo(no_turbo) {
+                    Ok(()) => any_ok = true,
+                    Err(e) if first_err.is_none() => first_err = Some(e),
+                    Err(_) => {}
+                }
             }
 
             if !any_ok && let Some(e) = first_err {
@@ -796,7 +800,7 @@ mod tests {
         let power_toml = iface.get_power_settings().unwrap();
         let settings: PowerSettings = toml::from_str(&power_toml).unwrap();
         assert_eq!(settings.governor, "");
-        assert!(!settings.no_turbo);
+        assert_eq!(settings.no_turbo, None);
     }
 
     #[test]
@@ -840,6 +844,42 @@ mod tests {
         let settings: PowerSettings = toml::from_str(&power_toml).unwrap();
         assert_eq!(settings.governor, "powersave");
         assert_eq!(settings.epp, "balance_performance");
-        assert!(!settings.no_turbo);
+        assert_eq!(settings.no_turbo, Some(false));
+    }
+
+    #[test]
+    fn set_power_settings_without_no_turbo_leaves_turbo_untouched() {
+        // Regression: the TUI Power tab sends only `tgp_offset`; the missing
+        // `no_turbo` key used to deserialize as false and re-enable turbo.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let cpufreq = base.join("cpu0/cpufreq");
+        std::fs::create_dir_all(&cpufreq).unwrap();
+        std::fs::write(cpufreq.join("scaling_governor"), "powersave\n").unwrap();
+        let intel_pstate = base.join("intel_pstate");
+        std::fs::create_dir_all(&intel_pstate).unwrap();
+        std::fs::write(intel_pstate.join("no_turbo"), "1\n").unwrap();
+
+        let gov = Arc::new(CpuGovernor::with_path(base));
+        let device = make_test_device();
+        let iface = SettingsInterface::new(
+            &device,
+            true,
+            2,
+            vec![],
+            Some(gov),
+            None,
+            true,
+            false,
+            false,
+        );
+
+        iface.set_power_settings("tgp_offset = 10").unwrap();
+        let no_turbo = std::fs::read_to_string(intel_pstate.join("no_turbo")).unwrap();
+        assert_eq!(no_turbo.trim(), "1", "turbo state must not change");
+
+        iface.set_power_settings("no_turbo = false").unwrap();
+        let no_turbo = std::fs::read_to_string(intel_pstate.join("no_turbo")).unwrap();
+        assert_eq!(no_turbo.trim(), "0", "explicit no_turbo must still apply");
     }
 }

@@ -425,6 +425,28 @@ impl ProfileApplier {
             );
         }
 
+        // 6.–7. EC-held power limits (TDP, cTGP).
+        self.apply_power_limits(profile);
+
+        Ok(())
+    }
+
+    /// Re-apply only the EC-held power limits (TDP, cTGP) of `profile`.
+    ///
+    /// Used after resume from suspend, where firmware may have reset them;
+    /// fans, keyboard and display are handled by the sleep handler itself.
+    pub fn reapply_power_limits(&self, profile: &TuxProfile) {
+        if profile.tdp.is_none() && profile.gpu.is_none() {
+            return;
+        }
+        info!(
+            "re-applying power limits of profile '{}' after resume",
+            profile.name
+        );
+        self.apply_power_limits(profile);
+    }
+
+    fn apply_power_limits(&self, profile: &TuxProfile) {
         // 6. TDP settings.
         if let Some(ref tdp) = self.tdp_backend
             && let Some(ref settings) = profile.tdp
@@ -466,8 +488,6 @@ impl ProfileApplier {
             }
             info!("applied GPU power settings from profile '{}'", profile.name);
         }
-
-        Ok(())
     }
 }
 
@@ -1197,6 +1217,54 @@ mod tests {
         fn ctgp_offset_max(&self) -> u8 {
             self.max
         }
+    }
+
+    #[test]
+    fn reapply_power_limits_restores_tdp_and_ctgp_only() {
+        // Suspend regression: EC-held limits are re-written from the profile.
+        use crate::gpu::GpuPowerBackend;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("ec_ram"), vec![0u8; 0x0800]).unwrap();
+        let bounds = tux_core::device::TdpBounds {
+            pl1_min: 10,
+            pl1_max: 90,
+            pl2_min: 10,
+            pl2_max: 90,
+            pl4_min: None,
+            pl4_max: None,
+        };
+        let tdp: Arc<dyn crate::cpu::tdp::TdpBackend> =
+            Arc::new(crate::cpu::tdp::EcTdp::with_path(tmp.path(), bounds));
+        let gpu = Arc::new(BoundedGpuPower::new(65));
+        let (tx, mut rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(
+            tx,
+            None,
+            None,
+            Some(tdp.clone()),
+            Some(gpu.clone() as Arc<dyn GpuPowerBackend>),
+            vec![],
+            None,
+        );
+        let mut profile = test_profile_with_fan(FanMode::Manual, true);
+        profile.tdp = Some(tux_core::profile::TdpSettings {
+            pl1: Some(15),
+            pl2: Some(25),
+        });
+        profile.gpu = Some(tux_core::profile::GpuSettings {
+            ctgp_offset: Some(5),
+        });
+        rx.mark_unchanged();
+
+        applier.reapply_power_limits(&profile);
+
+        assert_eq!(tdp.get_pl1().unwrap(), 15);
+        assert_eq!(tdp.get_pl2().unwrap(), 25);
+        assert_eq!(gpu.get_ctgp_offset().unwrap(), 5);
+        assert!(
+            !rx.has_changed().unwrap(),
+            "fan config must not be touched on resume re-apply"
+        );
     }
 
     #[test]

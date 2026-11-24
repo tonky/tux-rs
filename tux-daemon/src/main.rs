@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::{broadcast, watch};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use tux_daemon::charging;
 use tux_daemon::config::{self, DaemonConfig};
@@ -459,6 +459,26 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // 9. Register D-Bus service.
+    // Resume hook: firmware may reset EC-held power limits (TDP, cTGP) across
+    // suspend, so re-apply them from the active profile for the power source.
+    let resume_hook: sleep::ResumeHook = {
+        let store = profile_store.clone();
+        let applier = applier.clone();
+        let assignments_rx = assignments_rx.clone();
+        let power_rx = power_rx.clone();
+        Box::new(move || {
+            let state = *power_rx.borrow();
+            let profile_id = resolve_profile_id(&assignments_rx, state);
+            match store.read() {
+                Ok(store) => match store.get(&profile_id) {
+                    Some(profile) => applier.reapply_power_limits(profile),
+                    None => warn!("resume: active profile '{profile_id}' not found"),
+                },
+                Err(_) => error!("profile store lock poisoned, cannot re-apply after resume"),
+            }
+        })
+    };
+
     let _conn = dbus::serve_on_bus(dbus::DbusConfig {
         bus_type: dbus::BusType::System,
         device: &device,
@@ -484,12 +504,15 @@ async fn main() -> anyhow::Result<()> {
 
     // 10a. Spawn sleep monitor for suspend/resume handling.
     {
-        let sleep_handler = Arc::new(sleep::SleepHandler::new(
-            backend.clone(),
-            config_tx,
-            config_rx,
-            vec![], // Keyboards are owned by D-Bus; USB re-enumerates on resume
-        ));
+        let sleep_handler = Arc::new(
+            sleep::SleepHandler::new(
+                backend.clone(),
+                config_tx,
+                config_rx,
+                vec![], // Keyboards are owned by D-Bus; USB re-enumerates on resume
+            )
+            .with_resume_hook(resume_hook),
+        );
         let sleep_shutdown = shutdown_tx.subscribe();
         tokio::spawn(async move {
             sleep::monitor_sleep(sleep_handler, sleep_shutdown).await;

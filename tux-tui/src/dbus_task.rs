@@ -64,11 +64,19 @@ pub async fn run_dbus_task(
 
         // Poll + command loop.
         let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut tick: u64 = 0;
         loop {
             tokio::select! {
                 _ = interval.tick() => {
                     if tx.is_closed() {
                         return; // TUI shut down.
+                    }
+                    tick += 1;
+                    // GPU stats every 2 s (rates are computed daemon-side).
+                    if tick.is_multiple_of(2)
+                        && let Ok(s) = client.get_gpu_info().await
+                    {
+                        let _ = tx.send(AppEvent::DbusData(DbusUpdate::GpuInfo(s))).await;
                     }
                     if poll_dashboard_checked(&client, &tx, num_fans, &mut last_active_profile).await {
                         consecutive_failures = 0;
@@ -354,9 +362,22 @@ async fn handle_command(
         Some(crate::DbusCommand::SaveCharging(toml)) => {
             execute_form_save(tx, "charging", || client.set_charging_settings(&toml)).await;
         }
-        Some(crate::DbusCommand::SavePower(toml)) => {
-            execute_form_save(tx, "power", || client.set_power_settings(&toml)).await;
-        }
+        Some(crate::DbusCommand::SavePower(toml)) => match parse_tgp_offset(&toml) {
+            // The Power tab only edits the cTGP offset; it goes straight to the
+            // GpuPower interface (SetPowerSettings knows nothing about it).
+            Ok(watts) => {
+                execute_form_save(tx, "power", || client.set_ctgp_offset(watts)).await;
+                // Re-read what the hardware actually holds (and the current range).
+                fetch_power_data(client, tx).await;
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(AppEvent::DbusData(DbusUpdate::FormSaveError(format!(
+                        "power: {e}"
+                    ))))
+                    .await;
+            }
+        },
         Some(crate::DbusCommand::SaveDisplay(toml)) => {
             execute_form_save(tx, "display", || client.set_display_settings(&toml)).await;
         }
@@ -472,9 +493,7 @@ async fn fetch_info_data(client: &DaemonClient, tx: &mpsc::Sender<AppEvent>) -> 
     if let Ok(s) = client.get_gpu_info().await {
         let _ = tx.send(AppEvent::DbusData(DbusUpdate::GpuInfo(s))).await;
     }
-    if let Ok(s) = client.get_power_settings().await {
-        let _ = tx.send(AppEvent::DbusData(DbusUpdate::PowerData(s))).await;
-    }
+    fetch_power_data(client, tx).await;
     if let Ok(s) = client.get_display_settings().await {
         let _ = tx
             .send(AppEvent::DbusData(DbusUpdate::DisplayData(s)))
@@ -553,6 +572,30 @@ async fn fetch_profile_assignments(client: &DaemonClient, tx: &mpsc::Sender<AppE
     }
 }
 
+/// Send the Power tab's cTGP value and range (silently skipped on devices
+/// without the GpuPower interface).
+async fn fetch_power_data(client: &DaemonClient, tx: &mpsc::Sender<AppEvent>) {
+    if let (Ok(offset), Ok(max)) = (
+        client.get_ctgp_offset().await,
+        client.get_ctgp_offset_max().await,
+    ) {
+        let s = format!("tgp_offset = {offset}\ntgp_offset_max = {max}\n");
+        let _ = tx.send(AppEvent::DbusData(DbusUpdate::PowerData(s))).await;
+    }
+}
+
+/// Extract the Power tab's `tgp_offset` (watts) from its serialized form.
+fn parse_tgp_offset(toml_str: &str) -> Result<u8, String> {
+    let table: toml::Table = toml_str
+        .parse()
+        .map_err(|e| format!("invalid power form: {e}"))?;
+    let value = table
+        .get("tgp_offset")
+        .and_then(toml::Value::as_integer)
+        .ok_or("power form has no tgp_offset")?;
+    u8::try_from(value).map_err(|_| format!("tgp_offset {value} out of range 0..=255"))
+}
+
 /// Execute a form save operation, sending FormSaved or FormSaveError.
 async fn execute_form_save<F, Fut>(tx: &mpsc::Sender<AppEvent>, tab_name: &str, op: F)
 where
@@ -579,7 +622,22 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::parse_tgp_offset;
     use super::should_refresh_fan_curve;
+
+    #[test]
+    fn parse_tgp_offset_accepts_form_toml() {
+        assert_eq!(parse_tgp_offset("tgp_offset = 65\n"), Ok(65));
+        assert_eq!(parse_tgp_offset("tgp_offset = 0"), Ok(0));
+    }
+
+    #[test]
+    fn parse_tgp_offset_rejects_bad_input() {
+        assert!(parse_tgp_offset("tgp_offset = -5").is_err());
+        assert!(parse_tgp_offset("tgp_offset = 300").is_err());
+        assert!(parse_tgp_offset("governor = \"powersave\"").is_err());
+        assert!(parse_tgp_offset("not toml =").is_err());
+    }
 
     #[test]
     fn first_seen_profile_triggers_refresh() {

@@ -82,6 +82,10 @@ impl ChargingBackend for ClevoCharging {
         // No-op for Clevo.
         Ok(())
     }
+
+    fn supports_priority(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

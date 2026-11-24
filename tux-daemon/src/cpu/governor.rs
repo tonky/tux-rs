@@ -114,6 +114,20 @@ impl CpuGovernor {
         self.write_all("scaling_governor", governor)
     }
 
+    /// Pick the governor to write for a profile's `requested` one.
+    ///
+    /// Built-in profiles ask for `schedutil`, which `intel_pstate` /
+    /// `amd-pstate` in active mode don't offer; there `powersave` is the
+    /// dynamic (HWP-driven) equivalent — the same choice TCC makes. Returns
+    /// `None` if nothing suitable is available.
+    pub fn resolve_governor<'a>(requested: &'a str, available: &'a [String]) -> Option<&'a str> {
+        if available.iter().any(|g| g == requested) {
+            return Some(requested);
+        }
+        let dynamic = matches!(requested, "schedutil" | "ondemand" | "conservative");
+        (dynamic && available.iter().any(|g| g == "powersave")).then_some("powersave")
+    }
+
     /// Get the current scaling governor (from cpu0).
     pub fn get_governor(&self) -> io::Result<String> {
         self.read_cpu0("scaling_governor")
@@ -290,6 +304,30 @@ pub fn cpu_governor_available(base: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_governor_maps_schedutil_on_pstate_drivers() {
+        let pstate = vec!["performance".to_string(), "powersave".to_string()];
+        assert_eq!(
+            CpuGovernor::resolve_governor("schedutil", &pstate),
+            Some("powersave")
+        );
+        assert_eq!(
+            CpuGovernor::resolve_governor("ondemand", &pstate),
+            Some("powersave")
+        );
+        assert_eq!(
+            CpuGovernor::resolve_governor("performance", &pstate),
+            Some("performance")
+        );
+        assert_eq!(CpuGovernor::resolve_governor("userspace", &pstate), None);
+        let acpi = vec!["schedutil".to_string(), "performance".to_string()];
+        assert_eq!(
+            CpuGovernor::resolve_governor("schedutil", &acpi),
+            Some("schedutil")
+        );
+        assert_eq!(CpuGovernor::resolve_governor("schedutil", &[]), None);
+    }
     use std::fs;
 
     /// Create a fake CPU sysfs tree with N cpus.

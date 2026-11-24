@@ -76,6 +76,7 @@ pub struct MockChargingBackend {
     end: std::sync::Mutex<u8>,
     profile: std::sync::Mutex<Option<String>>,
     priority: std::sync::Mutex<Option<String>>,
+    priority_supported: bool,
 }
 
 #[allow(dead_code)]
@@ -86,12 +87,21 @@ impl MockChargingBackend {
             end: std::sync::Mutex::new(end),
             profile: std::sync::Mutex::new(None),
             priority: std::sync::Mutex::new(None),
+            priority_supported: true,
         }
     }
 
     pub fn with_profile(mut self, profile: &str, priority: &str) -> Self {
         self.profile = std::sync::Mutex::new(Some(profile.to_string()));
         self.priority = std::sync::Mutex::new(Some(priority.to_string()));
+        self
+    }
+
+    /// Profile-only EC (no `charging_priority` group), e.g. IBM15I10.
+    pub fn with_profile_only(mut self, profile: &str) -> Self {
+        self.profile = std::sync::Mutex::new(Some(profile.to_string()));
+        self.priority = std::sync::Mutex::new(None);
+        self.priority_supported = false;
         self
     }
 }
@@ -122,8 +132,13 @@ impl ChargingBackend for MockChargingBackend {
         Ok(self.priority.lock().unwrap().clone())
     }
     fn set_priority(&self, priority: &str) -> std::io::Result<()> {
-        *self.priority.lock().unwrap() = Some(priority.to_string());
+        if self.priority_supported {
+            *self.priority.lock().unwrap() = Some(priority.to_string());
+        }
         Ok(())
+    }
+    fn supports_priority(&self) -> bool {
+        self.priority_supported
     }
 }
 
@@ -149,6 +164,9 @@ impl GpuPowerBackend for MockGpuPowerBackend {
     fn set_ctgp_offset(&self, watts: u8) -> std::io::Result<()> {
         *self.value.lock().unwrap() = watts;
         Ok(())
+    }
+    fn ctgp_offset_max(&self) -> u8 {
+        u8::MAX
     }
 }
 
@@ -296,6 +314,7 @@ impl TestDaemon {
             )),
             fan_failure_counter,
             manual_pwms_tx,
+            gpu_telemetry: None,
         })
         .await
         .expect("failed to start D-Bus service on session bus");

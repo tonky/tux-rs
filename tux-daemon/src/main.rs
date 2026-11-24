@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::{broadcast, watch};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use tux_daemon::charging;
 use tux_daemon::config::{self, DaemonConfig};
@@ -107,7 +107,14 @@ async fn main() -> anyhow::Result<()> {
         let level = &config.daemon.log_level;
         EnvFilter::new(level)
     };
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    // Colour only on a terminal: under systemd stdout goes to the journal,
+    // where ANSI escapes show up as literal "[2m…[0m" noise.
+    let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout())
+        && std::env::var_os("NO_COLOR").is_none();
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_ansi(ansi)
+        .init();
 
     if debug_mode {
         info!("debug mode enabled via --debug flag");
@@ -353,15 +360,19 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let applier = Arc::new(ProfileApplier::new(
-        config_tx.clone(),
-        charging_backend.clone(),
-        cpu_governor.clone(),
-        tdp_backend.clone(),
-        gpu_backend.clone(),
-        keyboards.clone(),
-        display_backlight.clone(),
-    ));
+    let applier = Arc::new(
+        ProfileApplier::new(
+            config_tx.clone(),
+            charging_backend.clone(),
+            cpu_governor.clone(),
+            tdp_backend.clone(),
+            gpu_backend.clone(),
+            keyboards.clone(),
+            display_backlight.clone(),
+        )
+        .with_device_quirks(device.descriptor.product_sku)
+        .with_keyboard_control(config.daemon.profile_keyboard_control),
+    );
 
     // 6c. Start power state monitor and auto-switch task.
     //     We detect the initial state inside the monitor to avoid a race.
@@ -379,7 +390,7 @@ async fn main() -> anyhow::Result<()> {
                     anyhow::anyhow!("profile store lock poisoned during initial apply: {e}")
                 })?;
                 if let Some(profile) = store.get(initial_profile_id) {
-                    if let Err(e) = applier.apply(profile) {
+                    if let Err(e) = applier.apply_on(profile, initial_state) {
                         error!("failed to apply initial profile '{initial_profile_id}': {e}");
                     } else {
                         info!(
@@ -456,6 +467,26 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // 9. Register D-Bus service.
+    // Resume hook: firmware may reset EC-held power limits (TDP, cTGP) across
+    // suspend, so re-apply them from the active profile for the power source.
+    let resume_hook: sleep::ResumeHook = {
+        let store = profile_store.clone();
+        let applier = applier.clone();
+        let assignments_rx = assignments_rx.clone();
+        let power_rx = power_rx.clone();
+        Box::new(move || {
+            let state = *power_rx.borrow();
+            let profile_id = resolve_profile_id(&assignments_rx, state);
+            match store.read() {
+                Ok(store) => match store.get(&profile_id) {
+                    Some(profile) => applier.reapply_power_limits(profile),
+                    None => warn!("resume: active profile '{profile_id}' not found"),
+                },
+                Err(_) => error!("profile store lock poisoned, cannot re-apply after resume"),
+            }
+        })
+    };
+
     let _conn = dbus::serve_on_bus(dbus::DbusConfig {
         bus_type: dbus::BusType::System,
         device: &device,
@@ -476,17 +507,21 @@ async fn main() -> anyhow::Result<()> {
         daemon_config: daemon_config_arc,
         fan_failure_counter,
         manual_pwms_tx,
+        gpu_telemetry: Some(Arc::new(gpu::GpuTelemetry::discover())),
     })
     .await?;
 
     // 10a. Spawn sleep monitor for suspend/resume handling.
     {
-        let sleep_handler = Arc::new(sleep::SleepHandler::new(
-            backend.clone(),
-            config_tx,
-            config_rx,
-            vec![], // Keyboards are owned by D-Bus; USB re-enumerates on resume
-        ));
+        let sleep_handler = Arc::new(
+            sleep::SleepHandler::new(
+                backend.clone(),
+                config_tx,
+                config_rx,
+                vec![], // Keyboards are owned by D-Bus; USB re-enumerates on resume
+            )
+            .with_resume_hook(resume_hook),
+        );
         let sleep_shutdown = shutdown_tx.subscribe();
         tokio::spawn(async move {
             sleep::monitor_sleep(sleep_handler, sleep_shutdown).await;
@@ -581,6 +616,7 @@ async fn auto_switch_loop(
                     store,
                     applier,
                     &profile_id,
+                    state,
                     &format!("power state → {state:?} (apply #{apply_count})"),
                 );
             }
@@ -596,6 +632,7 @@ async fn auto_switch_loop(
                     store,
                     applier,
                     &profile_id,
+                    state,
                     &format!("assignment change (apply #{apply_count})"),
                 );
             }
@@ -621,6 +658,7 @@ fn apply_profile_by_id(
     store: &Arc<RwLock<ProfileStore>>,
     applier: &ProfileApplier,
     profile_id: &str,
+    power: PowerState,
     reason: &str,
 ) {
     let Ok(store) = store.read() else {
@@ -629,7 +667,7 @@ fn apply_profile_by_id(
     };
     match store.get(profile_id) {
         Some(profile) => {
-            if let Err(e) = applier.apply(profile) {
+            if let Err(e) = applier.apply_on(profile, power) {
                 error!("failed to apply profile '{profile_id}' on {reason}: {e}");
             } else {
                 info!("{reason}: applied profile '{}'", profile.name);

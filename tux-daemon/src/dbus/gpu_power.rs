@@ -29,6 +29,11 @@ impl GpuPowerInterface {
             .set_ctgp_offset(watts)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
+
+    /// Largest accepted cTGP offset in watts; `0` means not adjustable.
+    fn get_ctgp_offset_max(&self) -> u8 {
+        self.backend.ctgp_offset_max()
+    }
 }
 
 #[cfg(test)]
@@ -57,6 +62,9 @@ mod tests {
             *self.value.lock().unwrap() = watts;
             Ok(())
         }
+        fn ctgp_offset_max(&self) -> u8 {
+            u8::MAX
+        }
     }
 
     #[test]
@@ -83,6 +91,18 @@ mod tests {
         fn set_ctgp_offset(&self, _watts: u8) -> io::Result<()> {
             Err(io::Error::new(io::ErrorKind::PermissionDenied, "no access"))
         }
+
+        fn ctgp_offset_max(&self) -> u8 {
+            0
+        }
+    }
+
+    #[test]
+    fn get_ctgp_offset_max_reports_backend_bound() {
+        let iface = GpuPowerInterface::new(Arc::new(MockGpuPower::new(0)));
+        assert_eq!(iface.get_ctgp_offset_max(), u8::MAX);
+        let iface = GpuPowerInterface::new(Arc::new(FailingGpuPower));
+        assert_eq!(iface.get_ctgp_offset_max(), 0);
     }
 
     #[test]

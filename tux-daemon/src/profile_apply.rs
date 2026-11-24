@@ -1,6 +1,7 @@
 //! Apply profile settings to hardware backends.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -14,6 +15,33 @@ use crate::cpu::tdp::TdpBackend;
 use crate::display::SharedDisplay;
 use crate::gpu::GpuPowerBackend;
 use crate::hid::SharedKeyboard;
+use crate::power_monitor::PowerState;
+
+/// SKUs whose CPU needs EPP `performance` on AC to reach its full frequency
+/// range. Mirrors TCC 3.1.2 `CpuWorker.eppPerformanceQuirkDevices`, limited
+/// to hardware-verified models. Unlike TCC, the override is **never** applied
+/// on battery, so battery profiles keep their power-saving EPP.
+///
+/// IBM15I10 (measured, 16-thread load, PL1/PL2 90 W): `balance_performance`
+/// sustains ~28 W, `performance` ~50 W.
+const AC_EPP_PERFORMANCE_SKUS: &[&str] = &["IBM15I10"];
+
+const QUIRK_AC_EPP: &str = "performance";
+
+/// EPP used on battery for quirked devices when the profile sets none, so the
+/// AC override never lingers after unplugging (battery-life first).
+const QUIRK_BATTERY_FALLBACK_EPP: &str = "balance_power";
+
+/// How the EPP for one apply is chosen.
+#[derive(Debug, Clone, Copy)]
+enum EppChoice {
+    /// Use the profile's EPP (or leave EPP untouched if it has none).
+    Profile,
+    /// Write this EPP regardless of the profile (AC quirk).
+    Force(&'static str),
+    /// Use the profile's EPP, or this one if the profile has none.
+    ProfileOr(&'static str),
+}
 
 /// Applies a profile's settings to the hardware.
 pub struct ProfileApplier {
@@ -24,6 +52,10 @@ pub struct ProfileApplier {
     gpu_backend: Option<Arc<dyn GpuPowerBackend>>,
     keyboards: Vec<SharedKeyboard>,
     display: Option<SharedDisplay>,
+    /// EPP forced on AC for quirky devices (see [`AC_EPP_PERFORMANCE_SKUS`]).
+    ac_epp_override: Option<&'static str>,
+    /// Whether profiles set the keyboard brightness (shared with D-Bus settings).
+    keyboard_control: Arc<AtomicBool>,
 }
 
 impl ProfileApplier {
@@ -44,7 +76,29 @@ impl ProfileApplier {
             gpu_backend,
             keyboards,
             display,
+            ac_epp_override: None,
+            keyboard_control: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Set whether profiles control the keyboard brightness.
+    pub fn with_keyboard_control(self, enabled: bool) -> Self {
+        self.keyboard_control.store(enabled, Ordering::Relaxed);
+        self
+    }
+
+    /// Shared flag behind [`Self::with_keyboard_control`], for runtime toggling.
+    pub fn keyboard_control_flag(&self) -> Arc<AtomicBool> {
+        self.keyboard_control.clone()
+    }
+
+    /// Enable device-specific quirks for `product_sku`.
+    pub fn with_device_quirks(mut self, product_sku: &str) -> Self {
+        if AC_EPP_PERFORMANCE_SKUS.contains(&product_sku) {
+            info!("EPP quirk active for {product_sku}: '{QUIRK_AC_EPP}' on AC only");
+            self.ac_epp_override = Some(QUIRK_AC_EPP);
+        }
+        self
     }
 
     fn sanitize_positive_u32(value: i32, field: &str, profile_name: &str) -> Option<u32> {
@@ -96,8 +150,24 @@ impl ProfileApplier {
         }
     }
 
-    /// Apply a profile's settings to hardware.
+    /// Apply `profile` for the given power source (enables AC-only quirks).
+    pub fn apply_on(&self, profile: &TuxProfile, power: PowerState) -> anyhow::Result<()> {
+        let epp = match (power, self.ac_epp_override) {
+            (_, None) => EppChoice::Profile,
+            (PowerState::Ac, Some(forced)) => EppChoice::Force(forced),
+            (PowerState::Battery, Some(_)) => EppChoice::ProfileOr(QUIRK_BATTERY_FALLBACK_EPP),
+        };
+        self.apply_inner(profile, epp)
+    }
+
+    /// Apply `profile` without power-source specific quirks (tests only, so
+    /// production code can't bypass the AC/battery EPP handling).
+    #[cfg(test)]
     pub fn apply(&self, profile: &TuxProfile) -> anyhow::Result<()> {
+        self.apply_inner(profile, EppChoice::Profile)
+    }
+
+    fn apply_inner(&self, profile: &TuxProfile, epp: EppChoice) -> anyhow::Result<()> {
         // 1. Update fan curve engine config from profile.
         if profile.fan.enabled {
             let fan_config = FanConfig {
@@ -126,10 +196,37 @@ impl ProfileApplier {
 
         // 2. CPU governor + EPP + turbo + cores + frequencies.
         if let Some(ref gov) = self.cpu_governor {
-            if let Err(e) = gov.set_governor(&profile.cpu.governor) {
-                warn!("failed to set CPU governor: {e}");
+            let requested = profile.cpu.governor.as_str();
+            let available = gov.available_governors().unwrap_or_default();
+            match CpuGovernor::resolve_governor(requested, &available) {
+                Some(governor) => {
+                    if governor != requested {
+                        debug!(
+                            "governor '{requested}' not offered by this cpufreq driver; using '{governor}'"
+                        );
+                    }
+                    if let Err(e) = gov.set_governor(governor) {
+                        warn!("failed to set CPU governor: {e}");
+                    }
+                }
+                None => warn!(
+                    "governor '{requested}' not available (available: {}); keeping current",
+                    available.join(", ")
+                ),
             }
-            if let Some(ref epp) = profile.cpu.energy_performance_preference
+            let profile_epp = profile.cpu.energy_performance_preference.as_deref();
+            let effective_epp = match epp {
+                EppChoice::Profile => profile_epp,
+                EppChoice::Force(forced) => Some(forced),
+                EppChoice::ProfileOr(fallback) => profile_epp.or(Some(fallback)),
+            };
+            if effective_epp != profile_epp {
+                info!(
+                    "EPP quirk: using {effective_epp:?} instead of profile '{}' EPP {profile_epp:?}",
+                    profile.name
+                );
+            }
+            if let Some(epp) = effective_epp
                 && let Err(e) = gov.set_epp(epp)
             {
                 warn!("failed to set CPU EPP: {e}");
@@ -196,8 +293,12 @@ impl ProfileApplier {
             );
         }
 
-        // 3. Keyboard backlight brightness.
-        if !self.keyboards.is_empty() {
+        // 3. Keyboard backlight brightness (unless the user opted out).
+        let keyboard_control = self.keyboard_control.load(Ordering::Relaxed);
+        if !keyboard_control && !self.keyboards.is_empty() {
+            debug!("profile keyboard control disabled; leaving keyboard backlight as is");
+        }
+        if keyboard_control && !self.keyboards.is_empty() {
             let brightness = profile.keyboard.brightness;
             // Profile brightness is percentage-like (0-100). Convert to hardware scale.
             let hw_brightness = ((brightness.min(100) as f32 / 100.0) * 255.0) as u8;
@@ -358,6 +459,28 @@ impl ProfileApplier {
             );
         }
 
+        // 6.–7. EC-held power limits (TDP, cTGP).
+        self.apply_power_limits(profile);
+
+        Ok(())
+    }
+
+    /// Re-apply only the EC-held power limits (TDP, cTGP) of `profile`.
+    ///
+    /// Used after resume from suspend, where firmware may have reset them;
+    /// fans, keyboard and display are handled by the sleep handler itself.
+    pub fn reapply_power_limits(&self, profile: &TuxProfile) {
+        if profile.tdp.is_none() && profile.gpu.is_none() {
+            return;
+        }
+        info!(
+            "re-applying power limits of profile '{}' after resume",
+            profile.name
+        );
+        self.apply_power_limits(profile);
+    }
+
+    fn apply_power_limits(&self, profile: &TuxProfile) {
         // 6. TDP settings.
         if let Some(ref tdp) = self.tdp_backend
             && let Some(ref settings) = profile.tdp
@@ -379,15 +502,26 @@ impl ProfileApplier {
         if let Some(ref gpu) = self.gpu_backend
             && let Some(ref settings) = profile.gpu
         {
-            if let Some(ctgp) = settings.ctgp_offset
-                && let Err(e) = gpu.set_ctgp_offset(ctgp)
-            {
-                warn!("failed to set cTGP offset: {e}");
+            if let Some(requested) = settings.ctgp_offset {
+                // Profiles may carry offsets beyond this GPU's range (TCC
+                // imports clamp only to 255, or a profile from another GPU):
+                // clamp instead of leaving the previous profile's offset.
+                let max = gpu.ctgp_offset_max();
+                let ctgp = if max > 0 && requested > max {
+                    warn!(
+                        "profile '{}' cTGP offset {requested} W exceeds max {max} W; clamping",
+                        profile.name
+                    );
+                    max
+                } else {
+                    requested
+                };
+                if let Err(e) = gpu.set_ctgp_offset(ctgp) {
+                    warn!("failed to set cTGP offset: {e}");
+                }
             }
             info!("applied GPU power settings from profile '{}'", profile.name);
         }
-
-        Ok(())
     }
 }
 
@@ -657,6 +791,9 @@ mod tests {
             *self.priority.lock().unwrap() = Some(priority.to_string());
             Ok(())
         }
+        fn supports_priority(&self) -> bool {
+            true
+        }
     }
 
     #[test]
@@ -711,6 +848,205 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
+    }
+
+    /// Fake cpufreq tree with `n` CPUs at EPP `balance_performance`.
+    fn fake_cpufreq(n: usize) -> (tempfile::TempDir, Arc<CpuGovernor>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let cpu_dir = tmp.path().join("cpu");
+        for i in 0..n {
+            let cpufreq = cpu_dir.join(format!("cpu{i}/cpufreq"));
+            std::fs::create_dir_all(&cpufreq).unwrap();
+            std::fs::write(cpufreq.join("scaling_governor"), "powersave\n").unwrap();
+            std::fs::write(
+                cpufreq.join("scaling_available_governors"),
+                "performance powersave\n",
+            )
+            .unwrap();
+            std::fs::write(
+                cpufreq.join("energy_performance_preference"),
+                "balance_performance\n",
+            )
+            .unwrap();
+        }
+        let intel = cpu_dir.join("intel_pstate");
+        std::fs::create_dir_all(&intel).unwrap();
+        std::fs::write(intel.join("no_turbo"), "0\n").unwrap();
+        let gov = Arc::new(CpuGovernor::with_path(&cpu_dir));
+        (tmp, gov)
+    }
+
+    fn epp_of(gov: &CpuGovernor) -> Option<String> {
+        gov.get_epp().unwrap()
+    }
+
+    /// The returned receiver must stay alive: `apply` sends the fan config.
+    fn applier_with_gov(
+        gov: &Arc<CpuGovernor>,
+        sku: &str,
+    ) -> (ProfileApplier, watch::Receiver<FanConfig>) {
+        let (tx, rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, None, Some(gov.clone()), None, None, vec![], None)
+            .with_device_quirks(sku);
+        (applier, rx)
+    }
+
+    fn profile_with_epp(epp: &str) -> TuxProfile {
+        let mut p = test_profile_with_fan(FanMode::Auto, true);
+        p.cpu.energy_performance_preference = Some(epp.to_string());
+        p
+    }
+
+    #[test]
+    fn schedutil_profile_maps_to_powersave_on_pstate() {
+        // Regression: built-in profiles ask for 'schedutil', which
+        // intel_pstate doesn't offer; this used to WARN on every apply.
+        let (tmp, gov) = fake_cpufreq(2);
+        std::fs::write(
+            tmp.path().join("cpu/cpu0/cpufreq/scaling_governor"),
+            "performance\n",
+        )
+        .unwrap();
+        let (applier, _rx) = applier_with_gov(&gov, "TEST");
+        let mut profile = profile_with_epp("balance_power");
+        profile.cpu.governor = "schedutil".into();
+        applier.apply_on(&profile, PowerState::Battery).unwrap();
+        assert_eq!(gov.get_governor().unwrap(), "powersave");
+    }
+
+    #[test]
+    fn ibm15i10_epp_quirk_forces_performance_on_ac() {
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        applier
+            .apply_on(&profile_with_epp("balance_performance"), PowerState::Ac)
+            .unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("performance"));
+    }
+
+    #[test]
+    fn ibm15i10_epp_quirk_never_applies_on_battery() {
+        // Battery life: the battery profile's power-saving EPP must win.
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        applier
+            .apply_on(&profile_with_epp("balance_power"), PowerState::Battery)
+            .unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
+    }
+
+    #[test]
+    fn ibm15i10_epp_follows_unplug_and_replug() {
+        // AC → battery must drop back to the battery profile's EPP, and AC again
+        // must restore the override.
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        let office = profile_with_epp("balance_performance");
+        let quiet = profile_with_epp("balance_power");
+        applier.apply_on(&office, PowerState::Ac).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("performance"));
+        applier.apply_on(&quiet, PowerState::Battery).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
+        applier.apply_on(&office, PowerState::Ac).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("performance"));
+    }
+
+    #[test]
+    fn ibm15i10_battery_profile_without_epp_drops_ac_override() {
+        // Regression (stage-4 review): a battery profile with no EPP used to
+        // leave the AC 'performance' override in place after unplugging.
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        applier
+            .apply_on(&profile_with_epp("balance_performance"), PowerState::Ac)
+            .unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("performance"));
+        let mut no_epp = test_profile_with_fan(FanMode::Auto, true);
+        no_epp.cpu.energy_performance_preference = None;
+        applier.apply_on(&no_epp, PowerState::Battery).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
+    }
+
+    #[test]
+    fn profile_without_epp_leaves_epp_untouched_without_quirk() {
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBP16I08MK2");
+        let mut no_epp = test_profile_with_fan(FanMode::Auto, true);
+        no_epp.cpu.energy_performance_preference = None;
+        applier.apply_on(&no_epp, PowerState::Battery).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_performance"));
+    }
+
+    #[test]
+    fn epp_quirk_absent_for_other_devices() {
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBP16I08MK2");
+        applier
+            .apply_on(&profile_with_epp("balance_performance"), PowerState::Ac)
+            .unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_performance"));
+    }
+
+    #[test]
+    fn plain_apply_ignores_epp_quirk() {
+        let (_tmp, gov) = fake_cpufreq(2);
+        let (applier, _rx) = applier_with_gov(&gov, "IBM15I10");
+        applier.apply(&profile_with_epp("balance_power")).unwrap();
+        assert_eq!(epp_of(&gov).as_deref(), Some("balance_power"));
+    }
+
+    #[test]
+    fn keyboard_control_disabled_leaves_keyboard_untouched() {
+        use crate::hid::{KeyboardLed, Rgb};
+        use std::sync::Mutex;
+
+        /// Fails the test on any call.
+        struct Untouchable;
+        impl KeyboardLed for Untouchable {
+            fn set_brightness(&mut self, _: u8) -> std::io::Result<()> {
+                panic!("set_brightness called")
+            }
+            fn set_color(&mut self, _: u8, _: Rgb) -> std::io::Result<()> {
+                panic!("set_color called")
+            }
+            fn set_mode(&mut self, _: &str) -> std::io::Result<()> {
+                panic!("set_mode called")
+            }
+            fn zone_count(&self) -> u8 {
+                1
+            }
+            fn turn_off(&mut self) -> std::io::Result<()> {
+                panic!("turn_off called")
+            }
+            fn turn_on(&mut self) -> std::io::Result<()> {
+                panic!("turn_on called")
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                panic!("flush called")
+            }
+            fn device_type(&self) -> &str {
+                "untouchable"
+            }
+            fn available_modes(&self) -> Vec<String> {
+                vec![]
+            }
+        }
+
+        let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(Untouchable)));
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(tx, None, None, None, None, vec![kb], None)
+            .with_keyboard_control(false);
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.keyboard.brightness = 0; // would turn the light off
+        applier.apply_on(&profile, PowerState::Battery).unwrap();
+        profile.keyboard.brightness = 80; // would turn it on
+        applier.apply_on(&profile, PowerState::Ac).unwrap();
+
+        // Runtime toggle via the shared flag re-enables control.
+        applier
+            .keyboard_control_flag()
+            .store(true, Ordering::Relaxed);
+        assert!(applier.keyboard_control_flag().load(Ordering::Relaxed));
     }
 
     #[test]
@@ -944,29 +1280,7 @@ mod tests {
         use crate::gpu::GpuPowerBackend;
         use tux_core::profile::GpuSettings;
 
-        struct MockGpuPower {
-            value: std::sync::Mutex<u8>,
-        }
-
-        impl MockGpuPower {
-            fn new() -> Self {
-                Self {
-                    value: std::sync::Mutex::new(0),
-                }
-            }
-        }
-
-        impl GpuPowerBackend for MockGpuPower {
-            fn get_ctgp_offset(&self) -> std::io::Result<u8> {
-                Ok(*self.value.lock().unwrap())
-            }
-            fn set_ctgp_offset(&self, watts: u8) -> std::io::Result<()> {
-                *self.value.lock().unwrap() = watts;
-                Ok(())
-            }
-        }
-
-        let mock: Arc<dyn GpuPowerBackend> = Arc::new(MockGpuPower::new());
+        let mock: Arc<dyn GpuPowerBackend> = Arc::new(BoundedGpuPower::new(u8::MAX));
         let (tx, _rx) = watch::channel(FanConfig::default());
         let applier = ProfileApplier::new(tx, None, None, None, Some(mock.clone()), vec![], None);
 
@@ -977,6 +1291,110 @@ mod tests {
 
         applier.apply(&profile).unwrap();
         assert_eq!(mock.get_ctgp_offset().unwrap(), 15);
+    }
+
+    /// GPU backend that, like `Nb02GpuPower`, rejects offsets above `max`.
+    struct BoundedGpuPower {
+        value: std::sync::Mutex<u8>,
+        max: u8,
+    }
+
+    impl BoundedGpuPower {
+        fn new(max: u8) -> Self {
+            Self {
+                value: std::sync::Mutex::new(0),
+                max,
+            }
+        }
+    }
+
+    impl crate::gpu::GpuPowerBackend for BoundedGpuPower {
+        fn get_ctgp_offset(&self) -> std::io::Result<u8> {
+            Ok(*self.value.lock().unwrap())
+        }
+        fn set_ctgp_offset(&self, watts: u8) -> std::io::Result<()> {
+            if watts > self.max {
+                return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+            }
+            *self.value.lock().unwrap() = watts;
+            Ok(())
+        }
+        fn ctgp_offset_max(&self) -> u8 {
+            self.max
+        }
+    }
+
+    #[test]
+    fn reapply_power_limits_restores_tdp_and_ctgp_only() {
+        // Suspend regression: EC-held limits are re-written from the profile.
+        use crate::gpu::GpuPowerBackend;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("ec_ram"), vec![0u8; 0x0800]).unwrap();
+        let bounds = tux_core::device::TdpBounds {
+            pl1_min: 10,
+            pl1_max: 90,
+            pl2_min: 10,
+            pl2_max: 90,
+            pl4_min: None,
+            pl4_max: None,
+        };
+        let tdp: Arc<dyn crate::cpu::tdp::TdpBackend> =
+            Arc::new(crate::cpu::tdp::EcTdp::with_path(tmp.path(), bounds));
+        let gpu = Arc::new(BoundedGpuPower::new(65));
+        let (tx, mut rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(
+            tx,
+            None,
+            None,
+            Some(tdp.clone()),
+            Some(gpu.clone() as Arc<dyn GpuPowerBackend>),
+            vec![],
+            None,
+        );
+        let mut profile = test_profile_with_fan(FanMode::Manual, true);
+        profile.tdp = Some(tux_core::profile::TdpSettings {
+            pl1: Some(15),
+            pl2: Some(25),
+        });
+        profile.gpu = Some(tux_core::profile::GpuSettings {
+            ctgp_offset: Some(5),
+        });
+        rx.mark_unchanged();
+
+        applier.reapply_power_limits(&profile);
+
+        assert_eq!(tdp.get_pl1().unwrap(), 15);
+        assert_eq!(tdp.get_pl2().unwrap(), 25);
+        assert_eq!(gpu.get_ctgp_offset().unwrap(), 5);
+        assert!(
+            !rx.has_changed().unwrap(),
+            "fan config must not be touched on resume re-apply"
+        );
+    }
+
+    #[test]
+    fn apply_gpu_clamps_profile_offset_to_backend_max() {
+        // Regression: a TCC-imported 100 W offset on a 65 W GPU (IBM15I10
+        // RTX 5060) was rejected outright, leaving the previous offset active.
+        use crate::gpu::GpuPowerBackend;
+        let mock = Arc::new(BoundedGpuPower::new(65));
+        let (tx, _rx) = watch::channel(FanConfig::default());
+        let applier = ProfileApplier::new(
+            tx,
+            None,
+            None,
+            None,
+            Some(mock.clone() as Arc<dyn GpuPowerBackend>),
+            vec![],
+            None,
+        );
+
+        let mut profile = test_profile_with_fan(FanMode::Auto, true);
+        profile.gpu = Some(tux_core::profile::GpuSettings {
+            ctgp_offset: Some(100),
+        });
+        applier.apply(&profile).unwrap();
+        assert_eq!(mock.get_ctgp_offset().unwrap(), 65);
     }
 
     #[test]

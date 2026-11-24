@@ -63,6 +63,13 @@ pub struct GpuData {
     pub power_draw_w: Option<f32>,
     pub usage_percent: Option<u8>,
     pub gpu_type: String,
+    /// Runtime power state ("active" / "suspended") when known. Telemetry of a
+    /// suspended dGPU is deliberately not queried (it would wake the GPU).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_state: Option<String>,
+    /// Current (actual) GPU clock in MHz, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freq_mhz: Option<u32>,
 }
 
 /// System info as returned by D-Bus `GetSystemInfo`.
@@ -93,6 +100,9 @@ pub struct CapabilitiesResponse {
     pub charging_thresholds: bool,
     #[serde(default)]
     pub charging_profiles: bool,
+    /// Charge priority is writable (some profile-capable ECs lack it, e.g. IBM15I10).
+    #[serde(default)]
+    pub charging_priority: bool,
     #[serde(default)]
     pub tdp_control: bool,
     #[serde(default)]
@@ -275,6 +285,8 @@ mod tests {
                 power_draw_w: Some(80.5),
                 usage_percent: Some(45),
                 gpu_type: "Discrete".into(),
+                power_state: None,
+                freq_mhz: None,
             }],
         };
         let toml_str = toml::to_string(&resp).unwrap();
@@ -303,6 +315,7 @@ mod tests {
             keyboard_type: "rgb".into(),
             charging_thresholds: true,
             charging_profiles: false,
+            charging_priority: false,
             tdp_control: true,
             keyboard_modes: vec!["static".into(), "breathe".into()],
             power_profiles: true,

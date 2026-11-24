@@ -1,0 +1,450 @@
+//! NVIDIA dGPU telemetry via NVML — without waking a runtime-suspended GPU.
+//!
+//! The proprietary driver exposes no hwmon. NVML (what btop and nvidia-smi
+//! use) has the numbers, but any NVML query powers up a GPU that sits in
+//! runtime D3, costing battery. So the PCI runtime-PM state is checked
+//! first: a `suspended` GPU is reported as such and never queried.
+//!
+//! NVML is also initialised per query and shut down right after, so the
+//! daemon holds no handle that could keep the GPU from suspending.
+//!
+//! An *active* GPU is only queried while a real user has one of its device
+//! nodes (`/dev/nvidiaN`) open. Right after its last user exits the GPU stays
+//! active for its idle timeout (~20 s on IBM15I10) before suspending; each
+//! NVML query restarts that timer, so polling an otherwise unused GPU would
+//! keep it awake forever. Such a GPU is reported as `idle`.
+//!
+//! Background holders don't count: NVIDIA's own daemons (`nvidia-powerd`,
+//! `nvidia-persistenced`) and any process seen holding a node while the GPU
+//! was runtime-suspended (so its handle evidently doesn't keep it awake).
+
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use tux_core::dbus_types::GpuData;
+
+const NVIDIA_VENDOR: &str = "0x10de";
+
+/// NVIDIA system daemons that keep device nodes open without using the GPU.
+const BACKGROUND_COMMS: &[&str] = &["nvidia-powerd", "nvidia-persistenced"];
+
+/// `/proc/<pid>/comm` holds at most 15 bytes (TASK_COMM_LEN - 1), so e.g.
+/// `nvidia-persistenced` shows up as `nvidia-persiste`.
+const COMM_MAX: usize = 15;
+
+fn is_background_comm(comm: &str) -> bool {
+    BACKGROUND_COMMS
+        .iter()
+        .any(|name| comm == &name[..name.len().min(COMM_MAX)])
+}
+
+/// How often to re-learn background holders while the GPU is suspended.
+const BACKGROUND_REFRESH: Duration = Duration::from_secs(30);
+
+/// One NVML reading.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct NvSample {
+    pub temperature_c: Option<f32>,
+    pub usage_percent: Option<u8>,
+    pub power_w: Option<f32>,
+    pub clock_mhz: Option<u32>,
+}
+
+/// Source of NVML readings (real NVML, or a fake in tests).
+pub trait NvQuery: Send + Sync {
+    /// Query the GPU at PCI address `bdf` (e.g. `0000:01:00.0`).
+    fn query(&self, bdf: &str) -> Option<NvSample>;
+}
+
+/// Real NVML, loaded at runtime (`libnvidia-ml.so.1`).
+pub struct Nvml;
+
+impl NvQuery for Nvml {
+    fn query(&self, bdf: &str) -> Option<NvSample> {
+        use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
+        // Dropped at the end of this call (nvmlShutdown).
+        let nvml = nvml_wrapper::Nvml::init().ok()?;
+        let dev = nvml.device_by_pci_bus_id(bdf).ok()?;
+        Some(NvSample {
+            temperature_c: dev
+                .temperature(TemperatureSensor::Gpu)
+                .ok()
+                .map(|t| t as f32),
+            usage_percent: dev.utilization_rates().ok().map(|u| u.gpu.min(100) as u8),
+            power_w: dev.power_usage().ok().map(|mw| mw as f32 / 1000.0),
+            clock_mhz: dev.clock_info(Clock::Graphics).ok(),
+        })
+    }
+}
+
+/// An NVIDIA GPU bound to the proprietary `nvidia` driver.
+pub struct NvidiaGpu {
+    bdf: String,
+    pci_dev: PathBuf,
+    name: String,
+    nvml: Box<dyn NvQuery>,
+    /// `/proc`, scanned for other holders of `/dev/nvidiaN`.
+    proc_root: PathBuf,
+    /// PIDs seen holding a node while the GPU was suspended, and when learned.
+    background: Mutex<(HashSet<u32>, Option<Instant>)>,
+    /// Last process counted as a real user (for change-only debug logs).
+    last_user: Mutex<Option<(u32, String)>>,
+}
+
+impl NvidiaGpu {
+    /// Find the first NVIDIA display device under `pci_base` (`/sys/bus/pci/devices`).
+    pub fn discover(
+        pci_base: &Path,
+        nvidia_procfs: &Path,
+        pci_ids: &Path,
+        nvml: Box<dyn NvQuery>,
+    ) -> Option<Self> {
+        let mut devices: Vec<PathBuf> = fs::read_dir(pci_base)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        devices.sort();
+        let pci_dev = devices.into_iter().find(|d| {
+            read_trim(&d.join("vendor")).as_deref() == Some(NVIDIA_VENDOR)
+                && read_trim(&d.join("class")).is_some_and(|c| c.starts_with("0x03"))
+                && fs::read_link(d.join("driver"))
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n == "nvidia"))
+                    .unwrap_or(false)
+        })?;
+        let bdf = pci_dev.file_name()?.to_str()?.to_string();
+        let device_id = read_trim(&pci_dev.join("device")).unwrap_or_default();
+        let name = procfs_model(&nvidia_procfs.join(&bdf).join("information"))
+            .or_else(|| {
+                super::intel::pci_ids_name(pci_ids, "10de", device_id.trim_start_matches("0x"))
+                    .map(|n| format!("NVIDIA {n}"))
+            })
+            .unwrap_or_else(|| "NVIDIA GPU".to_string());
+        Some(Self {
+            bdf,
+            pci_dev,
+            name,
+            nvml,
+            proc_root: PathBuf::from("/proc"),
+            background: Mutex::new((HashSet::new(), None)),
+            last_user: Mutex::new(None),
+        })
+    }
+
+    /// Override the `/proc` root used to find GPU users (tests).
+    #[cfg(test)]
+    fn with_proc_root(mut self, proc_root: PathBuf) -> Self {
+        self.proc_root = proc_root;
+        self
+    }
+
+    /// PCI runtime-PM state (`active`, `suspended`, …); `active` if unknown.
+    fn runtime_status(&self) -> String {
+        read_trim(&self.pci_dev.join("power/runtime_status")).unwrap_or_else(|| "active".into())
+    }
+
+    /// Report telemetry, querying NVML only if the GPU is awake *and* in use.
+    pub fn sample(&self) -> GpuData {
+        let mut state = self.runtime_status();
+        let s = if state != "active" {
+            self.learn_background_holders();
+            NvSample::default()
+        } else if self.has_real_users() {
+            self.nvml.query(&self.bdf).unwrap_or_default()
+        } else {
+            // Coasting towards runtime suspend; a query would keep it awake.
+            state = "idle".to_string();
+            NvSample::default()
+        };
+        GpuData {
+            name: self.name.clone(),
+            temperature: s.temperature_c,
+            power_draw_w: s.power_w,
+            usage_percent: s.usage_percent,
+            gpu_type: "discrete".to_string(),
+            power_state: Some(state),
+            freq_mhz: s.clock_mhz,
+        }
+    }
+}
+
+fn read_trim(path: &Path) -> Option<String> {
+    fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+}
+
+impl NvidiaGpu {
+    /// While suspended, remember who holds GPU nodes (rate-limited).
+    fn learn_background_holders(&self) {
+        let mut bg = self.background.lock().unwrap_or_else(|e| e.into_inner());
+        if bg.1.is_some_and(|t| t.elapsed() < BACKGROUND_REFRESH) {
+            return;
+        }
+        bg.0 = gpu_holders(&self.proc_root)
+            .into_iter()
+            .map(|(pid, _)| pid)
+            .collect();
+        bg.1 = Some(Instant::now());
+    }
+
+    /// Whether anyone other than us and known background holders uses the GPU.
+    fn has_real_users(&self) -> bool {
+        let self_pid = std::process::id();
+        let bg = self.background.lock().unwrap_or_else(|e| e.into_inner());
+        let user = gpu_holders(&self.proc_root)
+            .into_iter()
+            .find(|(pid, comm)| {
+                *pid != self_pid && !bg.0.contains(pid) && !is_background_comm(comm)
+            });
+        let mut last = self.last_user.lock().unwrap_or_else(|e| e.into_inner());
+        if *last != user {
+            match &user {
+                Some((pid, comm)) => {
+                    tracing::debug!("dGPU in use by pid {pid} ({comm}); querying NVML")
+                }
+                None => tracing::debug!("dGPU has no users; not querying NVML"),
+            }
+            last.clone_from(&user);
+        }
+        user.is_some()
+    }
+}
+
+/// Processes holding an NVIDIA GPU node (`/dev/nvidia<N>`, not
+/// `nvidiactl`/`nvidia-uvm`/`nvidia-modeset`) open, as `(pid, comm)`.
+fn gpu_holders(proc_root: &Path) -> Vec<(u32, String)> {
+    let Ok(procs) = fs::read_dir(proc_root) else {
+        return Vec::new();
+    };
+    procs
+        .flatten()
+        .filter_map(|p| {
+            let pid = p.file_name().to_str()?.parse::<u32>().ok()?;
+            let holds = fs::read_dir(p.path().join("fd")).ok()?.flatten().any(|fd| {
+                fs::read_link(fd.path()).is_ok_and(|target| {
+                    target
+                        .to_str()
+                        .and_then(|t| t.strip_prefix("/dev/nvidia"))
+                        .is_some_and(|rest| {
+                            !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+                        })
+                })
+            });
+            holds.then(|| (pid, read_trim(&p.path().join("comm")).unwrap_or_default()))
+        })
+        .collect()
+}
+
+/// `Model:` line of `/proc/driver/nvidia/gpus/<bdf>/information` (no GPU wake-up).
+fn procfs_model(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("Model:"))
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FakeNvml {
+        calls: Arc<AtomicUsize>,
+        sample: NvSample,
+    }
+
+    impl NvQuery for FakeNvml {
+        fn query(&self, bdf: &str) -> Option<NvSample> {
+            assert_eq!(bdf, "0000:01:00.0");
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Some(self.sample)
+        }
+    }
+
+    fn fixture(status: &str) -> (tempfile::TempDir, NvidiaGpu, Arc<AtomicUsize>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let dev = root.join("pci/0000:01:00.0");
+        fs::create_dir_all(dev.join("power")).unwrap();
+        fs::create_dir_all(root.join("drivers/nvidia")).unwrap();
+        std::os::unix::fs::symlink(root.join("drivers/nvidia"), dev.join("driver")).unwrap();
+        fs::write(dev.join("vendor"), "0x10de\n").unwrap();
+        fs::write(dev.join("device"), "0x2d19\n").unwrap();
+        fs::write(dev.join("class"), "0x030000\n").unwrap();
+        fs::write(dev.join("power/runtime_status"), format!("{status}\n")).unwrap();
+        // An unrelated NVIDIA function (HDA audio) must be skipped.
+        let audio = root.join("pci/0000:01:00.1");
+        fs::create_dir_all(&audio).unwrap();
+        fs::write(audio.join("vendor"), "0x10de\n").unwrap();
+        fs::write(audio.join("class"), "0x040300\n").unwrap();
+        let proc_gpu = root.join("proc/0000:01:00.0");
+        fs::create_dir_all(&proc_gpu).unwrap();
+        fs::write(
+            proc_gpu.join("information"),
+            "Model: \t\t NVIDIA GeForce RTX 5060 Laptop GPU\nIRQ:   16\n",
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let nvml = FakeNvml {
+            calls: calls.clone(),
+            sample: NvSample {
+                temperature_c: Some(48.0),
+                usage_percent: Some(37),
+                power_w: Some(21.5),
+                clock_mhz: Some(1890),
+            },
+        };
+        let gpu = NvidiaGpu::discover(
+            &root.join("pci"),
+            &root.join("proc"),
+            &root.join("pci.ids"),
+            Box::new(nvml),
+        )
+        .expect("dGPU discovered")
+        .with_proc_root(root.join("procfs"));
+        fs::create_dir_all(root.join("procfs")).unwrap();
+        (tmp, gpu, calls)
+    }
+
+    /// Fake process `pid` holding `target` open as fd 3.
+    fn add_process(tmp: &tempfile::TempDir, pid: u32, target: &str) {
+        add_named_process(tmp, pid, "app", target);
+    }
+
+    fn add_named_process(tmp: &tempfile::TempDir, pid: u32, comm: &str, target: &str) {
+        fs::create_dir_all(tmp.path().join(format!("procfs/{pid}"))).unwrap();
+        fs::write(
+            tmp.path().join(format!("procfs/{pid}/comm")),
+            format!("{comm}\n"),
+        )
+        .unwrap();
+        let fd_dir = tmp.path().join(format!("procfs/{pid}/fd"));
+        fs::create_dir_all(&fd_dir).unwrap();
+        std::os::unix::fs::symlink(target, fd_dir.join("3")).unwrap();
+    }
+
+    #[test]
+    fn suspended_gpu_is_never_queried() {
+        // Battery: querying NVML would wake the dGPU from runtime D3.
+        let (_tmp, gpu, calls) = fixture("suspended");
+        for _ in 0..3 {
+            let d = gpu.sample();
+            assert_eq!(d.power_state.as_deref(), Some("suspended"));
+            assert_eq!(
+                (d.temperature, d.usage_percent, d.power_draw_w),
+                (None, None, None)
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    fn set_status(tmp: &tempfile::TempDir, status: &str) {
+        fs::write(
+            tmp.path().join("pci/0000:01:00.0/power/runtime_status"),
+            format!("{status}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn nvidia_daemons_do_not_count_as_users() {
+        // Regression (IBM15I10): nvidia-powerd / nvidia-persistenced keep
+        // /dev/nvidia0 open permanently; counting them kept the GPU awake.
+        let (tmp, gpu, calls) = fixture("active");
+        add_named_process(&tmp, 841, "nvidia-powerd", "/dev/nvidia0");
+        // As the kernel reports it: comm is truncated to 15 bytes.
+        add_named_process(&tmp, 848, "nvidia-persiste", "/dev/nvidia0");
+        assert_eq!(gpu.sample().power_state.as_deref(), Some("idle"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn holders_seen_while_suspended_are_learned_as_background() {
+        let (tmp, gpu, calls) = fixture("suspended");
+        add_named_process(&tmp, 500, "kwin_wayland", "/dev/nvidia0");
+        gpu.sample(); // learns pid 500 as background
+        set_status(&tmp, "active");
+        assert_eq!(gpu.sample().power_state.as_deref(), Some("idle"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        // A new process that starts using the GPU is a real user.
+        add_named_process(&tmp, 600, "game", "/dev/nvidia0");
+        assert_eq!(gpu.sample().power_state.as_deref(), Some("active"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn active_gpu_without_users_is_not_queried() {
+        // Regression (IBM15I10): polling an awake-but-unused dGPU every 2 s
+        // reset its ~20 s idle timer and kept it from ever suspending.
+        let (tmp, gpu, calls) = fixture("active");
+        add_process(&tmp, 100, "/dev/nvidiactl");
+        add_process(&tmp, 101, "/dev/nvidia-uvm");
+        add_process(&tmp, std::process::id(), "/dev/nvidia0"); // ourselves
+        let d = gpu.sample();
+        assert_eq!(d.power_state.as_deref(), Some("idle"));
+        assert_eq!((d.temperature, d.usage_percent), (None, None));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn active_gpu_reports_nvml_values() {
+        let (tmp, gpu, calls) = fixture("active");
+        add_process(&tmp, 4242, "/dev/nvidia0"); // e.g. a game
+        let d = gpu.sample();
+        assert_eq!(d.name, "NVIDIA GeForce RTX 5060 Laptop GPU");
+        assert_eq!(d.gpu_type, "discrete");
+        assert_eq!(d.power_state.as_deref(), Some("active"));
+        assert_eq!(d.temperature, Some(48.0));
+        assert_eq!(d.usage_percent, Some(37));
+        assert_eq!(d.power_draw_w, Some(21.5));
+        assert_eq!(d.freq_mhz, Some(1890));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn name_falls_back_to_pci_ids_without_procfs() {
+        let (tmp, _, _) = fixture("suspended");
+        fs::remove_file(tmp.path().join("proc/0000:01:00.0/information")).unwrap();
+        fs::write(
+            tmp.path().join("pci.ids"),
+            "10de  NVIDIA Corporation\n\t2d19  GB206M [GeForce RTX 5060 Max-Q / Mobile]\n",
+        )
+        .unwrap();
+        let gpu = NvidiaGpu::discover(
+            &tmp.path().join("pci"),
+            &tmp.path().join("proc"),
+            &tmp.path().join("pci.ids"),
+            Box::new(FakeNvml {
+                calls: Arc::new(AtomicUsize::new(0)),
+                sample: NvSample::default(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(gpu.name, "NVIDIA GB206M [GeForce RTX 5060 Max-Q / Mobile]");
+    }
+
+    #[test]
+    fn no_nvidia_driver_means_no_gpu() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = tmp.path().join("pci/0000:01:00.0");
+        fs::create_dir_all(&dev).unwrap();
+        fs::write(dev.join("vendor"), "0x10de\n").unwrap();
+        fs::write(dev.join("class"), "0x030000\n").unwrap();
+        // No driver symlink (e.g. nouveau unbound / vfio).
+        assert!(
+            NvidiaGpu::discover(
+                &tmp.path().join("pci"),
+                tmp.path(),
+                tmp.path(),
+                Box::new(Nvml),
+            )
+            .is_none()
+        );
+    }
+}

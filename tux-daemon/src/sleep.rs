@@ -13,6 +13,9 @@ use tux_core::fan_curve::FanConfig;
 
 use crate::hid::KeyboardLed;
 
+/// Callback run after resume (e.g. re-apply EC-held power limits).
+pub type ResumeHook = Box<dyn Fn() + Send + Sync>;
+
 /// Saved hardware state for suspend/resume.
 struct SavedState {
     fan_config: FanConfig,
@@ -25,6 +28,7 @@ pub struct SleepHandler {
     keyboards: Vec<Arc<Mutex<Box<dyn KeyboardLed>>>>,
     saved_state: Mutex<Option<SavedState>>,
     fan_config_tx: watch::Sender<FanConfig>,
+    resume_hook: Option<ResumeHook>,
 }
 
 impl SleepHandler {
@@ -40,7 +44,14 @@ impl SleepHandler {
             keyboards,
             saved_state: Mutex::new(None),
             fan_config_tx,
+            resume_hook: None,
         }
+    }
+
+    /// Run `hook` at the end of every resume.
+    pub fn with_resume_hook(mut self, hook: ResumeHook) -> Self {
+        self.resume_hook = Some(hook);
+        self
     }
 
     /// Called when system is about to suspend (PrepareForSleep=true).
@@ -97,6 +108,11 @@ impl SleepHandler {
         }
         if !self.keyboards.is_empty() {
             info!("keyboard LEDs restored after resume");
+        }
+
+        // 3. Device hooks (EC power limits may be reset across sleep).
+        if let Some(ref hook) = self.resume_hook {
+            hook();
         }
     }
 }
@@ -203,6 +219,23 @@ mod tests {
             FanMode::CustomCurve
         );
         assert_eq!(saved.as_ref().unwrap().fan_config.min_speed_percent, 30);
+    }
+
+    #[test]
+    fn resume_hook_runs_on_resume_only() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = watch::channel(FanConfig::default());
+        let handler = SleepHandler::new(None, tx, rx, vec![]).with_resume_hook({
+            let calls = calls.clone();
+            Box::new(move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+        handler.on_suspend();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        handler.on_resume();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

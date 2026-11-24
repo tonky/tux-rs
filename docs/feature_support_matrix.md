@@ -14,7 +14,7 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 | Platform     | Kernel module(s) used                                      | Devices in table |
 |-------------|-------------------------------------------------------------|-----------------|
 | **NB05**    | `tuxedo_nb05_fan_control`, `tuxedo_nb05_sensors`, `tuxedo_nb05_ec`, `tuxedo_nb05_power_profiles` | 4 |
-| **Uniwill** | `tuxedo_io` (ioctl chardev)                                 | 21 |
+| **Uniwill** | `tuxedo_io` (ioctl chardev)                                 | 29 |
 | **Clevo**   | `tuxedo_io` (ioctl chardev), `tuxedo_keyboard`              | 3 |
 | **NB04**    | `tuxedo_nb04_sensors`, `tuxedo_nb04_power_profiles`, `tuxedo_nb04_wmi_*` | 2 |
 | **Tuxi**    | `tuxedo_tuxi` → `tuxedo_fan_control` platform dev          | 2 |
@@ -60,6 +60,7 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 | InfinityBook Pro 14 Gen8 MK2 | IBP14I08MK2 | 2 | EcProfilePriority | — | ITE8291 |
 | InfinityBook Pro 16 Gen8 MK2 | IBP16I08MK2 | 2 | EcProfilePriority | — | ITE8291 |
 | OMNIA Gen8 MK2 | OMNIA08IMK2 | 2 | EcProfilePriority | — | ITE8291 |
+| InfinityBook Max 15 Gen10 Intel | IBM15I10 | 2 | EcProfilePriority | Nb02Nvidia | ITE8291 |
 | InfinityBook S 14 Gen8 | IBS14I08 | 1 | EcProfilePriority | — | White |
 | InfinityBook S 15 Gen8 | IBS15I08 | 1 | EcProfilePriority | — | White |
 | InfinityBook Pro 14 Gen7 | IBP14I07 | 2 | EcProfilePriority | — | White |
@@ -144,6 +145,7 @@ Legend: ✅ implemented · ⚠️ partial / known limitation · ❌ not implemen
 | Feature | tuxedo-drivers | tccd / TCC | tux-rs |
 |---------|---------------|------------|--------|
 | PL1 read/write (NB05 EC) | ✅ `tuxedo_nb05_ec` ec_ram | ✅ | ⚠️ backend implemented (`cpu/tdp.rs`), no device table TDP fields populated for current SKUs |
+| PL1/PL2 read/write (Uniwill EC) | ✅ `tuxedo_io` `R/W_UW_TDP0..2` | ✅ | ✅ `UniwillEcTdp` (`cpu/tdp.rs`), opted in for IBM15I10; PL4 read-only |
 | PL2 read/write (NB05 EC) | ✅ `tuxedo_nb05_ec` | ✅ | ⚠️ same |
 | Power profiles (NB05) | ✅ `tuxedo_nb05_power_profiles` | ✅ | ❌ not exposed |
 | Power profiles (NB04) | ✅ `tuxedo_nb04_power_profiles` | ✅ | ⚠️ mapped to fan Balanced via `td_nb04.rs`; no ODM profile API |

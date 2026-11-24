@@ -81,6 +81,8 @@ pub struct DbusConfig<'a> {
     /// Sender for manual PWM setpoints, shared with the fan curve engine for
     /// EC-override re-application (Inwill tuxedo_uw_fan workaround).
     pub manual_pwms_tx: tokio::sync::watch::Sender<Vec<u8>>,
+    /// GPU telemetry for `GetGpuInfo`; `None` = hwmon only (tests).
+    pub gpu_telemetry: Option<Arc<crate::gpu::GpuTelemetry>>,
 }
 
 /// Build and start the D-Bus connection on the specified bus.
@@ -109,6 +111,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         daemon_config,
         fan_failure_counter,
         manual_pwms_tx,
+        gpu_telemetry,
     } = config;
 
     // Clone resources needed by the TCC compat interface before they're consumed.
@@ -140,6 +143,7 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
     let fan_count = backend.as_ref().map_or(0, |b| b.num_fans());
 
     let assignments_tx = Arc::new(assignments_tx);
+    let keyboard_control_flag = applier.keyboard_control_flag();
 
     let profile_iface = ProfileInterface::new(
         store.clone(),
@@ -160,14 +164,23 @@ pub async fn serve_on_bus(config: DbusConfig<'_>) -> zbus::Result<zbus::Connecti
         charging.is_some(),
         tdp_backend.is_some(),
         gpu_backend.is_some(),
-    );
+    )
+    .with_charging_priority(charging.as_ref().is_some_and(|c| c.supports_priority()))
+    .with_keyboard_control(settings::KeyboardControl {
+        flag: keyboard_control_flag,
+        daemon_config: daemon_config.clone(),
+        config_path: std::path::PathBuf::from(crate::config::DEFAULT_CONFIG_PATH),
+    });
 
     // Clone before SystemInterface consumes them by value
     let fan_store = store.clone();
     let fan_assignments_rx = assignments_rx.clone();
     let fan_power_rx = power_rx.clone();
 
-    let system_iface = SystemInterface::new(power_rx, assignments_rx, store);
+    let mut system_iface = SystemInterface::new(power_rx, assignments_rx, store);
+    if let Some(gpus) = gpu_telemetry {
+        system_iface = system_iface.with_gpu_telemetry(gpus);
+    }
 
     let mut builder = match bus_type {
         BusType::System => Builder::system()?,

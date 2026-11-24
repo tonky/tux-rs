@@ -971,8 +971,11 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                         "start_threshold" | "end_threshold" => {
                             field.enabled = caps.charging_thresholds;
                         }
-                        "profile" | "priority" => {
+                        "profile" => {
                             field.enabled = caps.charging_profiles;
+                        }
+                        "priority" => {
+                            field.enabled = caps.charging_profiles && caps.charging_priority;
                         }
                         _ => {}
                     }
@@ -984,11 +987,7 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                 // Power tab gating: the daemon is the source of truth for
                 // which controls can actually change hardware state.
                 model.power.form_tab.supported = caps.gpu_control || caps.tdp_control;
-                for field in &mut model.power.form_tab.form.fields {
-                    if field.key == "tgp_offset" {
-                        field.enabled = caps.gpu_control;
-                    }
-                }
+                model.power.set_gpu_control(caps.gpu_control);
             }
         }
         DbusUpdate::FanCurve(points) => {
@@ -1114,6 +1113,10 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             model.power.dgpu_power = None;
             model.power.igpu_name.clear();
             model.power.igpu_usage = None;
+            model.power.dgpu_state = None;
+            model.power.dgpu_freq = None;
+            model.power.igpu_power = None;
+            model.power.igpu_freq = None;
 
             match toml::from_str::<tux_core::dbus_types::GpuInfoResponse>(&toml_str) {
                 Ok(resp) => {
@@ -1132,6 +1135,8 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                             igpu_seen = true;
                             model.power.igpu_name = gpu.name;
                             model.power.igpu_usage = gpu.usage_percent;
+                            model.power.igpu_power = gpu.power_draw_w;
+                            model.power.igpu_freq = gpu.freq_mhz;
                         } else {
                             // Treat anything not "integrated" as discrete
                             // (covers "discrete" and any unexpected value).
@@ -1148,6 +1153,8 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
                             model.power.dgpu_temp = gpu.temperature;
                             model.power.dgpu_power = gpu.power_draw_w;
                             model.power.dgpu_usage = gpu.usage_percent;
+                            model.power.dgpu_state = gpu.power_state;
+                            model.power.dgpu_freq = gpu.freq_mhz;
                         }
                     }
                 }
@@ -1161,6 +1168,15 @@ pub fn handle_data(model: &mut Model, update: DbusUpdate) {
             }
         }
         DbusUpdate::PowerData(toml_str) => {
+            let table = toml_table(&toml_str);
+            let current = table.as_ref().and_then(|t| toml_int(t, "tgp_offset"));
+            if let Some(max) = table.as_ref().and_then(|t| toml_int(t, "tgp_offset_max")) {
+                // The range is daemon state, so apply it even with local edits
+                // pending; only the value below is protected by `dirty`.
+                model
+                    .power
+                    .apply_tgp_offset_range(max, current.unwrap_or(0));
+            }
             if model.power.form_tab.form.dirty {
                 model.power.form_tab.status_message =
                     Some("Daemon update skipped (unsaved changes)".into());
@@ -2163,6 +2179,40 @@ mod tests {
     }
 
     #[test]
+    fn settings_form_roundtrips_profile_keyboard_control() {
+        let mut model = Model::new();
+        model.current_tab = Tab::Settings;
+        handle_data(
+            &mut model,
+            DbusUpdate::SettingsData("profile_keyboard_control = false".into()),
+        );
+        let idx = model
+            .settings
+            .form
+            .fields
+            .iter()
+            .position(|f| f.key == "profile_keyboard_control")
+            .expect("keyboard control toggle");
+        assert!(matches!(
+            model.settings.form.fields[idx].field_type,
+            crate::model::FieldType::Bool(false)
+        ));
+        for _ in 0..idx {
+            handle_key(&mut model, key(KeyCode::Down));
+        }
+        handle_key(&mut model, key(KeyCode::Right)); // toggle on
+        let cmds = handle_key(&mut model, key(KeyCode::Char('s')));
+        let toml = cmds
+            .iter()
+            .find_map(|c| match c {
+                Command::SaveSettings(t) => Some(t.clone()),
+                _ => None,
+            })
+            .expect("SaveSettings");
+        assert!(toml.contains("profile_keyboard_control = true"), "{toml}");
+    }
+
+    #[test]
     fn settings_form_save_ignored_when_clean() {
         let mut model = Model::new();
         model.current_tab = Tab::Settings;
@@ -2210,9 +2260,20 @@ mod tests {
             &mut model,
             DbusUpdate::Capabilities("gpu_control = true".to_string()),
         );
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 0\ntgp_offset_max = 65".into()),
+        );
         handle_key(&mut model, key(KeyCode::Right)); // Make dirty.
         let cmds = handle_key(&mut model, key(KeyCode::Char('s')));
-        assert!(cmds.iter().any(|c| matches!(c, Command::SavePower(_))));
+        let toml = cmds
+            .iter()
+            .find_map(|c| match c {
+                Command::SavePower(t) => Some(t.clone()),
+                _ => None,
+            })
+            .expect("SavePower command");
+        assert!(toml.contains("tgp_offset = 5"), "got {toml:?}");
     }
 
     #[test]
@@ -2453,7 +2514,8 @@ gpu_type = "integrated"
         handle_data(
             &mut model,
             DbusUpdate::Capabilities(
-                "charging_thresholds = false\ncharging_profiles = true".to_string(),
+                "charging_thresholds = false\ncharging_profiles = true\ncharging_priority = true"
+                    .to_string(),
             ),
         );
         // Tab should be enabled (profiles are supported).
@@ -2467,6 +2529,26 @@ gpu_type = "integrated"
                 "start_threshold" | "end_threshold" => {
                     assert!(!field.enabled, "field '{}' should be disabled", field.label);
                 }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn capabilities_profile_only_ec_disables_priority_field() {
+        // IBM15I10: charging_profile exists, charging_priority does not.
+        let mut model = Model::new();
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities(
+                "charging_profiles = true\ncharging_priority = false".to_string(),
+            ),
+        );
+        assert!(model.charging.supported);
+        for field in &model.charging.form.fields {
+            match field.key.as_str() {
+                "profile" => assert!(field.enabled),
+                "priority" => assert!(!field.enabled, "priority must be disabled"),
                 _ => {}
             }
         }
@@ -2507,6 +2589,11 @@ gpu_type = "integrated"
             model.power.form_tab.supported,
             "Power tab must be supported when gpu_control is reported"
         );
+        // Editable only once the daemon reports a non-zero cTGP range.
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 10\ntgp_offset_max = 65".into()),
+        );
         let tgp = model
             .power
             .form_tab
@@ -2519,6 +2606,84 @@ gpu_type = "integrated"
             tgp.enabled,
             "tgp_offset field must be enabled when gpu_control is reported"
         );
+    }
+
+    fn tgp_field(model: &Model) -> (bool, i64, i64) {
+        let f = model
+            .power
+            .form_tab
+            .form
+            .fields
+            .iter()
+            .find(|f| f.key == "tgp_offset")
+            .expect("tgp_offset field must exist");
+        match f.field_type {
+            crate::model::FieldType::Number { value, max, .. } => (f.enabled, value, max),
+            _ => panic!("tgp_offset must be a number field"),
+        }
+    }
+
+    #[test]
+    fn power_data_loads_full_ctgp_range() {
+        // Regression (IBM15I10, RTX 5060): offset 65 W used to be clamped to
+        // a hard-coded +15 and the field never showed the hardware value.
+        let mut model = Model::new();
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
+        assert_eq!(
+            tgp_field(&model),
+            (false, 0, 0),
+            "disabled until range known"
+        );
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 65\ntgp_offset_max = 65".into()),
+        );
+        assert_eq!(tgp_field(&model), (true, 65, 65));
+    }
+
+    #[test]
+    fn power_data_range_applies_while_form_dirty() {
+        let mut model = Model::new();
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 0\ntgp_offset_max = 0".into()),
+        );
+        assert!(!tgp_field(&model).0, "read-only while range unknown");
+        // nvidia-smi became available later; a local edit must not block that.
+        model.power.form_tab.form.dirty = true;
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 65\ntgp_offset_max = 65".into()),
+        );
+        let (enabled, value, max) = tgp_field(&model);
+        assert!(enabled);
+        assert_eq!(max, 65);
+        assert_eq!(value, 0, "dirty value is not overwritten");
+    }
+
+    #[test]
+    fn power_data_with_zero_range_keeps_tgp_read_only() {
+        // No nvidia-smi → daemon reports max 0: show the value, don't edit it.
+        let mut model = Model::new();
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 20\ntgp_offset_max = 0".into()),
+        );
+        handle_data(
+            &mut model,
+            DbusUpdate::Capabilities("gpu_control = true".to_string()),
+        );
+        let (enabled, value, _) = tgp_field(&model);
+        assert!(!enabled);
+        assert_eq!(value, 20, "hardware value must still be shown");
+        assert_eq!(model.power.tgp_offset_max, 0);
     }
 
     #[test]
@@ -2685,7 +2850,11 @@ end_threshold = 80"#;
             &mut model,
             DbusUpdate::Capabilities("gpu_control = true".to_string()),
         );
-        model.power.form_tab.form.adjust(1); // 0 -> 1
+        handle_data(
+            &mut model,
+            DbusUpdate::PowerData("tgp_offset = 0\ntgp_offset_max = 65".into()),
+        );
+        model.power.form_tab.form.adjust(1); // 0 -> 5
         handle_data(&mut model, DbusUpdate::PowerData("tgp_offset = 10".into()));
         assert!(
             model
@@ -2699,7 +2868,7 @@ end_threshold = 80"#;
         if let crate::model::FieldType::Number { value, .. } =
             &model.power.form_tab.form.fields[0].field_type
         {
-            assert_eq!(*value, 1);
+            assert_eq!(*value, 5);
         }
 
         // 5. Display: change brightness to 55 locally, daemon sends 10.

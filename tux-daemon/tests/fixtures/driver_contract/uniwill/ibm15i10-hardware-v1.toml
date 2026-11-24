@@ -1,0 +1,53 @@
+schema_version = 1
+
+[meta]
+fixture_id = "uniwill-capture-20261124T081635Z"
+platform = "Uniwill"
+product_sku = "IBM15I10"
+captured_at = "2026-11-24T08:16:35Z"
+capture_tool_version = "0.1.0"
+capture_source = "manual-hardware"
+kernel_release = "7.3.5-2-cachyos"
+daemon_version = "0.1.0"
+driver_stack = "tuxedo-drivers"
+fan_transport = "tuxedo_io"
+
+[raw.sysfs]
+cpu_temp = ""
+fan1_pwm = ""
+fan2_pwm = ""
+fan1_enable = ""
+fan2_enable = ""
+charging_profile = "balanced"
+charging_priority = ""
+charging_profiles_available = "high_capacity balanced stationary"
+charging_prios_available = ""
+fn_lock = "1"
+
+[raw.dbus]
+fan_data_0 = "rpm = 0\ntemp_celsius = 44.0\nduty_percent = 51\nrpm_available = false"
+fan_data_1 = "rpm = 0\ntemp_celsius = 44.0\nduty_percent = 51\nrpm_available = false"
+fan_health = "status = \"ok\"\nconsecutive_failures = 0"
+charging_settings = "profile = \"balanced\""
+
+[[normalized.fans]]
+index = 0
+temp_celsius = 44.0
+duty_percent = 51
+rpm = 0
+rpm_available = false
+
+[[normalized.fans]]
+index = 1
+temp_celsius = 44.0
+duty_percent = 51
+rpm = 0
+rpm_available = false
+
+[normalized.charging]
+profile = "balanced"
+# no charging_priority group on this hardware
+
+[normalized.health]
+status = "ok"
+consecutive_failures = 0

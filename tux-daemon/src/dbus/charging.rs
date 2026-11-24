@@ -354,6 +354,49 @@ priority = "performance"
         assert_eq!(iface.get_charge_priority().unwrap(), "performance");
     }
 
+    fn setup_uniwill_profile_only() -> (MockSysfs, ChargingInterface) {
+        use crate::charging::uniwill::UniwillCharging;
+        let mock = MockSysfs::new();
+        let base = mock.platform_dir("tuxedo_keyboard");
+        mock.create_attr(
+            "devices/platform/tuxedo_keyboard/charging_profile/charging_profile",
+            "balanced",
+        );
+        let backend = UniwillCharging::with_path(base);
+        let daemon_config = Arc::new(std::sync::RwLock::new(
+            crate::config::DaemonConfig::default(),
+        ));
+        let iface = ChargingInterface::new(Some(Arc::new(backend)), daemon_config);
+        (mock, iface)
+    }
+
+    #[test]
+    fn get_settings_uniwill_profile_only_omits_priority() {
+        // Regression (IBM15I10): a missing charging_priority group used to
+        // fail the whole GetChargingSettings call with ENOENT.
+        let (_mock, iface) = setup_uniwill_profile_only();
+        let toml_str = iface.get_charging_settings().unwrap();
+        let settings: tux_core::profile::ChargingSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(settings.profile, Some("balanced".to_string()));
+        assert_eq!(settings.priority, None);
+    }
+
+    #[test]
+    fn set_settings_uniwill_profile_only_accepts_tui_form() {
+        // The TUI serialises every form field (incl. priority and its default
+        // 0/100 thresholds), even when the hardware lacks them.
+        let (_mock, iface) = setup_uniwill_profile_only();
+        let toml_str = r#"
+profile = "stationary"
+priority = "charge_battery"
+start_threshold = 0
+end_threshold = 100
+"#;
+        iface.set_charging_settings(toml_str).unwrap();
+        assert_eq!(iface.get_charge_profile().unwrap(), "stationary");
+        assert_eq!(iface.get_charge_priority().unwrap(), "");
+    }
+
     #[test]
     fn set_invalid_profile_errors() {
         let (_mock, iface) = setup_uniwill();

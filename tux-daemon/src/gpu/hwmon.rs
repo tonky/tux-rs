@@ -48,6 +48,8 @@ impl From<GpuInfo> for GpuData {
             power_draw_w: info.power_draw_w,
             usage_percent: info.usage_percent,
             gpu_type: info.gpu_type.as_wire_str().to_string(),
+            power_state: None,
+            freq_mhz: None,
         }
     }
 }

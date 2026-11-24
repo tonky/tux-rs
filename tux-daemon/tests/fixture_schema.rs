@@ -26,6 +26,10 @@ struct Meta {
     kernel_release: String,
     daemon_version: String,
     driver_stack: String,
+    /// How fan values reach the daemon: legacy `tuxedo_uw_fan` sysfs
+    /// (default when absent) or `tuxedo_io` ioctls (tuxedo-drivers 4.x).
+    #[serde(default)]
+    fan_transport: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,19 +103,18 @@ fn require_non_empty(value: &str, field: &str, path: &Path) {
     );
 }
 
-fn parse_required_i32(raw: &BTreeMap<String, String>, key: &str, path: &Path) -> i32 {
-    let value = raw
-        .get(key)
-        .unwrap_or_else(|| panic!("missing raw.sysfs key '{}' in {}", key, path.display()));
-    assert!(
-        !value.trim().is_empty(),
-        "raw.sysfs.{} must be non-empty in {}",
-        key,
-        path.display()
-    );
-    value
-        .parse::<i32>()
-        .unwrap_or_else(|_| panic!("raw.sysfs.{} must be integer in {}", key, path.display()))
+/// Parse an optional integer raw.sysfs value; `None` when absent or empty.
+fn parse_optional_i32(raw: &BTreeMap<String, String>, key: &str, path: &Path) -> Option<i32> {
+    let value = raw.get(key).map(|v| v.trim()).filter(|v| !v.is_empty())?;
+    Some(
+        value
+            .parse::<i32>()
+            .unwrap_or_else(|_| panic!("raw.sysfs.{} must be integer in {}", key, path.display())),
+    )
+}
+
+fn is_blank(map: &BTreeMap<String, String>, key: &str) -> bool {
+    map.get(key).is_none_or(|v| v.trim().is_empty())
 }
 
 #[test]
@@ -169,7 +172,7 @@ fn fixture_schema_and_constraints_are_valid() {
             path.display()
         );
 
-        // Required raw keys for baseline Uniwill fixture.
+        // Raw keys every Uniwill fixture carries (values may be empty, see below).
         for key in [
             "cpu_temp",
             "fan1_pwm",
@@ -182,27 +185,71 @@ fn fixture_schema_and_constraints_are_valid() {
                 key,
                 path.display()
             );
+        }
+
+        // Legacy stacks expose fans via tuxedo_uw_fan sysfs. On tuxedo-drivers
+        // 4.x fans go through /dev/tuxedo_io ioctls, so fan values are only
+        // observable through the daemon's D-Bus payload. Declared explicitly
+        // so legacy fixtures keep their strict raw-sysfs requirements.
+        let ioctl_fans = match fixture.meta.fan_transport.as_deref() {
+            None | Some("tuxedo_uw_fan") => false,
+            Some("tuxedo_io") => true,
+            Some(other) => panic!("meta.fan_transport {other:?} invalid in {}", path.display()),
+        };
+        if ioctl_fans {
             assert!(
-                !fixture.raw.sysfs[key].trim().is_empty(),
+                !is_blank(&fixture.raw.dbus, "fan_data_0"),
+                "raw.dbus.fan_data_0 required for tuxedo_io fixtures in {}",
+                path.display()
+            );
+        }
+        // Some ECs only create charging_profile/ (e.g. IBM15I10).
+        let profile_only_charging = is_blank(&fixture.raw.sysfs, "charging_priority")
+            && is_blank(&fixture.raw.sysfs, "charging_prios_available");
+
+        let mut required = vec!["charging_profile"];
+        if !ioctl_fans {
+            required.extend(["cpu_temp", "fan1_pwm"]);
+        }
+        if !profile_only_charging {
+            required.push("charging_priority");
+        }
+        for key in required {
+            assert!(
+                !is_blank(&fixture.raw.sysfs, key),
                 "raw.sysfs.{} must be non-empty in {}",
                 key,
                 path.display()
             );
         }
+        if profile_only_charging {
+            assert!(
+                fixture
+                    .normalized
+                    .charging
+                    .as_ref()
+                    .is_none_or(|c| c.priority.is_none()),
+                "normalized.charging.priority must be absent without a priority group in {}",
+                path.display()
+            );
+        }
 
-        let cpu_temp = parse_required_i32(&fixture.raw.sysfs, "cpu_temp", path);
-        assert!(
-            (0..=120).contains(&cpu_temp),
-            "cpu_temp out of range in {}",
-            path.display()
-        );
+        if let Some(cpu_temp) = parse_optional_i32(&fixture.raw.sysfs, "cpu_temp", path) {
+            assert!(
+                (0..=120).contains(&cpu_temp),
+                "cpu_temp out of range in {}",
+                path.display()
+            );
+        }
 
-        let fan1_pwm = parse_required_i32(&fixture.raw.sysfs, "fan1_pwm", path);
-        assert!(
-            (0..=200).contains(&fan1_pwm),
-            "fan1_pwm out of 0..200 in {}",
-            path.display()
-        );
+        let fan1_pwm = parse_optional_i32(&fixture.raw.sysfs, "fan1_pwm", path);
+        if let Some(fan1_pwm) = fan1_pwm {
+            assert!(
+                (0..=200).contains(&fan1_pwm),
+                "fan1_pwm out of 0..200 in {}",
+                path.display()
+            );
+        }
 
         let mut fan2_pwm: Option<i32> = None;
         for pwm_key in ["fan2_pwm"] {
@@ -293,6 +340,7 @@ fn fixture_schema_and_constraints_are_valid() {
                     path.display()
                 );
             } else {
+                let fan1_pwm = fan1_pwm.expect("fan1_pwm is required without raw.dbus.fan_data_0");
                 let expected = (fan1_pwm * 100 / 200) as u8;
                 assert_eq!(
                     fan0.duty_percent,

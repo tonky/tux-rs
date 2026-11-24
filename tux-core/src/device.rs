@@ -109,6 +109,9 @@ pub enum TdpSource {
     Ec,
     /// Intel RAPL via `/sys/class/powercap/intel-rapl:0/`.
     Rapl,
+    /// Uniwill EC via `/dev/tuxedo_io` TDP ioctls; bounds come from the
+    /// driver's per-board table (e.g. IBM15I10 / board X5AR45xS).
+    UniwillEc,
 }
 
 /// TDP (Thermal Design Power) bounds per power level.
@@ -327,6 +330,25 @@ mod tests {
             KeyboardType::RgbPerKey,
             KeyboardType::IteHid(IteModel::Ite8291),
             KeyboardType::IteHid(IteModel::Ite829x),
+        ] {
+            let w = W { v: variant };
+            let s = toml::to_string(&w).unwrap();
+            let back: W = toml::from_str(&s).unwrap();
+            assert_eq!(w, back);
+        }
+    }
+
+    #[test]
+    fn tdp_source_serialize_roundtrip() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct W {
+            v: TdpSource,
+        }
+        for variant in [
+            TdpSource::None,
+            TdpSource::Ec,
+            TdpSource::Rapl,
+            TdpSource::UniwillEc,
         ] {
             let w = W { v: variant };
             let s = toml::to_string(&w).unwrap();

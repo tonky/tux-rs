@@ -31,6 +31,11 @@ pub struct GlobalSettings {
     pub temperature_unit: String,
     pub fan_control_enabled: bool,
     pub cpu_settings_enabled: bool,
+    /// Profiles set the keyboard backlight brightness (persisted in the
+    /// daemon config as `daemon.profile_keyboard_control`). Always present in
+    /// `GetGlobalSettings`; absent in `SetGlobalSettings` means unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_keyboard_control: Option<bool>,
 }
 
 impl Default for GlobalSettings {
@@ -39,11 +44,23 @@ impl Default for GlobalSettings {
             temperature_unit: "celsius".to_string(),
             fan_control_enabled: true,
             cpu_settings_enabled: true,
+            profile_keyboard_control: Some(true),
         }
     }
 }
 
+/// Shared, persisted "profiles control the keyboard" switch.
+pub struct KeyboardControl {
+    pub flag: Arc<std::sync::atomic::AtomicBool>,
+    pub daemon_config: Arc<std::sync::RwLock<crate::config::DaemonConfig>>,
+    /// Where the config is saved (`DEFAULT_CONFIG_PATH` in production).
+    pub config_path: std::path::PathBuf,
+}
+
 /// Keyboard state stored and returned via Settings D-Bus interface.
+///
+/// In `SetKeyboardState`, empty `color` / `mode` mean "leave unchanged", but
+/// `brightness` is always applied (a missing key means 0 = off).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct KeyboardState {
     #[serde(default)]
@@ -61,14 +78,17 @@ pub struct PowerSettings {
     pub governor: String,
     #[serde(default)]
     pub epp: String,
-    #[serde(default)]
-    pub no_turbo: bool,
+    /// `None` (key absent) leaves turbo untouched, so partial updates such as
+    /// the TUI Power tab's `tgp_offset`-only form don't re-enable turbo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_turbo: Option<bool>,
 }
 
 /// D-Bus object implementing the Settings interface.
 pub struct SettingsInterface {
     settings: std::sync::RwLock<GlobalSettings>,
     capabilities: CapabilitiesResponse,
+    keyboard_control: Option<KeyboardControl>,
     keyboard_state: std::sync::RwLock<KeyboardState>,
     keyboards: Vec<SharedKeyboard>,
     cpu_governor: Option<Arc<CpuGovernor>>,
@@ -135,6 +155,12 @@ impl SettingsInterface {
                     device.descriptor.charging,
                     ChargingCapability::EcProfilePriority
                 ),
+            // Assume supported with profiles; refined via `with_charging_priority`.
+            charging_priority: charging_available
+                && matches!(
+                    device.descriptor.charging,
+                    ChargingCapability::EcProfilePriority
+                ),
             tdp_control: tdp_available,
             power_profiles: true,
             gpu_control: gpu_available,
@@ -143,11 +169,24 @@ impl SettingsInterface {
         Self {
             settings: std::sync::RwLock::new(GlobalSettings::default()),
             capabilities: caps,
+            keyboard_control: None,
             keyboard_state: std::sync::RwLock::new(KeyboardState::default()),
             keyboards,
             cpu_governor,
             display,
         }
+    }
+
+    /// Back `profile_keyboard_control` with the applier's flag and persist changes.
+    pub fn with_keyboard_control(mut self, control: KeyboardControl) -> Self {
+        self.keyboard_control = Some(control);
+        self
+    }
+
+    /// Narrow the `charging_priority` capability to what the backend supports.
+    pub fn with_charging_priority(mut self, supported: bool) -> Self {
+        self.capabilities.charging_priority &= supported;
+        self
     }
 }
 
@@ -155,17 +194,39 @@ impl SettingsInterface {
 impl SettingsInterface {
     /// Get global settings as TOML.
     fn get_global_settings(&self) -> zbus::fdo::Result<String> {
-        let settings = self
+        let mut settings = self
             .settings
             .read()
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        toml::to_string(&*settings).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+            .clone();
+        if let Some(ref kc) = self.keyboard_control {
+            settings.profile_keyboard_control =
+                Some(kc.flag.load(std::sync::atomic::Ordering::Relaxed));
+        }
+        toml::to_string(&settings).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// Update global settings from a TOML string.
     fn set_global_settings(&self, toml_str: &str) -> zbus::fdo::Result<()> {
         let new_settings: GlobalSettings = toml::from_str(toml_str)
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("invalid settings TOML: {e}")))?;
+        if let Some(ref kc) = self.keyboard_control
+            && let Some(enabled) = new_settings.profile_keyboard_control
+        {
+            let previous = kc.flag.swap(enabled, std::sync::atomic::Ordering::Relaxed);
+            if previous != enabled
+                && let Ok(mut config) = kc.daemon_config.write()
+            {
+                config.daemon.profile_keyboard_control = enabled;
+                if let Err(e) = config.save(&kc.config_path) {
+                    tracing::warn!("failed to persist profile_keyboard_control: {e}");
+                }
+                tracing::info!(
+                    "profile keyboard control {}",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+            }
+        }
         let mut settings = self
             .settings
             .write()
@@ -194,19 +255,29 @@ impl SettingsInterface {
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("invalid keyboard TOML: {e}")))?;
 
         // Forward brightness, color and mode to hardware keyboards.
+        // Empty color/mode mean "leave unchanged": the initial state returned by
+        // GetKeyboardState has both empty, and ITE controllers reject mode "".
         if !self.keyboards.is_empty() {
             let hw_brightness = ((new_state.brightness.clamp(0, 100) as f32 / 100.0) * 255.0) as u8;
-            let color = parse_hex_color(&new_state.color);
+            let color = (!new_state.color.is_empty()).then(|| parse_hex_color(&new_state.color));
             let mode = new_state.mode.to_lowercase();
             for kb in &self.keyboards {
                 if let Ok(mut guard) = kb.lock() {
                     let dev = guard.device_type().to_string();
-                    guard.set_color(0, color).map_err(|e| {
-                        zbus::fdo::Error::Failed(format!("keyboard {dev}: set_color failed: {e}"))
-                    })?;
-                    guard.set_mode(&mode).map_err(|e| {
-                        zbus::fdo::Error::Failed(format!("keyboard {dev}: set_mode failed: {e}"))
-                    })?;
+                    if let Some(color) = color {
+                        guard.set_color(0, color).map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: set_color failed: {e}"
+                            ))
+                        })?;
+                    }
+                    if !mode.is_empty() {
+                        guard.set_mode(&mode).map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: set_mode failed: {e}"
+                            ))
+                        })?;
+                    }
                     if hw_brightness == 0 {
                         guard.turn_off().map_err(|e| {
                             zbus::fdo::Error::Failed(format!(
@@ -241,7 +312,13 @@ impl SettingsInterface {
             .keyboard_state
             .write()
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        *state = new_state;
+        state.brightness = new_state.brightness;
+        if !new_state.color.is_empty() {
+            state.color = new_state.color;
+        }
+        if !new_state.mode.is_empty() {
+            state.mode = new_state.mode;
+        }
         Ok(())
     }
 
@@ -255,7 +332,7 @@ impl SettingsInterface {
                 PowerSettings {
                     governor,
                     epp,
-                    no_turbo,
+                    no_turbo: Some(no_turbo),
                 }
             }
             None => PowerSettings::default(),
@@ -290,10 +367,12 @@ impl SettingsInterface {
                     Err(_) => {}
                 }
             }
-            match gov.set_no_turbo(settings.no_turbo) {
-                Ok(()) => any_ok = true,
-                Err(e) if first_err.is_none() => first_err = Some(e),
-                Err(_) => {}
+            if let Some(no_turbo) = settings.no_turbo {
+                match gov.set_no_turbo(no_turbo) {
+                    Ok(()) => any_ok = true,
+                    Err(e) if first_err.is_none() => first_err = Some(e),
+                    Err(_) => {}
+                }
             }
 
             if !any_ok && let Some(e) = first_err {
@@ -447,6 +526,48 @@ mod tests {
     }
 
     #[test]
+    fn profile_keyboard_control_toggles_flag_and_persists() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        let flag = Arc::new(AtomicBool::new(true));
+        let daemon_config = Arc::new(std::sync::RwLock::new(
+            crate::config::DaemonConfig::default(),
+        ));
+        let device = make_test_device();
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![], None, None, true, false, false)
+                .with_keyboard_control(KeyboardControl {
+                    flag: flag.clone(),
+                    daemon_config: daemon_config.clone(),
+                    config_path: config_path.clone(),
+                });
+
+        let get =
+            || -> GlobalSettings { toml::from_str(&iface.get_global_settings().unwrap()).unwrap() };
+        assert_eq!(get().profile_keyboard_control, Some(true));
+
+        let mut off = get();
+        off.profile_keyboard_control = Some(false);
+        iface
+            .set_global_settings(&toml::to_string(&off).unwrap())
+            .unwrap();
+        assert!(!flag.load(Ordering::Relaxed), "applier flag must follow");
+        assert_eq!(get().profile_keyboard_control, Some(false));
+
+        // A client that doesn't know the key must not re-enable control.
+        iface
+            .set_global_settings("temperature_unit = \"celsius\"\nfan_control_enabled = true\ncpu_settings_enabled = true")
+            .unwrap();
+        assert!(!flag.load(Ordering::Relaxed), "absent key means unchanged");
+        let saved = crate::config::DaemonConfig::load(&config_path);
+        assert!(
+            !saved.daemon.profile_keyboard_control,
+            "must persist across restarts"
+        );
+    }
+
+    #[test]
     fn get_global_settings_defaults() {
         let device = make_test_device();
         let iface =
@@ -554,6 +675,95 @@ mod tests {
         assert_eq!(c.turn_on_count, 1);
         assert_eq!(c.turn_off_count, 0);
         assert!(c.flushed);
+    }
+
+    #[test]
+    fn set_keyboard_state_empty_color_and_mode_leave_hardware_unchanged() {
+        // Regression (IBM15I10, ITE 8291): the daemon's initial keyboard state
+        // has empty color/mode; echoing it back must not fail or reset color.
+        use crate::hid::{KeyboardLed, Rgb};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Calls {
+            colors: Vec<Rgb>,
+            modes: Vec<String>,
+            brightness: Option<u8>,
+        }
+
+        /// Behaves like the ITE drivers: unknown (incl. empty) modes are errors.
+        struct StrictKb(Arc<Mutex<Calls>>);
+        impl KeyboardLed for StrictKb {
+            fn set_brightness(&mut self, b: u8) -> std::io::Result<()> {
+                self.0.lock().unwrap().brightness = Some(b);
+                Ok(())
+            }
+            fn set_color(&mut self, _zone: u8, color: Rgb) -> std::io::Result<()> {
+                self.0.lock().unwrap().colors.push(color);
+                Ok(())
+            }
+            fn set_mode(&mut self, mode: &str) -> std::io::Result<()> {
+                if mode != "static" && mode != "breathing" {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("unknown mode: {mode}"),
+                    ));
+                }
+                self.0.lock().unwrap().modes.push(mode.to_string());
+                Ok(())
+            }
+            fn zone_count(&self) -> u8 {
+                1
+            }
+            fn turn_off(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn turn_on(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn device_type(&self) -> &str {
+                "strict"
+            }
+            fn available_modes(&self) -> Vec<String> {
+                vec!["static".into(), "breathing".into()]
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(StrictKb(calls.clone()))));
+        let device = make_test_device();
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false, false);
+
+        // Echo the initial (empty color/mode) state back with a new brightness.
+        let initial = iface.get_keyboard_state().unwrap();
+        let mut state: KeyboardState = toml::from_str(&initial).unwrap();
+        state.brightness = 40;
+        iface
+            .set_keyboard_state(&toml::to_string(&state).unwrap())
+            .expect("empty color/mode must be accepted");
+        {
+            let c = calls.lock().unwrap();
+            assert!(c.colors.is_empty(), "empty color must not touch hardware");
+            assert!(c.modes.is_empty(), "empty mode must not touch hardware");
+            assert_eq!(c.brightness, Some(102));
+        }
+
+        // A full update followed by a brightness-only update keeps color/mode.
+        iface
+            .set_keyboard_state("brightness = 50\ncolor = \"#ff8000\"\nmode = \"Breathing\"")
+            .unwrap();
+        iface.set_keyboard_state("brightness = 0").unwrap();
+        let stored: KeyboardState = toml::from_str(&iface.get_keyboard_state().unwrap()).unwrap();
+        assert_eq!(stored.brightness, 0);
+        assert_eq!(stored.color, "#ff8000");
+        assert_eq!(stored.mode, "Breathing");
+        let c = calls.lock().unwrap();
+        assert_eq!(c.colors, vec![Rgb::new(255, 128, 0)]);
+        assert_eq!(c.modes, vec!["breathing".to_string()]);
     }
 
     #[test]
@@ -683,6 +893,32 @@ mod tests {
     }
 
     #[test]
+    fn charging_priority_capability_follows_backend() {
+        let caps = |iface: &SettingsInterface| -> CapabilitiesResponse {
+            toml::from_str(&iface.get_capabilities().unwrap()).unwrap()
+        };
+
+        // Uniwill EC profile device (descriptor of the real IBM15I10 row).
+        let uniwill = DetectedDevice {
+            descriptor: tux_core::device_table::lookup_by_sku("IBM15I10").unwrap(),
+            ..make_test_device()
+        };
+        let base =
+            || SettingsInterface::new(&uniwill, true, 2, vec![], None, None, true, false, false);
+        assert!(caps(&base()).charging_profiles);
+        assert!(caps(&base()).charging_priority, "assumed until narrowed");
+        assert!(caps(&base().with_charging_priority(true)).charging_priority);
+        // Profile-only EC (IBM15I10 hardware): priority capability must be off.
+        assert!(!caps(&base().with_charging_priority(false)).charging_priority);
+
+        // Narrowing never turns it on where profiles are unsupported (Clevo).
+        let clevo = make_test_device();
+        let iface = SettingsInterface::new(&clevo, true, 2, vec![], None, None, true, false, false)
+            .with_charging_priority(true);
+        assert!(!caps(&iface).charging_priority);
+    }
+
+    #[test]
     fn power_settings_returns_defaults_without_governor() {
         let device = make_test_device();
         let iface =
@@ -691,7 +927,7 @@ mod tests {
         let power_toml = iface.get_power_settings().unwrap();
         let settings: PowerSettings = toml::from_str(&power_toml).unwrap();
         assert_eq!(settings.governor, "");
-        assert!(!settings.no_turbo);
+        assert_eq!(settings.no_turbo, None);
     }
 
     #[test]
@@ -735,6 +971,42 @@ mod tests {
         let settings: PowerSettings = toml::from_str(&power_toml).unwrap();
         assert_eq!(settings.governor, "powersave");
         assert_eq!(settings.epp, "balance_performance");
-        assert!(!settings.no_turbo);
+        assert_eq!(settings.no_turbo, Some(false));
+    }
+
+    #[test]
+    fn set_power_settings_without_no_turbo_leaves_turbo_untouched() {
+        // Regression: the TUI Power tab sends only `tgp_offset`; the missing
+        // `no_turbo` key used to deserialize as false and re-enable turbo.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let cpufreq = base.join("cpu0/cpufreq");
+        std::fs::create_dir_all(&cpufreq).unwrap();
+        std::fs::write(cpufreq.join("scaling_governor"), "powersave\n").unwrap();
+        let intel_pstate = base.join("intel_pstate");
+        std::fs::create_dir_all(&intel_pstate).unwrap();
+        std::fs::write(intel_pstate.join("no_turbo"), "1\n").unwrap();
+
+        let gov = Arc::new(CpuGovernor::with_path(base));
+        let device = make_test_device();
+        let iface = SettingsInterface::new(
+            &device,
+            true,
+            2,
+            vec![],
+            Some(gov),
+            None,
+            true,
+            false,
+            false,
+        );
+
+        iface.set_power_settings("tgp_offset = 10").unwrap();
+        let no_turbo = std::fs::read_to_string(intel_pstate.join("no_turbo")).unwrap();
+        assert_eq!(no_turbo.trim(), "1", "turbo state must not change");
+
+        iface.set_power_settings("no_turbo = false").unwrap();
+        let no_turbo = std::fs::read_to_string(intel_pstate.join("no_turbo")).unwrap();
+        assert_eq!(no_turbo.trim(), "0", "explicit no_turbo must still apply");
     }
 }

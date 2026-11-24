@@ -15,10 +15,10 @@ use tux_core::device_table;
 use tux_core::dmi::{DetectedDevice, DmiInfo};
 use tux_core::fan_curve::FanConfig;
 use tux_core::platform::Platform;
-use tux_core::profile::TuxProfile;
+use tux_core::profile::{ChargingSettings, TuxProfile};
 use zbus::proxy;
 
-use common::{MockChargingBackend, TestDaemonBuilder};
+use common::{MockChargingBackend, MockGpuPowerBackend, TestDaemonBuilder};
 
 // ── D-Bus Proxies ──────────────────────────────────────────────────────
 
@@ -310,6 +310,47 @@ governor = "performance"
     // Delete.
     profile.delete_profile("e2e-test").await.unwrap();
     assert!(profile.get_profile("e2e-test").await.is_err());
+
+    daemon.stop().await;
+}
+
+// ── E2E Test: IBM15I10 — profile-only charging capability wiring ───────
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn e2e_ibm15i10_profile_only_charging_hides_priority() {
+    // Regression: the backend's supports_priority() must reach GetCapabilities
+    // (dbus::serve_on_bus wiring), so the TUI can disable the priority field.
+    let profile_dir = tempfile::tempdir().unwrap();
+    let device = make_detected_device(
+        device_table::lookup_by_sku("IBM15I10").expect("IBM15I10 must be in device_table"),
+    );
+    let charging =
+        std::sync::Arc::new(MockChargingBackend::new(0, 0).with_profile_only("balanced"));
+    let gpu = std::sync::Arc::new(MockGpuPowerBackend::new(65));
+
+    let daemon = TestDaemonBuilder::new(&device, profile_dir.path())
+        .with_charging(charging)
+        .with_gpu(gpu)
+        .build()
+        .await;
+
+    let settings = SettingsProxy::new(&daemon.connection).await.unwrap();
+    let caps: CapabilitiesResponse =
+        toml::from_str(&settings.get_capabilities().await.unwrap()).unwrap();
+    assert!(caps.charging_profiles);
+    assert!(
+        !caps.charging_priority,
+        "profile-only EC must hide priority"
+    );
+    assert!(caps.gpu_control);
+    assert!(!caps.tdp_control);
+
+    let charging = ChargingProxy::new(&daemon.connection).await.unwrap();
+    let settings: ChargingSettings =
+        toml::from_str(&charging.get_charging_settings().await.unwrap()).unwrap();
+    assert_eq!(settings.profile.as_deref(), Some("balanced"));
+    assert_eq!(settings.priority, None);
 
     daemon.stop().await;
 }

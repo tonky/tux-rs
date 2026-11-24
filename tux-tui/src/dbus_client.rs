@@ -18,6 +18,7 @@ const SETTINGS_IFACE: &str = "com.tuxedocomputers.tccd.Settings";
 const SYSTEM_IFACE: &str = "com.tuxedocomputers.tccd.System";
 const PROFILE_IFACE: &str = "com.tuxedocomputers.tccd.Profile";
 const CHARGING_IFACE: &str = "com.tuxedocomputers.tccd.Charging";
+const GPU_POWER_IFACE: &str = "com.tuxedocomputers.tccd.GpuPower";
 
 impl DaemonClient {
     /// Connect to the daemon on the system bus (or session bus for development).
@@ -128,6 +129,26 @@ impl DaemonClient {
     /// Get TDP bounds as TOML string. Returns empty string if TDP is unavailable.
     pub async fn get_tdp_bounds(&self) -> Result<String, zbus::Error> {
         self.call_method(CPU_IFACE, "GetTdpBounds", &()).await
+    }
+
+    /// Get the current PL1 (sustained) power limit in watts; 0 without TDP.
+    pub async fn get_pl1(&self) -> Result<u32, zbus::Error> {
+        self.call_method(CPU_IFACE, "GetPl1", &()).await
+    }
+
+    /// Set PL1 in watts (the daemon clamps to the TDP bounds).
+    pub async fn set_pl1(&self, watts: u32) -> Result<(), zbus::Error> {
+        self.call_method(CPU_IFACE, "SetPl1", &(watts,)).await
+    }
+
+    /// Get the current PL2 (boost) power limit in watts; 0 without TDP.
+    pub async fn get_pl2(&self) -> Result<u32, zbus::Error> {
+        self.call_method(CPU_IFACE, "GetPl2", &()).await
+    }
+
+    /// Set PL2 in watts (the daemon clamps to the TDP bounds).
+    pub async fn set_pl2(&self, watts: u32) -> Result<(), zbus::Error> {
+        self.call_method(CPU_IFACE, "SetPl2", &(watts,)).await
     }
 
     /// Get CPU load (overall + per-core) as TOML string.
@@ -254,9 +275,27 @@ impl DaemonClient {
             .await
     }
 
-    /// Get GPU info as TOML.
+    /// Get GPU info as TOML (served by the daemon's System interface).
     pub async fn get_gpu_info(&self) -> Result<String, zbus::Error> {
-        self.call_method(SETTINGS_IFACE, "GetGpuInfo", &()).await
+        self.call_method(SYSTEM_IFACE, "GetGpuInfo", &()).await
+    }
+
+    /// Get the NVIDIA cTGP offset in watts (NB02 Uniwill only).
+    pub async fn get_ctgp_offset(&self) -> Result<u8, zbus::Error> {
+        self.call_method(GPU_POWER_IFACE, "GetCtgpOffset", &())
+            .await
+    }
+
+    /// Largest accepted cTGP offset in watts; `0` means not adjustable.
+    pub async fn get_ctgp_offset_max(&self) -> Result<u8, zbus::Error> {
+        self.call_method(GPU_POWER_IFACE, "GetCtgpOffsetMax", &())
+            .await
+    }
+
+    /// Set the NVIDIA cTGP offset in watts (NB02 Uniwill only).
+    pub async fn set_ctgp_offset(&self, watts: u8) -> Result<(), zbus::Error> {
+        self.call_method(GPU_POWER_IFACE, "SetCtgpOffset", &(watts,))
+            .await
     }
 
     /// Get power settings as TOML.

@@ -1,6 +1,10 @@
-//! Live regression test for TUXEDO InfinityBook Pro Gen8 (Uniwill).
+//! Live regression test for Uniwill laptops with known expectations.
 //!
-//! This test exercises every D-Bus API that the IBP Gen8 supports, using
+//! Supported devices (see [`expectations_for`]):
+//!   - TUXEDO InfinityBook Pro Gen8 (IBP1XI08MK1 / IBP16I08MK2 …)
+//!   - TUXEDO InfinityBook Max 15 Gen10 Intel (IBM15I10)
+//!
+//! This test exercises every D-Bus API the device supports, using
 //! the same `DaemonClient` library that the TUI uses.  It is `#[ignore]`d
 //! by default; run with:
 //!
@@ -10,7 +14,8 @@
 //!
 //!     just live-test
 //!
-//! Known IBP Gen8 MK1 capabilities:
+//! Known IBP Gen8 MK1 capabilities (IBM15I10 differences are in
+//! [`LiveExpectations`]):
 //!   - Uniwill platform, 2 fans (CPU + GPU), max ~6000 RPM
 //!   - RGB keyboard backlight (ITE)
 //!   - Power profiles (governor + EPP)
@@ -50,6 +55,55 @@ async fn connect() -> DaemonClient {
         .expect("daemon not reachable on system or session bus")
 }
 
+/// Device-specific expectations for the live run.
+#[derive(Debug, Clone, Copy)]
+struct LiveExpectations {
+    label: &'static str,
+    fan_count: u32,
+    min_cpu_count: u32,
+    tdp_control: bool,
+    gpu_control: bool,
+    /// Whether the EC exposes `charging_priority` (not only `charging_profile`).
+    charging_priority: bool,
+    /// Exercise a PL1/PL2 set → read-back → restore round-trip.
+    tdp_roundtrip: bool,
+}
+
+const IBP_GEN8: LiveExpectations = LiveExpectations {
+    label: "IBP Gen8",
+    fan_count: 2,
+    min_cpu_count: 14,
+    // TDP control is available via Intel RAPL on IBP1XI08MK1.
+    tdp_control: true,
+    gpu_control: false,
+    charging_priority: true,
+    tdp_roundtrip: false,
+};
+
+const IBM15I10: LiveExpectations = LiveExpectations {
+    label: "IBM15I10",
+    fan_count: 2,
+    min_cpu_count: 16,
+    // Uniwill EC via tuxedo_io (driver table: PL1/PL2 10-90 W); never RAPL.
+    tdp_control: true,
+    // RTX 5060 via tuxedo_nb02_nvidia_power_ctrl.
+    gpu_control: true,
+    // Driver only creates charging_profile/ on this board.
+    charging_priority: false,
+    tdp_roundtrip: true,
+};
+
+/// Pick expectations from the daemon-reported device name, or fail loudly.
+fn expectations_for(device_name: &str) -> LiveExpectations {
+    if device_name.contains("InfinityBook Pro") && device_name.contains("Gen8") {
+        IBP_GEN8
+    } else if device_name.contains("InfinityBook Max 15 Gen10 Intel") {
+        IBM15I10
+    } else {
+        panic!("no live expectations for device {device_name:?}; add one to LiveExpectations")
+    }
+}
+
 fn section(name: &str) {
     println!("\n{}", "=".repeat(60));
     println!("  {name}");
@@ -74,10 +128,10 @@ async fn get_charging_settings_retry(client: &DaemonClient) -> Result<String, zb
 
 #[tokio::test]
 #[ignore]
-async fn ibp_gen8_live_regression() {
+async fn uniwill_live_regression() {
     let client = connect().await;
 
-    // ── 1. Device identity (must be IBP Gen8) ──────────────────
+    // ── 1. Device identity (must have known expectations) ──────
     section("Device Identity");
 
     let device_name: String = client
@@ -85,11 +139,10 @@ async fn ibp_gen8_live_regression() {
         .await
         .and_then(|v| String::try_from(v).map_err(|e| zbus::Error::Failure(e.to_string())))
         .expect("DeviceName property");
-    assert!(
-        device_name.contains("InfinityBook Pro") && device_name.contains("Gen8"),
-        "expected InfinityBook Pro Gen8, got: {device_name}"
-    );
-    println!("  device_name={device_name}");
+    let exp = expectations_for(&device_name);
+    println!("  device_name={device_name} (expectations: {})", exp.label);
+    // Charge priority the test profile sets; reads back as None without the EC group.
+    let expected_priority = exp.charging_priority.then_some("performance");
 
     let platform: String = client
         .get_device_property("Platform")
@@ -145,8 +198,10 @@ async fn ibp_gen8_live_regression() {
 
     let cpu_count = client.get_cpu_count().await.expect("get_cpu_count failed");
     assert!(
-        cpu_count >= 14,
-        "expected ≥14 cores for IBP Gen8, got {cpu_count}"
+        cpu_count >= exp.min_cpu_count,
+        "expected ≥{} cores for {}, got {cpu_count}",
+        exp.min_cpu_count,
+        exp.label
     );
     println!("  cpu_count={cpu_count}");
 
@@ -177,7 +232,7 @@ async fn ibp_gen8_live_regression() {
         per_core.lines().count()
     );
 
-    // ── 3. Capabilities — assert IBP Gen8 expectations ─────────
+    // ── 3. Capabilities — assert device expectations ───────────
     section("Capabilities");
 
     let caps_toml = client
@@ -187,16 +242,33 @@ async fn ibp_gen8_live_regression() {
     let caps: CapabilitiesResponse =
         toml::from_str(&caps_toml).expect("bad CapabilitiesResponse TOML");
 
-    assert!(caps.fan_control, "IBP Gen8 must have fan_control");
-    assert_eq!(caps.fan_count, 2, "IBP Gen8 has 2 fans");
-    assert!(caps.power_profiles, "IBP Gen8 must have power profiles");
-    // GPU control is not available on this model.
-    // TDP control is available via Intel RAPL on IBP1XI08MK1.
-    assert!(
-        caps.tdp_control,
-        "IBP Gen8 MK1 should have RAPL TDP control"
+    assert!(caps.fan_control, "{} must have fan_control", exp.label);
+    assert_eq!(
+        u32::from(caps.fan_count),
+        exp.fan_count,
+        "{} fan count",
+        exp.label
     );
-    assert!(!caps.gpu_control, "IBP Gen8 should not have GPU control");
+    assert!(
+        caps.power_profiles,
+        "{} must have power profiles",
+        exp.label
+    );
+    assert_eq!(
+        caps.tdp_control, exp.tdp_control,
+        "{} tdp_control",
+        exp.label
+    );
+    assert_eq!(
+        caps.gpu_control, exp.gpu_control,
+        "{} gpu_control",
+        exp.label
+    );
+    assert_eq!(
+        caps.charging_priority, exp.charging_priority,
+        "{} charging_priority",
+        exp.label
+    );
 
     println!(
         "  fan_control={} fan_count={}",
@@ -225,7 +297,12 @@ async fn ibp_gen8_live_regression() {
 
     let fan_info = client.get_fan_info().await.expect("get_fan_info failed");
     let num_fans = fan_info.3;
-    assert_eq!(num_fans, 2, "IBP Gen8 has 2 fans");
+    assert_eq!(
+        u32::from(num_fans),
+        exp.fan_count,
+        "{} fan count",
+        exp.label
+    );
     println!(
         "  num_fans={} max_rpm={} min_rpm={} multi_fan={}",
         num_fans, fan_info.0, fan_info.1, fan_info.2
@@ -501,7 +578,7 @@ governor = "powersave"
             {
                 let matches = if caps.charging_profiles {
                     parsed.profile.as_deref() == Some("balanced")
-                        && parsed.priority.as_deref() == Some("performance")
+                        && parsed.priority.as_deref() == expected_priority
                 } else {
                     parsed.start_threshold == Some(40) && parsed.end_threshold == Some(80)
                 };
@@ -521,10 +598,12 @@ governor = "powersave"
             );
             assert_eq!(
                 applied.priority.as_deref(),
-                Some("performance"),
-                "profile activation should have set charging priority to 'performance'"
+                expected_priority,
+                "profile activation should have set charging priority to {expected_priority:?}"
             );
-            println!("  profile charging applied: profile=balanced, priority=performance — OK");
+            println!(
+                "  profile charging applied: profile=balanced, priority={expected_priority:?} — OK"
+            );
         } else {
             assert_eq!(
                 applied.start_threshold,
@@ -564,7 +643,7 @@ governor = "powersave"
             {
                 let matches = if caps.charging_profiles {
                     parsed.profile.as_deref() == Some("balanced")
-                        && parsed.priority.as_deref() == Some("performance")
+                        && parsed.priority.as_deref() == expected_priority
                 } else {
                     parsed.start_threshold == Some(40) && parsed.end_threshold == Some(80)
                 };
@@ -584,11 +663,11 @@ governor = "powersave"
             );
             assert_eq!(
                 applied.priority.as_deref(),
-                Some("performance"),
-                "battery profile activation should have set charging priority to 'performance'"
+                expected_priority,
+                "battery profile activation should have set charging priority to {expected_priority:?}"
             );
             println!(
-                "  battery profile charging applied: profile=balanced, priority=performance — OK"
+                "  battery profile charging applied: profile=balanced, priority={expected_priority:?} — OK"
             );
         } else {
             assert_eq!(
@@ -999,6 +1078,14 @@ scaling_max_frequency = 3500000
             orig_kbd_parsed.brightness, orig_kbd_parsed.color, orig_kbd_parsed.mode
         );
 
+        // Regression: echoing the daemon's own state back must work even when
+        // color/mode are still empty (ITE controllers reject mode "").
+        client
+            .set_keyboard_state(&orig_kbd)
+            .await
+            .expect("echoing GetKeyboardState back must succeed");
+        println!("  echo original state back: OK");
+
         // Test: set brightness to 75, mode to "Static", color to "#ff0000".
         let test_kbd_state = KeyboardState {
             brightness: 75,
@@ -1036,22 +1123,30 @@ scaling_max_frequency = 3500000
         println!("  set brightness=0 (off): OK");
 
         // Test: set brightness to 100 (max).
+        // Use an animation the hardware advertises (ITE rejects unknown names;
+        // sysfs keyboards only list "static").
+        let anim_mode = caps
+            .keyboard_modes
+            .iter()
+            .find(|m| m.as_str() != "static")
+            .cloned()
+            .unwrap_or_else(|| "static".into());
         let max_state = KeyboardState {
             brightness: 100,
             color: "#ffffff".into(),
-            mode: "Breathe".into(),
+            mode: anim_mode.clone(),
         };
         let max_toml = toml::to_string(&max_state).unwrap();
         client
             .set_keyboard_state(&max_toml)
             .await
-            .expect("set_keyboard_state(100, Breathe) failed");
+            .unwrap_or_else(|e| panic!("set_keyboard_state(100, {anim_mode}) failed: {e}"));
 
         let rb3 = client.get_keyboard_state().await.unwrap();
         let rb3_parsed: KeyboardState = toml::from_str(&rb3).unwrap();
         assert_eq!(rb3_parsed.brightness, 100, "brightness should be 100");
-        assert_eq!(rb3_parsed.mode, "Breathe", "mode should be Breathe");
-        println!("  set brightness=100, mode=Breathe: OK");
+        assert_eq!(rb3_parsed.mode, anim_mode, "mode should be {anim_mode}");
+        println!("  set brightness=100, mode={anim_mode}: OK");
 
         // Restore original.
         client
@@ -1082,7 +1177,8 @@ scaling_max_frequency = 3500000
     // Verify we see governor and EPP fields.
     assert!(
         orig_power.contains("governor") || orig_power.contains("epp"),
-        "power settings should contain governor/epp for IBP Gen8"
+        "power settings should contain governor/epp for {}",
+        exp.label
     );
 
     // Toggle governor to performance and back.
@@ -1109,6 +1205,23 @@ scaling_max_frequency = 3500000
     } else {
         println!("  skipping governor toggle (not powersave currently)");
     }
+
+    // Regression: a partial update without `no_turbo` (what the old Power tab
+    // sent) must leave turbo untouched.
+    let turbo_before = client.get_power_settings().await.unwrap();
+    let _ = client.set_power_settings("tgp_offset = 0").await;
+    let turbo_after = client.get_power_settings().await.unwrap();
+    let no_turbo = |t: &str| {
+        t.lines()
+            .find(|l| l.trim_start().starts_with("no_turbo"))
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        no_turbo(&turbo_after),
+        no_turbo(&turbo_before),
+        "SetPowerSettings without no_turbo changed turbo state"
+    );
+    println!("  partial SetPowerSettings left no_turbo unchanged: OK");
 
     // ── 9. Charging — branch on platform type ────────────────────
     if caps.charging_profiles {
@@ -1147,8 +1260,32 @@ scaling_max_frequency = 3500000
                     println!("  set profile={test_profile}: OK");
                 }
 
-                // Test 2: Cycle through valid priorities.
-                for test_priority in &["charge_battery", "performance"] {
+                // Test 2: Cycle through valid priorities (or verify they're ignored).
+                let priorities: &[&str] = if exp.charging_priority {
+                    &["charge_battery", "performance"]
+                } else {
+                    &[]
+                };
+                if !exp.charging_priority {
+                    let test_settings = ChargingSettings {
+                        profile: charging.profile.clone(),
+                        priority: Some("performance".into()),
+                        ..Default::default()
+                    };
+                    client
+                        .set_charging_settings(&toml::to_string(&test_settings).unwrap())
+                        .await
+                        .expect("priority write must be accepted (ignored) without EC support");
+                    let rb_toml = get_charging_settings_retry(&client).await.unwrap();
+                    let rb: ChargingSettings = toml::from_str(&rb_toml).unwrap();
+                    assert_eq!(
+                        rb.priority, None,
+                        "unsupported priority must read back as None"
+                    );
+                    assert_eq!(rb.profile, charging.profile, "profile must be untouched");
+                    println!("  priority unsupported: write ignored, readback None — OK");
+                }
+                for test_priority in priorities {
                     let test_settings = ChargingSettings {
                         profile: charging.profile.clone(),
                         priority: Some(test_priority.to_string()),
@@ -1304,9 +1441,60 @@ scaling_max_frequency = 3500000
     // ── 10. GPU info (graceful — no dedicated GPU control) ─────
     section("GPU Info");
 
-    match client.get_gpu_info().await {
-        Ok(gpu) => println!("  {}", gpu.trim().replace('\n', " | ")),
-        Err(e) => println!("  not available: {e} (expected — IBP Gen8 has no GPU control)"),
+    // Regression: the client used to call this on the Settings interface and
+    // always got UnknownMethod. The System interface is always registered.
+    let gpu = client.get_gpu_info().await.expect("get_gpu_info failed");
+    let gpu_info: tux_core::dbus_types::GpuInfoResponse =
+        toml::from_str(&gpu).expect("bad GpuInfoResponse TOML");
+    println!(
+        "  {} GPU(s): {}",
+        gpu_info.gpus.len(),
+        gpu.trim().replace('\n', " | ")
+    );
+
+    // ── 10b. NVIDIA cTGP offset (save/restore) ─────────────────
+    if exp.gpu_control {
+        section("GPU Power — cTGP Offset");
+        let orig = client
+            .get_ctgp_offset()
+            .await
+            .expect("get_ctgp_offset failed");
+        println!("  original ctgp_offset={orig} W");
+        let max = client
+            .get_ctgp_offset_max()
+            .await
+            .expect("get_ctgp_offset_max failed");
+        // nvidia-smi present on test machines: TCC-style range must be known.
+        assert!(max > 0, "{}: cTGP offset max must be > 0", exp.label);
+        println!("  ctgp_offset_max={max} W");
+        if max < u8::MAX {
+            assert!(
+                client.set_ctgp_offset(max + 1).await.is_err(),
+                "offset above max must be rejected"
+            );
+            assert_eq!(client.get_ctgp_offset().await.unwrap(), orig);
+            println!("  set ctgp_offset={} W rejected: OK", max + 1);
+        }
+        let test_value = if orig == 0 { 5.min(max) } else { 0 };
+        client
+            .set_ctgp_offset(test_value)
+            .await
+            .expect("set_ctgp_offset failed");
+        let rb = client.get_ctgp_offset().await.expect("readback failed");
+        assert_eq!(rb, test_value, "ctgp_offset readback mismatch");
+        println!("  set ctgp_offset={test_value} W: OK");
+        client
+            .set_ctgp_offset(orig)
+            .await
+            .expect("restore ctgp_offset failed");
+        assert_eq!(client.get_ctgp_offset().await.unwrap(), orig);
+        println!("  restored ctgp_offset={orig} W: OK");
+    } else {
+        assert!(
+            client.get_ctgp_offset().await.is_err(),
+            "{}: GpuPower interface must not be served",
+            exp.label
+        );
     }
 
     // ── 11. Display brightness (save/restore) ─────────────────
@@ -1398,27 +1586,118 @@ scaling_max_frequency = 3500000
         }
     }
 
-    // ── TDP (RAPL) — bounds fetch + round-trip ─────────────────
-    section("TDP (RAPL)");
+    // ── TDP — bounds fetch ─────────────────────────────────────
+    section("TDP");
 
-    let bounds_toml = client
-        .get_tdp_bounds()
-        .await
-        .expect("get_tdp_bounds failed");
-    assert!(
-        !bounds_toml.is_empty(),
-        "TDP bounds must be non-empty on IBP Gen8 MK1 (RAPL enabled)"
-    );
-    let bounds: tux_core::device::TdpBounds =
-        toml::from_str(&bounds_toml).expect("TDP bounds TOML must deserialize into TdpBounds");
-    println!(
-        "  PL1: {}-{} W, PL2: {}-{} W",
-        bounds.pl1_min, bounds.pl1_max, bounds.pl2_min, bounds.pl2_max
-    );
-    assert!(bounds.pl1_max >= 15, "PL1 max should be at least 15 W");
-    assert!(bounds.pl2_max >= 15, "PL2 max should be at least 15 W");
+    if exp.tdp_control {
+        let bounds_toml = client
+            .get_tdp_bounds()
+            .await
+            .expect("get_tdp_bounds failed");
+        assert!(
+            !bounds_toml.is_empty(),
+            "TDP bounds must be non-empty on {} (TDP enabled)",
+            exp.label
+        );
+        let bounds: tux_core::device::TdpBounds =
+            toml::from_str(&bounds_toml).expect("TDP bounds TOML must deserialize into TdpBounds");
+        println!(
+            "  PL1: {}-{} W, PL2: {}-{} W",
+            bounds.pl1_min, bounds.pl1_max, bounds.pl2_min, bounds.pl2_max
+        );
+        assert!(bounds.pl1_max >= 15, "PL1 max should be at least 15 W");
+        assert!(bounds.pl2_max >= 15, "PL2 max should be at least 15 W");
+
+        if exp.tdp_roundtrip {
+            let (orig1, orig2) = (
+                client.get_pl1().await.expect("get_pl1"),
+                client.get_pl2().await.expect("get_pl2"),
+            );
+            println!("  original PL1={orig1} W PL2={orig2} W");
+            // One watt away from the current value, inside the bounds.
+            let step = |orig: u32, min: u32, max: u32| {
+                let t = if orig > min { orig - 1 } else { orig + 1 };
+                assert!(
+                    t != orig && (min..=max).contains(&t),
+                    "no test value for {orig}"
+                );
+                t
+            };
+            let t1 = step(orig1, bounds.pl1_min, bounds.pl1_max);
+            let t2 = step(orig2, bounds.pl2_min, bounds.pl2_max);
+
+            // Run every check, then always restore before reporting failures,
+            // so a mid-way assertion can't leave the power limits modified.
+            let checks: Result<(), String> = async {
+                let get = |r: Result<u32, zbus::Error>| r.map_err(|e| e.to_string());
+                client
+                    .set_pl1(t1)
+                    .await
+                    .map_err(|e| format!("set_pl1: {e}"))?;
+                client
+                    .set_pl2(t2)
+                    .await
+                    .map_err(|e| format!("set_pl2: {e}"))?;
+                let (r1, r2) = (get(client.get_pl1().await)?, get(client.get_pl2().await)?);
+                if (r1, r2) != (t1, t2) {
+                    return Err(format!("read-back {r1}/{r2} W, expected {t1}/{t2} W"));
+                }
+                println!("  set PL1={t1} W PL2={t2} W: OK");
+                // Out-of-range requests clamp to the bounds instead of failing.
+                // PL2 is used so PL1 <= PL2 holds throughout.
+                client
+                    .set_pl2(bounds.pl2_max + 50)
+                    .await
+                    .map_err(|e| format!("set_pl2 above max: {e}"))?;
+                let r2 = get(client.get_pl2().await)?;
+                if r2 != bounds.pl2_max {
+                    return Err(format!(
+                        "PL2 above max read back {r2} W, expected {} W",
+                        bounds.pl2_max
+                    ));
+                }
+                println!("  PL2 above max clamped to {} W: OK", bounds.pl2_max);
+                Ok(())
+            }
+            .await;
+            // Restore PL2 first so raising PL1 back never exceeds PL2.
+            let restore2 = client.set_pl2(orig2).await;
+            let restore1 = client.set_pl1(orig1).await;
+            checks.expect("TDP round-trip");
+            restore2.expect("restore PL2");
+            restore1.expect("restore PL1");
+            assert_eq!(client.get_pl1().await.unwrap(), orig1, "PL1 restored");
+            assert_eq!(client.get_pl2().await.unwrap(), orig2, "PL2 restored");
+            println!("  restored PL1={orig1} W PL2={orig2} W: OK");
+        }
+    } else {
+        // The CPU interface may be absent entirely or report empty bounds.
+        if let Ok(bounds_toml) = client.get_tdp_bounds().await {
+            assert!(
+                bounds_toml.is_empty(),
+                "{}: TDP bounds must be empty without a TDP backend, got {bounds_toml:?}",
+                exp.label
+            );
+        }
+        println!("  no TDP backend (expected for {})", exp.label);
+    }
 
     // ── Done ───────────────────────────────────────────────────
-    section("PASSED — IBP Gen8 Live Regression");
+    section(&format!("PASSED — {} Live Regression", exp.label));
     println!("  All live regression checks passed!");
+}
+
+/// Hermetic guard: live expectations must resolve for the device-table names
+/// the daemon reports, so a rename can't silently orphan a live test.
+#[test]
+fn live_expectations_match_device_table_names() {
+    use tux_core::device_table::lookup_by_sku;
+    for (sku, label) in [
+        ("IBP1XI08MK1", "IBP Gen8"),
+        ("IBP16I08MK2", "IBP Gen8"),
+        ("IBM15I10", "IBM15I10"),
+    ] {
+        let name = lookup_by_sku(sku).expect("SKU in device table").name;
+        assert_eq!(expectations_for(name).label, label, "{sku} → {name}");
+    }
 }

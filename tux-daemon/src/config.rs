@@ -47,6 +47,9 @@ pub struct DaemonSection {
     pub log_level: String,
     /// Seconds after last D-Bus client disconnects before switching to idle polling.
     pub idle_timeout_s: u64,
+    /// Whether applying a profile sets the keyboard backlight brightness.
+    /// `false` leaves the keyboard light entirely to the user.
+    pub profile_keyboard_control: bool,
 }
 
 impl Default for DaemonSection {
@@ -54,6 +57,7 @@ impl Default for DaemonSection {
         Self {
             log_level: "info".to_string(),
             idle_timeout_s: 30,
+            profile_keyboard_control: true,
         }
     }
 }

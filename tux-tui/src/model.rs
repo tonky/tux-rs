@@ -438,7 +438,7 @@ impl ProfilesState {
         // ── TDP fields (only shown when daemon reports TDP bounds) ──
         if let Some(b) = tdp {
             fields.push(FormField {
-                label: "PL1 W (0=Unset)".into(),
+                label: format!("PL1 W (0=Unset, {}-{})", b.pl1_min, b.pl1_max),
                 key: "tdp_pl1".into(),
                 field_type: FieldType::Number {
                     value: profile.tdp.as_ref().and_then(|t| t.pl1).unwrap_or(0) as i64,
@@ -449,7 +449,7 @@ impl ProfilesState {
                 enabled: !read_only,
             });
             fields.push(FormField {
-                label: "PL2 W (0=Unset)".into(),
+                label: format!("PL2 W (0=Unset, {}-{})", b.pl2_min, b.pl2_max),
                 key: "tdp_pl2".into(),
                 field_type: FieldType::Number {
                     value: profile.tdp.as_ref().and_then(|t| t.pl2).unwrap_or(0) as i64,
@@ -699,6 +699,12 @@ pub fn settings_form() -> FormTabState {
             field_type: FieldType::Bool(true),
             enabled: true,
         },
+        FormField {
+            label: "Profiles Set Keyboard Light".into(),
+            key: "profile_keyboard_control".into(),
+            field_type: FieldType::Bool(true),
+            enabled: true,
+        },
     ])
 }
 
@@ -810,18 +816,30 @@ pub struct PowerState {
     pub dgpu_power: Option<f32>,
     pub igpu_name: String,
     pub igpu_usage: Option<u8>,
+    /// dGPU runtime-PM state ("active" / "suspended") when reported.
+    pub dgpu_state: Option<String>,
+    pub dgpu_freq: Option<u32>,
+    pub igpu_power: Option<f32>,
+    pub igpu_freq: Option<u32>,
+    /// Daemon reported `gpu_control` (NB02 cTGP backend present).
+    pub gpu_control: bool,
+    /// Daemon-reported cTGP offset maximum (W); 0 = not adjustable.
+    pub tgp_offset_max: i64,
 }
 
 impl PowerState {
     pub fn new() -> Self {
+        // cTGP offset in watts. The range (0..=max) comes from the daemon's
+        // GpuPower.GetCtgpOffsetMax; until then (or when it is 0) the field
+        // stays disabled.
         let mut form_tab = FormTabState::new(vec![FormField {
-            label: "TGP Offset".into(),
+            label: "TGP Offset (W)".into(),
             key: "tgp_offset".into(),
             field_type: FieldType::Number {
                 value: 0,
-                min: -15,
-                max: 15,
-                step: 1,
+                min: 0,
+                max: 0,
+                step: 5,
             },
             enabled: false,
         }]);
@@ -835,6 +853,51 @@ impl PowerState {
             dgpu_power: None,
             igpu_name: String::new(),
             igpu_usage: None,
+            dgpu_state: None,
+            dgpu_freq: None,
+            igpu_power: None,
+            igpu_freq: None,
+            gpu_control: false,
+            tgp_offset_max: 0,
+        }
+    }
+
+    fn tgp_field_mut(&mut self) -> Option<&mut FormField> {
+        self.form_tab
+            .form
+            .fields
+            .iter_mut()
+            .find(|f| f.key == "tgp_offset")
+    }
+
+    /// Apply the daemon-reported cTGP range plus the current hardware value.
+    ///
+    /// The field's upper bound is widened to `current` if needed, so a
+    /// read-only (max 0) or out-of-range hardware value is still shown as-is.
+    pub fn apply_tgp_offset_range(&mut self, max: i64, current: i64) {
+        self.tgp_offset_max = max.max(0);
+        let display_max = self.tgp_offset_max.max(current);
+        if let Some(field) = self.tgp_field_mut()
+            && let FieldType::Number {
+                value, max: fmax, ..
+            } = &mut field.field_type
+        {
+            *fmax = display_max;
+            *value = (*value).clamp(0, display_max);
+        }
+        self.refresh_tgp_enabled();
+    }
+
+    /// Apply the daemon's `gpu_control` capability.
+    pub fn set_gpu_control(&mut self, gpu_control: bool) {
+        self.gpu_control = gpu_control;
+        self.refresh_tgp_enabled();
+    }
+
+    fn refresh_tgp_enabled(&mut self) {
+        let enabled = self.gpu_control && self.tgp_offset_max > 0;
+        if let Some(field) = self.tgp_field_mut() {
+            field.enabled = enabled;
         }
     }
 }
@@ -1933,9 +1996,9 @@ mod tests {
     fn tdp_fields_hidden_without_bounds() {
         let profile = tux_core::profile::builtin_profiles()[0].clone();
         let form = ProfilesState::build_editor_form(&profile, None, None);
-        let labels: Vec<&str> = form.fields.iter().map(|f| f.label.as_str()).collect();
-        assert!(!labels.contains(&"PL1 W (0=Unset)"));
-        assert!(!labels.contains(&"PL2 W (0=Unset)"));
+        let keys: Vec<&str> = form.fields.iter().map(|f| f.key.as_str()).collect();
+        assert!(!keys.contains(&"tdp_pl1"));
+        assert!(!keys.contains(&"tdp_pl2"));
     }
 
     #[test]
@@ -1950,19 +2013,30 @@ mod tests {
             pl4_max: None,
         };
         let form = ProfilesState::build_editor_form(&profile, None, Some(&bounds));
-        let labels: Vec<&str> = form.fields.iter().map(|f| f.label.as_str()).collect();
-        assert!(labels.contains(&"PL1 W (0=Unset)"));
-        assert!(labels.contains(&"PL2 W (0=Unset)"));
+        let keys: Vec<&str> = form.fields.iter().map(|f| f.key.as_str()).collect();
+        assert!(keys.contains(&"tdp_pl1"));
+        assert!(keys.contains(&"tdp_pl2"));
+        // Labels show the effective range (0 = unset).
+        let label = |k: &str| {
+            form.fields
+                .iter()
+                .find(|f| f.key == k)
+                .unwrap()
+                .label
+                .clone()
+        };
+        assert_eq!(label("tdp_pl1"), "PL1 W (0=Unset, 5-28)");
+        assert_eq!(label("tdp_pl2"), "PL2 W (0=Unset, 10-40)");
 
         // Bounds should be respected.
         for field in &form.fields {
-            match field.label.as_str() {
-                "PL1 W (0=Unset)" => {
+            match field.key.as_str() {
+                "tdp_pl1" => {
                     if let FieldType::Number { max, .. } = field.field_type {
                         assert_eq!(max, 28);
                     }
                 }
-                "PL2 W (0=Unset)" => {
+                "tdp_pl2" => {
                     if let FieldType::Number { max, .. } = field.field_type {
                         assert_eq!(max, 40);
                     }
@@ -2020,7 +2094,7 @@ mod tests {
 
         // Set both to 0.
         for field in &mut form.fields {
-            if matches!(field.label.as_str(), "PL1 W (0=Unset)" | "PL2 W (0=Unset)")
+            if matches!(field.key.as_str(), "tdp_pl1" | "tdp_pl2")
                 && let FieldType::Number { value, .. } = &mut field.field_type
             {
                 *value = 0;

@@ -361,6 +361,10 @@ mod inner {
             };
             self.store.read().ok()?.get(id).cloned()
         }
+
+        fn nvidia_power_limits(&self) -> Option<(f64, f64)> {
+            self.gpu_backend.as_ref()?.power_limits_w()
+        }
     }
 
     #[interface(name = "com.tuxedocomputers.tccd")]
@@ -860,19 +864,23 @@ mod inner {
             // No-op: not implemented in tux-rs.
         }
 
+        // TCC semantics: real nvidia-smi limits (the GUI's cTGP slider spans
+        // max − default), or -1/-1 + unavailable when they are unknown.
         #[zbus(name = "GetNVIDIAPowerCTRLDefaultPowerLimit")]
         fn get_nvidia_power_ctrl_default_power_limit(&self) -> i32 {
-            0
+            self.nvidia_power_limits()
+                .map_or(-1, |(default_w, _)| default_w.round() as i32)
         }
 
         #[zbus(name = "GetNVIDIAPowerCTRLMaxPowerLimit")]
         fn get_nvidia_power_ctrl_max_power_limit(&self) -> i32 {
-            1000
+            self.nvidia_power_limits()
+                .map_or(-1, |(_, max_w)| max_w.round() as i32)
         }
 
         #[zbus(name = "GetNVIDIAPowerCTRLAvailable")]
         fn get_nvidia_power_ctrl_available(&self) -> bool {
-            self.gpu_backend.is_some()
+            self.nvidia_power_limits().is_some()
         }
 
         #[zbus(name = "GetIsUnsupportedConfigurableTGPDevice")]
@@ -945,6 +953,10 @@ mod inner {
         }
 
         fn make_iface() -> TccCompatInterface {
+            make_iface_with_gpu(None)
+        }
+
+        fn make_iface_with_gpu(gpu: Option<Arc<dyn GpuPowerBackend>>) -> TccCompatInterface {
             let dir = tempfile::tempdir().unwrap();
             let mut store = ProfileStore::new(dir.path()).unwrap();
             // Add test profiles.
@@ -977,7 +989,7 @@ mod inner {
                 power_rx,
                 None, // no charging
                 vec![],
-                None, // no GPU
+                gpu,
                 None, // no CPU governor
                 None, // no TDP
             )
@@ -1138,10 +1150,45 @@ mod inner {
 
         #[test]
         fn nvidia_power_without_backend() {
+            // TCC reports -1/-1 and unavailable when limits are unknown.
             let iface = make_iface();
             assert!(!iface.get_nvidia_power_ctrl_available());
-            assert_eq!(iface.get_nvidia_power_ctrl_default_power_limit(), 0);
-            assert_eq!(iface.get_nvidia_power_ctrl_max_power_limit(), 1000);
+            assert_eq!(iface.get_nvidia_power_ctrl_default_power_limit(), -1);
+            assert_eq!(iface.get_nvidia_power_ctrl_max_power_limit(), -1);
+        }
+
+        struct LimitedGpu(Option<(f64, f64)>);
+
+        impl GpuPowerBackend for LimitedGpu {
+            fn get_ctgp_offset(&self) -> std::io::Result<u8> {
+                Ok(0)
+            }
+            fn set_ctgp_offset(&self, _watts: u8) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn ctgp_offset_max(&self) -> u8 {
+                0
+            }
+            fn power_limits_w(&self) -> Option<(f64, f64)> {
+                self.0
+            }
+        }
+
+        #[test]
+        fn nvidia_power_reports_real_limits() {
+            // Regression: compat used to advertise 0..1000 W to TCC's GUI.
+            let iface = make_iface_with_gpu(Some(Arc::new(LimitedGpu(Some((50.0, 115.0))))));
+            assert!(iface.get_nvidia_power_ctrl_available());
+            assert_eq!(iface.get_nvidia_power_ctrl_default_power_limit(), 50);
+            assert_eq!(iface.get_nvidia_power_ctrl_max_power_limit(), 115);
+        }
+
+        #[test]
+        fn nvidia_power_unavailable_without_limits() {
+            // Backend present but nvidia-smi missing: TCC hides cTGP.
+            let iface = make_iface_with_gpu(Some(Arc::new(LimitedGpu(None))));
+            assert!(!iface.get_nvidia_power_ctrl_available());
+            assert_eq!(iface.get_nvidia_power_ctrl_max_power_limit(), -1);
         }
     }
 }

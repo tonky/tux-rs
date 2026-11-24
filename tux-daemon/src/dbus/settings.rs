@@ -194,19 +194,29 @@ impl SettingsInterface {
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("invalid keyboard TOML: {e}")))?;
 
         // Forward brightness, color and mode to hardware keyboards.
+        // Empty color/mode mean "leave unchanged": the initial state returned by
+        // GetKeyboardState has both empty, and ITE controllers reject mode "".
         if !self.keyboards.is_empty() {
             let hw_brightness = ((new_state.brightness.clamp(0, 100) as f32 / 100.0) * 255.0) as u8;
-            let color = parse_hex_color(&new_state.color);
+            let color = (!new_state.color.is_empty()).then(|| parse_hex_color(&new_state.color));
             let mode = new_state.mode.to_lowercase();
             for kb in &self.keyboards {
                 if let Ok(mut guard) = kb.lock() {
                     let dev = guard.device_type().to_string();
-                    guard.set_color(0, color).map_err(|e| {
-                        zbus::fdo::Error::Failed(format!("keyboard {dev}: set_color failed: {e}"))
-                    })?;
-                    guard.set_mode(&mode).map_err(|e| {
-                        zbus::fdo::Error::Failed(format!("keyboard {dev}: set_mode failed: {e}"))
-                    })?;
+                    if let Some(color) = color {
+                        guard.set_color(0, color).map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: set_color failed: {e}"
+                            ))
+                        })?;
+                    }
+                    if !mode.is_empty() {
+                        guard.set_mode(&mode).map_err(|e| {
+                            zbus::fdo::Error::Failed(format!(
+                                "keyboard {dev}: set_mode failed: {e}"
+                            ))
+                        })?;
+                    }
                     if hw_brightness == 0 {
                         guard.turn_off().map_err(|e| {
                             zbus::fdo::Error::Failed(format!(
@@ -241,7 +251,13 @@ impl SettingsInterface {
             .keyboard_state
             .write()
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        *state = new_state;
+        state.brightness = new_state.brightness;
+        if !new_state.color.is_empty() {
+            state.color = new_state.color;
+        }
+        if !new_state.mode.is_empty() {
+            state.mode = new_state.mode;
+        }
         Ok(())
     }
 
@@ -554,6 +570,95 @@ mod tests {
         assert_eq!(c.turn_on_count, 1);
         assert_eq!(c.turn_off_count, 0);
         assert!(c.flushed);
+    }
+
+    #[test]
+    fn set_keyboard_state_empty_color_and_mode_leave_hardware_unchanged() {
+        // Regression (IBM15I10, ITE 8291): the daemon's initial keyboard state
+        // has empty color/mode; echoing it back must not fail or reset color.
+        use crate::hid::{KeyboardLed, Rgb};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Calls {
+            colors: Vec<Rgb>,
+            modes: Vec<String>,
+            brightness: Option<u8>,
+        }
+
+        /// Behaves like the ITE drivers: unknown (incl. empty) modes are errors.
+        struct StrictKb(Arc<Mutex<Calls>>);
+        impl KeyboardLed for StrictKb {
+            fn set_brightness(&mut self, b: u8) -> std::io::Result<()> {
+                self.0.lock().unwrap().brightness = Some(b);
+                Ok(())
+            }
+            fn set_color(&mut self, _zone: u8, color: Rgb) -> std::io::Result<()> {
+                self.0.lock().unwrap().colors.push(color);
+                Ok(())
+            }
+            fn set_mode(&mut self, mode: &str) -> std::io::Result<()> {
+                if mode != "static" && mode != "breathing" {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("unknown mode: {mode}"),
+                    ));
+                }
+                self.0.lock().unwrap().modes.push(mode.to_string());
+                Ok(())
+            }
+            fn zone_count(&self) -> u8 {
+                1
+            }
+            fn turn_off(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn turn_on(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn device_type(&self) -> &str {
+                "strict"
+            }
+            fn available_modes(&self) -> Vec<String> {
+                vec!["static".into(), "breathing".into()]
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let kb: SharedKeyboard = Arc::new(Mutex::new(Box::new(StrictKb(calls.clone()))));
+        let device = make_test_device();
+        let iface =
+            SettingsInterface::new(&device, true, 2, vec![kb], None, None, true, false, false);
+
+        // Echo the initial (empty color/mode) state back with a new brightness.
+        let initial = iface.get_keyboard_state().unwrap();
+        let mut state: KeyboardState = toml::from_str(&initial).unwrap();
+        state.brightness = 40;
+        iface
+            .set_keyboard_state(&toml::to_string(&state).unwrap())
+            .expect("empty color/mode must be accepted");
+        {
+            let c = calls.lock().unwrap();
+            assert!(c.colors.is_empty(), "empty color must not touch hardware");
+            assert!(c.modes.is_empty(), "empty mode must not touch hardware");
+            assert_eq!(c.brightness, Some(102));
+        }
+
+        // A full update followed by a brightness-only update keeps color/mode.
+        iface
+            .set_keyboard_state("brightness = 50\ncolor = \"#ff8000\"\nmode = \"Breathing\"")
+            .unwrap();
+        iface.set_keyboard_state("brightness = 0").unwrap();
+        let stored: KeyboardState = toml::from_str(&iface.get_keyboard_state().unwrap()).unwrap();
+        assert_eq!(stored.brightness, 0);
+        assert_eq!(stored.color, "#ff8000");
+        assert_eq!(stored.mode, "Breathing");
+        let c = calls.lock().unwrap();
+        assert_eq!(c.colors, vec![Rgb::new(255, 128, 0)]);
+        assert_eq!(c.modes, vec!["breathing".to_string()]);
     }
 
     #[test]
